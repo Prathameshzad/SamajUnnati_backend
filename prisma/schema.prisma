@@ -1,0 +1,96 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/prisma/client"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Gender {
+  MALE
+  FEMALE
+}
+
+enum RelationStatus {
+  PENDING
+  CONFIRMED
+  REJECTED
+}
+
+enum NotificationType {
+  RELATION_REQUEST
+  RELATION_APPROVED
+  RELATION_REJECTED
+}
+
+enum NotificationState {
+  UNREAD
+  READ
+}
+
+model User {
+  id               String           @id @default(uuid())
+  phone            String           @unique
+  whatsapp         String?
+  email            String?          @unique
+  firstName        String?
+  middleName       String?
+  lastName         String?
+  profileCompleted Boolean          @default(false)
+  photoUrl         String?
+  religion         String?
+  community        String?
+  dateOfBirth      DateTime?
+  bloodGroup       String?
+  gender           Gender?
+  education        String?
+  occupation       String?
+  occupationDetails String?
+  maritalStatus     String?
+  matrimonialStatus String?
+  address          String?
+  pincode          String?
+  area             String?
+  designation      String?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  relationsFrom    Relation[]       @relation("UserRelationsFrom")
+  relationsTo      Relation[]       @relation("UserRelationsTo")
+  notifications    Notification[]
+}
+
+model Relation {
+  id               String         @id @default(uuid())
+  fromUser         User           @relation("UserRelationsFrom", fields: [fromUserId], references: [id])
+  fromUserId       String
+  toUser           User           @relation("UserRelationsTo", fields: [toUserId], references: [id])
+  toUserId       String
+  relationTypeCode String
+  relationLabel    String?
+  customName       String?
+  customPhotoUrl   String?
+  status           RelationStatus @default(PENDING)
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+  notifications    Notification[]
+  createdBy        String?
+
+  @@unique([fromUserId, toUserId, relationTypeCode], name: "fromUserId_toUserId_relationTypeCode")
+}
+
+model Notification {
+  id          String            @id @default(uuid())
+  user        User              @relation(fields: [userId], references: [id])
+  userId      String
+  type        NotificationType
+  title       String
+  message     String
+  relation    Relation?         @relation(fields: [relationId], references: [id])
+  relationId  String?
+  state       NotificationState @default(UNREAD)
+  createdAt   DateTime          @default(now())
+  readAt      DateTime?
+
+  @@index([userId, state, createdAt])
+}
