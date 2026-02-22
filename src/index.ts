@@ -25,6 +25,10 @@ app.get('/', (req: Request, res: Response) => {
   res.json({ status: 'ok', message: 'MySociety API running' });
 });
 
+app.get('/health', (req: Request, res: Response) => {
+  res.status(200).json({ status: 'ok', uptime: process.uptime() });
+});
+
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/relations', relationRoutes);
