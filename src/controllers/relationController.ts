@@ -127,8 +127,14 @@ export const listRelations = async (req: AuthRequest, res: Response) => {
     const raw = await prisma.relation.findMany({
       where: {
         OR: [
-          { fromUserId: userId },
-          { toUserId: userId, status: 'PENDING' },
+          { createdBy: userId },
+          {
+            status: 'CONFIRMED',
+            OR: [
+              { fromUserId: userId },
+              { toUserId: userId }
+            ]
+          },
           { toUserId: userId, status: 'REJECTED' },
         ],
       },
@@ -175,7 +181,18 @@ export const getTree = async (req: AuthRequest, res: Response) => {
   try {
     const rootUser = await prisma.user.findUnique({ where: { id: userId } });
     const raw = await prisma.relation.findMany({
-      where: { fromUserId: userId },
+      where: {
+        OR: [
+          { createdBy: userId },
+          {
+            status: 'CONFIRMED',
+            OR: [
+              { fromUserId: userId },
+              { toUserId: userId }
+            ]
+          }
+        ]
+      },
       include: { fromUser: true, toUser: true },
       orderBy: { createdAt: 'asc' },
     });
@@ -370,6 +387,7 @@ export const approveRelation = async (req: AuthRequest, res: Response) => {
         relationTypeCode: reciprocalCode,
         relationLabel: getRelationLabel(reciprocalCode),
         status: 'CONFIRMED',
+        createdBy: userId,
       },
     });
 
@@ -546,26 +564,25 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
         if (rel.status === 'REJECTED') continue;
 
         // Visibility Logic (Strict Private Tree):
-        // 1. Participant: Always see your own relations (e.g. Me -> Dad).
-        // 2. Creator: See relations YOU created (e.g. You added Grandpa to Dad), tracking ownership via 'createdBy'.
-        // 3. Others: HIDDEN. You cannot see relations created by others (e.g. Vivek's additions).
-        //    This enforces that "Everyone creates their own tree".
+        // 1. Creator: You always see what YOU created (ownership via 'createdBy').
+        // 2. Confirmed Participant: You see relations involving you IF they are accepted.
+        // 3. Hidden: Pending relations involving you that YOU didn't create.
+        // 4. Hidden: Relations between others that YOU didn't create.
 
-        const isParticipant = (rel.fromUserId === userId || rel.toUserId === userId);
-        // Cast to any to access createdBy until types update
         const createdBy = (rel as any).createdBy;
-        const isCreator = createdBy === userId;
+        // Fallback: If createdBy is null (old data), assume fromUserId is the owner
+        const isCreator = createdBy === userId || (!createdBy && rel.fromUserId === userId);
+        const isParticipant = (rel.fromUserId === userId || rel.toUserId === userId);
+        const isConfirmed = rel.status === 'CONFIRMED';
 
-        // DEBUG LOGS
-        // console.log(`[TreeDebug] Rel ${rel.id} (${rel.fromUser?.firstName}->${rel.toUser?.firstName}): Participant=${isParticipant}, Creator=${isCreator}, CreatedBy=${createdBy}, Me=${userId}`);
-
-        if (!isParticipant && !isCreator) {
-          // console.log(`[TreeDebug] HIDING relation ${rel.id}`);
+        // Visibility Rule: 
+        // Show if (I created it) OR (I am a participant AND it is confirmed)
+        if (!isCreator && !(isParticipant && isConfirmed)) {
           continue;
         }
 
         // Hide incoming pending requests directed AT ME from the graph (they belong in Notifications/Requests tab)
-        if (rel.status === 'PENDING' && rel.toUserId === userId) {
+        if (rel.status === 'PENDING' && rel.toUserId === userId && !isCreator) {
           continue;
         }
 
@@ -635,6 +652,43 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
   }
 };
 
+
+/**
+ * GET /relations/counts
+ * Returns accurate counts of pending / confirmed / rejected relations for the current user.
+ *
+ * Counting strategy (avoids double-counting reciprocal records):
+ *  - PENDING   : requests I initiated that are still waiting  (createdBy = me, status = PENDING)
+ *  - CONFIRMED : unique people connected to me                (fromUserId = me, status = CONFIRMED)
+ *                Every confirmed pair has a reciprocal so counting outgoing is sufficient.
+ *  - REJECTED  : requests I initiated that were rejected      (createdBy = me, status = REJECTED)
+ */
+export const getRelationCounts = async (req: AuthRequest, res: Response) => {
+  const userId = req.user?.id;
+  if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
+
+  try {
+    const [pending, confirmed, rejected] = await Promise.all([
+      // Requests I sent that are still pending
+      prisma.relation.count({
+        where: { createdBy: userId, status: 'PENDING' },
+      }),
+      // Connections I own (outgoing confirmed = one record per unique person)
+      prisma.relation.count({
+        where: { fromUserId: userId, status: 'CONFIRMED' },
+      }),
+      // Requests I sent that were rejected
+      prisma.relation.count({
+        where: { createdBy: userId, status: 'REJECTED' },
+      }),
+    ]);
+
+    return res.json({ pending, confirmed, rejected });
+  } catch (error) {
+    console.error('getRelationCounts error', error);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+};
 
 export const deleteRelation = async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;

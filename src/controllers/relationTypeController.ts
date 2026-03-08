@@ -43,3 +43,19 @@ export const listRelationTypes = async (req: Request, res: Response) => {
     return res.status(500).json({ message: 'Internal server error' });
   }
 };
+
+export const getRelationConfig = async (req: Request, res: Response) => {
+  try {
+    const { RELATION_METADATA, SPOUSE_PAIRS, RELATION_AXIS_CONFIG, COUSIN_CODES, COUSIN_PARENT_MAP } = await import('../utils/relationMetadata');
+    return res.json({
+      metadata: RELATION_METADATA,
+      spousePairs: SPOUSE_PAIRS,
+      axisConfig: RELATION_AXIS_CONFIG,
+      cousinCodes: COUSIN_CODES,
+      cousinParentMap: COUSIN_PARENT_MAP
+    });
+  } catch (error) {
+    console.error('getRelationConfig error', error);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+};

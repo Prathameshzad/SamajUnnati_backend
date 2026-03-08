@@ -11,7 +11,6 @@ export interface RelationMetadata {
 
 export const RELATION_METADATA: Record<string, RelationMetadata> = {
     // UP
-    // UP
     AJI_SASU: { code: 'AJI_SASU', label: 'आजीसासू', gender: 'FEMALE', level: 2, vg: 'UP', reciprocalCode: 'NAT_JAVAI' },
     AJI_SASRA: { code: 'AJI_SASRA', label: 'आजीसासरा', gender: 'MALE', level: 2, vg: 'UP', reciprocalCode: 'NAT_JAVAI' },
     AAJI: { code: 'AAJI', label: 'आजी', gender: 'FEMALE', level: 2, vg: 'UP', reciprocalCode: 'NATU' },
@@ -90,6 +89,389 @@ export const RELATION_METADATA: Record<string, RelationMetadata> = {
     PPP_NATU: { code: 'PPP_NATU', label: 'थोर खापर नातू', gender: 'MALE', level: 5, vg: 'DOWN', reciprocalCode: 'PPP_AJOBA' },
     PPP_NAAT: { code: 'PPP_NAAT', label: 'थोर खापर नात', gender: 'FEMALE', level: 5, vg: 'DOWN', reciprocalCode: 'PPP_AJOBA' },
 
+};
+
+export const SPOUSE_PAIRS: [string, string][] = [
+    ['VADIL', 'AAI'],
+    ['AJOBA', 'AAJI'],
+    ['NANA', 'NANI'],
+    ['PANJOBA', 'PANAAJI'],
+    ['SASRA', 'SASU'],
+    ['KAKA', 'KAKI'],
+    ['MAMA', 'MAMI'],
+    ['MAVSA', 'MAVSHI'],
+    ['NAVRA', 'BAYKO'],
+    ['DAJI', 'AATYA'],
+    ['NATU', 'NATASUN'],
+    ['NAAT', 'NAT_JAVAI'],
+    ['PANTU', 'PANTISUN'],
+    ['PANTI', 'PANTU_JAVAI'],
+];
+
+export interface AxisOption {
+    label: string;
+    code: string;
+    direction: 'UP' | 'DOWN' | 'SAME';
+    triggerGender?: 'MALE' | 'FEMALE' | null;
+}
+
+export interface AxisConfig {
+    xAxis: AxisOption[];
+    yAxis: {
+        top: AxisOption[];
+        bottom: AxisOption[];
+    };
+}
+
+export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
+    ROOT: {
+        xAxis: [
+            { label: 'बायको (Wife)', code: 'BAYKO', direction: 'SAME', triggerGender: 'MALE' },
+            { label: 'नवरा (Husband)', code: 'NAVRA', direction: 'SAME', triggerGender: 'FEMALE' },
+        ],
+        yAxis: {
+            top: [
+                { label: 'वडील (Father)', code: 'VADIL', direction: 'UP' },
+                { label: 'आई (Mother)', code: 'AAI', direction: 'UP' },
+                { label: 'सावत्रआई', code: 'SAVATR_AAI', direction: 'UP' },
+                { label: 'सावत्र वडील', code: 'SAVATR_VADIL', direction: 'UP' },
+            ],
+            bottom: [
+                { label: 'मुलगा (Son)', code: 'MULGA', direction: 'DOWN' },
+                { label: 'मुलगी (Daughter)', code: 'MULGI', direction: 'DOWN' },
+            ],
+        },
+    },
+    VADIL: {
+        xAxis: [{ label: 'आई (Mother)', code: 'AAI', direction: 'SAME' }],
+        yAxis: {
+            top: [
+                { label: 'आजोबा (Grandfather)', code: 'AJOBA', direction: 'UP' },
+                { label: 'आजी (Grandmother)', code: 'AAJI', direction: 'UP' },
+            ],
+            bottom: [
+                { label: 'भाऊ (Brother)', code: 'BHAU', direction: 'DOWN' },
+                { label: 'बहीण (Sister)', code: 'BAHIN', direction: 'DOWN' },
+            ],
+        },
+    },
+    AAI: {
+        xAxis: [{ label: 'वडील (Father)', code: 'VADIL', direction: 'SAME' }],
+        yAxis: {
+            top: [
+                { label: 'नाना (Grandfather)', code: 'NANA', direction: 'UP' },
+                { label: 'नानी (Grandmother)', code: 'NANI', direction: 'UP' },
+            ],
+            bottom: [
+                { label: 'भाऊ (Brother)', code: 'BHAU', direction: 'DOWN' },
+                { label: 'बहीण (Sister)', code: 'BAHIN', direction: 'DOWN' },
+            ],
+        },
+    },
+    SASRA: {
+        xAxis: [{ label: 'सासू (Mother-in-law)', code: 'SASU', direction: 'SAME' }],
+        yAxis: {
+            top: [
+                { label: 'आजोबा', code: 'AJOBA', direction: 'UP' },
+                { label: 'आजी', code: 'AAJI', direction: 'UP' },
+            ],
+            bottom: [
+                { label: 'बायको (Wife)', code: 'BAYKO', direction: 'DOWN' },
+                { label: 'मेव्हणा', code: 'MEVHANA', direction: 'DOWN' },
+                { label: 'मेव्हणी', code: 'MEVHANI', direction: 'DOWN' },
+            ],
+        },
+    },
+    SASU: {
+        xAxis: [{ label: 'सासरा (Father-in-law)', code: 'SASRA', direction: 'SAME' }],
+        yAxis: {
+            top: [
+                { label: 'नाना', code: 'NANA', direction: 'UP' },
+                { label: 'नानी', code: 'NANI', direction: 'UP' },
+            ],
+            bottom: [
+                { label: 'बायको (Wife)', code: 'BAYKO', direction: 'DOWN' },
+                { label: 'मेव्हणा', code: 'MEVHANA', direction: 'DOWN' },
+                { label: 'मेव्हणी', code: 'MEVHANI', direction: 'DOWN' },
+            ],
+        },
+    },
+    BHAU: {
+        xAxis: [{ label: 'वहिनी', code: 'VAHINI', direction: 'SAME' }],
+        yAxis: {
+            top: [],
+            bottom: [
+                { label: 'पुतण्या', code: 'PUTANYA', direction: 'DOWN' },
+                { label: 'पुतणी', code: 'PUTANI', direction: 'DOWN' },
+            ],
+        },
+    },
+    BAHIN: {
+        xAxis: [{ label: 'दाजी', code: 'DAJI', direction: 'SAME' }],
+        yAxis: {
+            top: [],
+            bottom: [
+                { label: 'भाचा', code: 'BHACHA', direction: 'DOWN' },
+                { label: 'भाची', code: 'BHACHI', direction: 'DOWN' },
+            ],
+        },
+    },
+    VAHINI: {
+        xAxis: [{ label: 'भाऊ', code: 'BHAU', direction: 'SAME' }],
+        yAxis: {
+            top: [],
+            bottom: [
+                { label: 'पुतण्या', code: 'PUTANYA', direction: 'DOWN' },
+                { label: 'पुतणी', code: 'PUTANI', direction: 'DOWN' },
+            ],
+        },
+    },
+    DAJI: {
+        xAxis: [{ label: 'बहीण', code: 'BAHIN', direction: 'SAME' }],
+        yAxis: {
+            top: [],
+            bottom: [
+                { label: 'भाचा', code: 'BHACHA', direction: 'DOWN' },
+                { label: 'भाची', code: 'BHACHI', direction: 'DOWN' },
+            ],
+        },
+    },
+    MULGA: {
+        xAxis: [{ label: 'सून', code: 'SUN', direction: 'SAME' }],
+        yAxis: {
+            top: [],
+            bottom: [
+                { label: 'नातू', code: 'NATU', direction: 'DOWN' },
+                { label: 'नात', code: 'NAAT', direction: 'DOWN' },
+            ],
+        },
+    },
+    MULGI: {
+        xAxis: [{ label: 'जावई', code: 'JAVAI', direction: 'SAME' }],
+        yAxis: {
+            top: [],
+            bottom: [
+                { label: 'नातू', code: 'NATU', direction: 'DOWN' },
+                { label: 'नात', code: 'NAAT', direction: 'DOWN' },
+            ],
+        },
+    },
+    MAMA: {
+        xAxis: [{ label: 'मामी', code: 'MAMI', direction: 'SAME' }],
+        yAxis: {
+            top: [
+                { label: 'नाना', code: 'NANA', direction: 'UP' },
+                { label: 'नानी', code: 'NANI', direction: 'UP' },
+            ],
+            bottom: [
+                { label: 'भाचा (Cousin)', code: 'BHACHA', direction: 'DOWN' },
+                { label: 'भाची (Cousin)', code: 'BHACHI', direction: 'DOWN' },
+            ],
+        },
+    },
+    MAMI: {
+        xAxis: [{ label: 'मामा', code: 'MAMA', direction: 'SAME' }],
+        yAxis: {
+            top: [],
+            bottom: [
+                { label: 'भाचा (Cousin)', code: 'BHACHA', direction: 'DOWN' },
+                { label: 'भाची (Cousin)', code: 'BHACHI', direction: 'DOWN' },
+            ],
+        },
+    },
+    AJOBA: {
+        xAxis: [{ label: 'आजी (Grandmother)', code: 'AAJI', direction: 'SAME' }],
+        yAxis: {
+            top: [
+                { label: 'पणजोबा (Great Grandfather)', code: 'PANJOBA', direction: 'UP' },
+                { label: 'पणजी (Great Grandmother)', code: 'PANAAJI', direction: 'UP' },
+            ],
+            bottom: [
+                { label: 'वडील (Father)', code: 'VADIL', direction: 'DOWN' },
+                { label: 'काका (Uncle)', code: 'KAKA', direction: 'DOWN' },
+                { label: 'आत्या (Aunt)', code: 'AATYA', direction: 'DOWN' },
+            ],
+        },
+    },
+    AAJI: {
+        xAxis: [{ label: 'आजोबा (Grandfather)', code: 'AJOBA', direction: 'SAME' }],
+        yAxis: {
+            top: [
+                { label: 'पणजोबा (Great Grandfather)', code: 'PANJOBA', direction: 'UP' },
+                { label: 'पणजी (Great Grandmother)', code: 'PANAAJI', direction: 'UP' },
+            ],
+            bottom: [
+                { label: 'वडील (Father)', code: 'VADIL', direction: 'DOWN' },
+                { label: 'काका (Uncle)', code: 'KAKA', direction: 'DOWN' },
+                { label: 'आत्या (Aunt)', code: 'AATYA', direction: 'DOWN' },
+            ],
+        },
+    },
+    NANA: {
+        xAxis: [{ label: 'नानी', code: 'NANI', direction: 'SAME' }],
+        yAxis: {
+            top: [
+                { label: 'पणजोबा', code: 'PANJOBA', direction: 'UP' },
+                { label: 'पणजी', code: 'PANAAJI', direction: 'UP' },
+            ],
+            bottom: [
+                { label: 'आई (Mother)', code: 'AAI', direction: 'DOWN' },
+                { label: 'मामा (Uncle)', code: 'MAMA', direction: 'DOWN' },
+                { label: 'मावशी (Aunt)', code: 'MAVSHI', direction: 'DOWN' },
+            ],
+        },
+    },
+    NANI: {
+        xAxis: [{ label: 'नाना', code: 'NANA', direction: 'SAME' }],
+        yAxis: {
+            top: [
+                { label: 'पणजोबा', code: 'PANJOBA', direction: 'UP' },
+                { label: 'पणजी', code: 'PANAAJI', direction: 'UP' },
+            ],
+            bottom: [
+                { label: 'आई (Mother)', code: 'AAI', direction: 'DOWN' },
+                { label: 'मामा (Uncle)', code: 'MAMA', direction: 'DOWN' },
+                { label: 'मावशी (Aunt)', code: 'MAVSHI', direction: 'DOWN' },
+            ],
+        },
+    },
+    KAKA: {
+        xAxis: [{ label: 'काकी', code: 'KAKI', direction: 'SAME' }],
+        yAxis: {
+            top: [
+                { label: 'आजोबा', code: 'AJOBA', direction: 'UP' },
+                { label: 'आजी', code: 'AAJI', direction: 'UP' },
+            ],
+            bottom: [
+                { label: 'चुलतभाऊ', code: 'CHULAT_BHAU', direction: 'DOWN' },
+                { label: 'चुलतबहीण', code: 'CHULAT_BAHIN', direction: 'DOWN' },
+            ],
+        },
+    },
+    KAKI: {
+        xAxis: [{ label: 'काका', code: 'KAKA', direction: 'SAME' }],
+        yAxis: {
+            top: [],
+            bottom: [
+                { label: 'चुलतभाऊ', code: 'CHULAT_BHAU', direction: 'DOWN' },
+                { label: 'चुलतबहीण', code: 'CHULAT_BAHIN', direction: 'DOWN' },
+            ],
+        },
+    },
+    AATYA: {
+        xAxis: [{ label: 'दाजी', code: 'DAJI', direction: 'SAME' }],
+        yAxis: {
+            top: [
+                { label: 'आजोबा', code: 'AJOBA', direction: 'UP' },
+                { label: 'आजी', code: 'AAJI', direction: 'UP' },
+            ],
+            bottom: [
+                { label: 'आत्येभाऊ', code: 'ATYE_BHAU', direction: 'DOWN' },
+                { label: 'आत्येबहीण', code: 'ATYE_BAHIN', direction: 'DOWN' },
+            ],
+        },
+    },
+    MAVSHI: {
+        xAxis: [{ label: 'मावसा', code: 'MAVSA', direction: 'SAME' }],
+        yAxis: {
+            top: [
+                { label: 'नाना', code: 'NANA', direction: 'UP' },
+                { label: 'नानी', code: 'NANI', direction: 'UP' },
+            ],
+            bottom: [
+                { label: 'मावसभाऊ', code: 'MAV_BHAU', direction: 'DOWN' },
+                { label: 'मावसबहीण', code: 'MAV_BAHIN', direction: 'DOWN' },
+            ],
+        },
+    },
+    PANJOBA: {
+        xAxis: [{ label: 'पणजी', code: 'PANAAJI', direction: 'SAME' }],
+        yAxis: {
+            top: [],
+            bottom: [
+                { label: 'आजोबा', code: 'AJOBA', direction: 'DOWN' },
+                { label: 'नाना', code: 'NANA', direction: 'DOWN' },
+            ],
+        },
+    },
+    PANAAJI: {
+        xAxis: [{ label: 'पणजोबा', code: 'PANJOBA', direction: 'SAME' }],
+        yAxis: {
+            top: [],
+            bottom: [
+                { label: 'आजोबा', code: 'AJOBA', direction: 'DOWN' },
+                { label: 'नाना', code: 'NANA', direction: 'DOWN' },
+            ],
+        },
+    },
+    NATU: {
+        xAxis: [{ label: 'नातसून', code: 'NATASUN', direction: 'SAME' }],
+        yAxis: {
+            top: [],
+            bottom: [
+                { label: 'नातसून', code: 'NATASUN', direction: 'DOWN' },
+                { label: 'पणतू', code: 'PANTU', direction: 'DOWN' },
+                { label: 'पणती', code: 'PANTI', direction: 'DOWN' },
+            ],
+        },
+    },
+    NAAT: {
+        xAxis: [{ label: 'नातजावई', code: 'NAT_JAVAI', direction: 'SAME' }],
+        yAxis: {
+            top: [],
+            bottom: [
+                { label: 'नातजावई', code: 'NAT_JAVAI', direction: 'DOWN' },
+                { label: 'पणतू', code: 'PANTU', direction: 'DOWN' },
+                { label: 'पणती', code: 'PANTI', direction: 'DOWN' },
+            ],
+        },
+    },
+    NATASUN: {
+        xAxis: [{ label: 'नातू', code: 'NATU', direction: 'SAME' }],
+        yAxis: {
+            top: [],
+            bottom: [
+                { label: 'पणतू', code: 'PANTU', direction: 'DOWN' },
+                { label: 'पणती', code: 'PANTI', direction: 'DOWN' },
+            ],
+        },
+    },
+    NAT_JAVAI: {
+        xAxis: [{ label: 'नात', code: 'NAAT', direction: 'SAME' }],
+        yAxis: {
+            top: [],
+            bottom: [
+                { label: 'पणतू', code: 'PANTU', direction: 'DOWN' },
+                { label: 'पणती', code: 'PANTI', direction: 'DOWN' },
+            ],
+        },
+    },
+    PANTU: {
+        xAxis: [{ label: 'पणतीसून', code: 'PANTISUN', direction: 'SAME' }],
+        yAxis: { top: [], bottom: [] },
+    },
+    PANTI: {
+        xAxis: [{ label: 'पणतूजावई', code: 'PANTU_JAVAI', direction: 'SAME' }],
+        yAxis: { top: [], bottom: [] },
+    },
+};
+
+export const COUSIN_CODES = [
+    'MAMBHAU', 'MAMBAHIN',
+    'MAV_BHAU', 'MAV_BAHIN',
+    'CHULAT_BHAU', 'CHULAT_BAHIN',
+    'ATYE_BHAU', 'ATYE_BAHIN',
+];
+
+export const COUSIN_PARENT_MAP: Record<string, string[]> = {
+    'MAMBHAU': ['MAMA', 'MAMI'],
+    'MAMBAHIN': ['MAMA', 'MAMI'],
+    'MAV_BHAU': ['MAMA', 'MAMI'],
+    'MAV_BAHIN': ['MAMA', 'MAMI'],
+    'CHULAT_BHAU': ['KAKA', 'KAKI'],
+    'CHULAT_BAHIN': ['KAKA', 'KAKI'],
+    'ATYE_BHAU': ['AATYA', 'FUA'],
+    'ATYE_BAHIN': ['AATYA', 'FUA'],
 };
 
 // Extracted from the list above + explicit mappings

@@ -10,14 +10,16 @@ import {
   rejectRelation,
   updateRelation,
   deleteRelation,
-  getFullTree, // ⬅️ new
+  getFullTree,
+  getRelationCounts,
 } from '../controllers/relationController';
 
 const router = Router();
 
+router.get('/counts', authMiddleware, getRelationCounts); // ⬅️ must be before /:id routes
 router.get('/', authMiddleware, listRelations);
 router.get('/tree', authMiddleware, getTree);
-router.get('/tree/full', authMiddleware, getFullTree); // ⬅️ new
+router.get('/tree/full', authMiddleware, getFullTree);
 router.get('/requests', authMiddleware, getRequests);
 router.post('/', authMiddleware, createRelation);
 router.post('/:id/approve', authMiddleware, approveRelation);

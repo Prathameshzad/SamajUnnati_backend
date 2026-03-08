@@ -4,6 +4,7 @@ import type { Express } from 'express';
 import prisma from '../lib/prisma';
 import { signAuthToken } from '../lib/jwt';
 import { uploadProfileImageToR2 } from '../lib/r2';
+import { OtpService } from '../services/otpService';
 
 type GenderValue = 'MALE' | 'FEMALE';
 
@@ -67,12 +68,12 @@ export const checkPhone = async (
       return res.json({ exists: false });
     }
 
-    const token = signAuthToken({ userId: user.id, phone: user.phone });
+    // Trigger OTP send
+    await OtpService.sendOtp(user.phone);
 
     return res.json({
       exists: true,
-      token,
-      user,
+      message: 'OTP sent to registered number'
     });
   } catch (error) {
     console.error('check-phone error', error);
@@ -304,4 +305,39 @@ export const registerUser = async (
     console.error('register error', error);
     return res.status(500).json({ message: 'Internal server error' });
   }
+};
+
+/**
+ * POST /api/auth/request-otp
+ * Body: { phone }
+ */
+export const requestOtp = async (req: Request, res: Response) => {
+  const { phone } = req.body;
+  const normalized = normalizePhone(phone);
+  if (!normalized) return res.status(400).json({ message: 'Invalid phone' });
+
+  await OtpService.sendOtp(normalized);
+  return res.json({ message: 'OTP sent' });
+};
+
+/**
+ * POST /api/auth/verify-otp
+ * Body: { phone, code }
+ */
+export const verifyOtp = async (req: Request, res: Response) => {
+  const { phone, code } = req.body;
+  const normalized = normalizePhone(phone);
+  if (!normalized) return res.status(400).json({ message: 'Invalid phone' });
+
+  const isValid = await OtpService.verifyOtp(normalized, code);
+  if (!isValid) return res.status(401).json({ message: 'Invalid OTP' });
+
+  // If valid, check if user exists to return token
+  const user = await prisma.user.findUnique({ where: { phone: normalized } });
+  if (user && user.profileCompleted) {
+    const token = signAuthToken({ userId: user.id, phone: user.phone });
+    return res.json({ verified: true, token, user });
+  }
+
+  return res.json({ verified: true, message: 'Phone verified, proceed to registration' });
 };

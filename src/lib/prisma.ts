@@ -14,7 +14,19 @@ if (!connectionString) {
 }
 
 // Create a pg pool and Prisma adapter
-const pool = new Pool({ connectionString });
+const poolConfig: any = {
+  connectionString,
+  max: 5, // Keep small to avoid max connection limits on free tiers
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 5000,
+};
+
+// Render postgres databases require SSL for external connections
+if (connectionString?.includes('render.com')) {
+  poolConfig.ssl = { rejectUnauthorized: false };
+}
+
+const pool = new Pool(poolConfig);
 const adapter = new PrismaPg(pool as any); // type fix if TS complains
 
 // Singleton pattern (optional but good in dev to avoid multiple clients)
