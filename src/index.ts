@@ -1,5 +1,5 @@
 // src/index.ts
-import express, { Application, Request, Response } from 'express';
+import express, { Application, Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import path from 'path';
@@ -10,8 +10,8 @@ import authRoutes from './routes/authRoutes';
 import userRoutes from './routes/userRoutes';
 import relationRoutes from './routes/relationRoutes';
 import relationTypeRoutes from './routes/relationTypeRoutes';
-// If you created notification routes from earlier steps, uncomment next line:
-// import notificationRoutes from './routes/notificationRoutes';
+import notificationRoutes from './routes/notificationRoutes';
+import uploadRoutes from './routes/uploadRoutes';
 
 dotenv.config();
 
@@ -19,7 +19,24 @@ const app: Application = express();
 const PORT = process.env.PORT || 8000;
 
 app.use(cors());
+
+// Request logger
+app.use((req, res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+  next();
+});
+
 app.use(express.json());
+
+// JSON Error Handler
+app.use((err: any, req: Request, res: Response, next: NextFunction) => {
+  if (err instanceof SyntaxError && 'status' in err && err.status === 400 && 'body' in err) {
+    console.error('JSON Syntax Error detected:', err.message);
+    console.error('Malformed Request Body Fragment:', (err as any).body.slice(0, 100));
+    return res.status(400).json({ status: 'error', message: 'Invalid JSON body' });
+  }
+  next(err);
+});
 
 app.get('/', (req: Request, res: Response) => {
   res.json({ status: 'ok', message: 'MySociety API running' });
@@ -33,11 +50,6 @@ app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/relations', relationRoutes);
 app.use('/api/relation-types', relationTypeRoutes);
-import notificationRoutes from './routes/notificationRoutes';
-import uploadRoutes from './routes/uploadRoutes';
-
-// ...
-
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/upload', uploadRoutes);
 
@@ -49,5 +61,3 @@ const io = initSocket(server);
 server.listen(PORT, () => {
   console.log(`MySociety backend running on port ${PORT}`);
 });
-
-// Force restart for schema update 2
