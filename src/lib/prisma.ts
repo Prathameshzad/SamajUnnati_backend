@@ -10,19 +10,20 @@ const { Pool } = pg;
 const connectionString = process.env.DATABASE_URL;
 
 if (!connectionString) {
-  throw new Error('DATABASE_URL is not set in .env');
+  console.warn('CRITICAL: DATABASE_URL is not set in .env or environment variables. Database operations will fail.');
 }
 
 // Create a pg pool and Prisma adapter
 const poolConfig: any = {
-  connectionString,
+  connectionString: connectionString || '',
   max: 5, // Keep small to avoid max connection limits on free tiers
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 5000,
 };
 
 // Render postgres databases require SSL for external connections
-if (connectionString?.includes('render.com')) {
+// Also check RENDER environment variable which is automatically set on Render
+if (connectionString?.includes('render.com') || process.env.RENDER) {
   poolConfig.ssl = { rejectUnauthorized: false };
 }
 

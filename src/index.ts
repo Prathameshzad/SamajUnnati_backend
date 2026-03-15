@@ -42,8 +42,14 @@ app.get('/', (req: Request, res: Response) => {
   res.json({ status: 'ok', message: 'MySociety API running' });
 });
 
-app.get('/health', (req: Request, res: Response) => {
-  res.status(200).json({ status: 'ok', uptime: process.uptime() });
+app.get('/health', async (req: Request, res: Response) => {
+  try {
+    const prisma = (await import('./lib/prisma')).default;
+    await prisma.$queryRaw`SELECT 1`;
+    res.status(200).json({ status: 'ok', database: 'connected', uptime: process.uptime() });
+  } catch (error: any) {
+    res.status(500).json({ status: 'error', database: 'failed', error: error.message });
+  }
 });
 
 app.use('/api/auth', authRoutes);

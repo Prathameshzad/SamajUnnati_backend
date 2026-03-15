@@ -75,9 +75,16 @@ export const checkPhone = async (
       exists: true,
       message: 'OTP sent to registered number'
     });
-  } catch (error) {
-    console.error('check-phone error', error);
-    return res.status(500).json({ message: 'Internal server error' });
+  } catch (error: any) {
+    console.error('check-phone error details:', {
+      message: error.message,
+      stack: error.stack,
+      code: error.code
+    });
+    return res.status(500).json({
+      message: 'Internal server error during phone check',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 };
 
