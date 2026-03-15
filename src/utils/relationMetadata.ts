@@ -454,6 +454,216 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
         xAxis: [{ label: 'पणतूजावई', code: 'PANTU_JAVAI', direction: 'SAME' }],
         yAxis: { top: [], bottom: [] },
     },
+    BAYKO: {
+        xAxis: [
+            { label: 'नवरा (Husband)', code: 'NAVRA', direction: 'SAME' },
+        ],
+        yAxis: {
+            top: [
+                { label: 'सासरा (Father-in-law)', code: 'SASRA', direction: 'UP' },
+                { label: 'सासू (Mother-in-law)', code: 'SASU', direction: 'UP' },
+            ],
+            bottom: [
+                { label: 'मुलगा (Son)', code: 'MULGA', direction: 'DOWN' },
+                { label: 'मुलगी (Daughter)', code: 'MULGI', direction: 'DOWN' },
+            ],
+        },
+    },
+    NAVRA: {
+        xAxis: [
+            { label: 'बायको (Wife)', code: 'BAYKO', direction: 'SAME' },
+        ],
+        yAxis: {
+            top: [
+                { label: 'सासरा (Father-in-law)', code: 'SASRA', direction: 'UP' },
+                { label: 'सासू (Mother-in-law)', code: 'SASU', direction: 'UP' },
+            ],
+            bottom: [
+                { label: 'मुलगा (Son)', code: 'MULGA', direction: 'DOWN' },
+                { label: 'मुलगी (Daughter)', code: 'MULGI', direction: 'DOWN' },
+            ],
+        },
+    },
+    MAVSA: {
+        xAxis: [{ label: 'मावशी', code: 'MAVSHI', direction: 'SAME' }],
+        yAxis: {
+            top: [],
+            bottom: [
+                { label: 'मावसभाऊ', code: 'MAV_BHAU', direction: 'DOWN' },
+                { label: 'मावसबहीण', code: 'MAV_BAHIN', direction: 'DOWN' },
+            ],
+        },
+    },
+    FUA: {
+        xAxis: [{ label: 'आत्या', code: 'AATYA', direction: 'SAME' }],
+        yAxis: {
+            top: [],
+            bottom: [
+                { label: 'आत्येभाऊ', code: 'ATYE_BHAU', direction: 'DOWN' },
+                { label: 'आत्येबहीण', code: 'ATYE_BAHIN', direction: 'DOWN' },
+            ],
+        },
+    },
+    SUN: {
+        xAxis: [{ label: 'मुलगा', code: 'MULGA', direction: 'SAME' }],
+        yAxis: {
+            top: [],
+            bottom: [
+                { label: 'नातू', code: 'NATU', direction: 'DOWN' },
+                { label: 'नात', code: 'NAAT', direction: 'DOWN' },
+            ],
+        },
+    },
+    JAVAI: {
+        xAxis: [{ label: 'मुलगी', code: 'MULGI', direction: 'SAME' }],
+        yAxis: {
+            top: [],
+            bottom: [
+                { label: 'नातू', code: 'NATU', direction: 'DOWN' },
+                { label: 'नात', code: 'NAAT', direction: 'DOWN' },
+            ],
+        },
+    },
+    CHULTA: {
+        xAxis: [{ label: 'चुलती', code: 'CHULTI', direction: 'SAME' }],
+        yAxis: {
+            top: [],
+            bottom: [
+                { label: 'चुलतभाऊ', code: 'CHULAT_BHAU', direction: 'DOWN' },
+                { label: 'चुलतबहीण', code: 'CHULAT_BAHIN', direction: 'DOWN' },
+            ],
+        },
+    },
+    CHULTI: {
+        xAxis: [{ label: 'चुलता', code: 'CHULTA', direction: 'SAME' }],
+        yAxis: {
+            top: [],
+            bottom: [
+                { label: 'चुलतभाऊ', code: 'CHULAT_BHAU', direction: 'DOWN' },
+                { label: 'चुलतबहीण', code: 'CHULAT_BAHIN', direction: 'DOWN' },
+            ],
+        },
+    },
+    DIR_CHOTE: {
+        xAxis: [{ label: 'वहिनी', code: 'VAHINI', direction: 'SAME' }],
+        yAxis: {
+            top: [],
+            bottom: [
+                { label: 'पुतण्या', code: 'PUTANYA', direction: 'DOWN' },
+                { label: 'पुतणी', code: 'PUTANI', direction: 'DOWN' },
+            ],
+        },
+    },
+    DIR_MOTHE: {
+        xAxis: [{ label: 'वहिनी', code: 'VAHINI', direction: 'SAME' }],
+        yAxis: {
+            top: [],
+            bottom: [
+                { label: 'पुतण्या', code: 'PUTANYA', direction: 'DOWN' },
+                { label: 'पुतणी', code: 'PUTANI', direction: 'DOWN' },
+            ],
+        },
+    },
+    MEVHANA: {
+        xAxis: [{ label: 'मेव्हणी', code: 'MEVHANI', direction: 'SAME' }],
+        yAxis: {
+            top: [],
+            bottom: [
+                { label: 'भाचा', code: 'BHACHA', direction: 'DOWN' },
+                { label: 'भाची', code: 'BHACHI', direction: 'DOWN' },
+            ],
+        },
+    },
+    MEVHANI: {
+        xAxis: [{ label: 'मेव्हणा', code: 'MEVHANA', direction: 'SAME' }],
+        yAxis: {
+            top: [],
+            bottom: [
+                { label: 'भाचा', code: 'BHACHA', direction: 'DOWN' },
+                { label: 'भाची', code: 'BHACHI', direction: 'DOWN' },
+            ],
+        },
+    },
+    CHULAT_BHAU: {
+        xAxis: [{ label: 'वहिनी', code: 'VAHINI', direction: 'SAME' }],
+        yAxis: {
+            top: [],
+            bottom: [
+                { label: 'मुलगा', code: 'MULGA', direction: 'DOWN' },
+                { label: 'मुलगी', code: 'MULGI', direction: 'DOWN' },
+            ],
+        },
+    },
+    CHULAT_BAHIN: {
+        xAxis: [{ label: 'दाजी', code: 'DAJI', direction: 'SAME' }],
+        yAxis: {
+            top: [],
+            bottom: [
+                { label: 'भाचा', code: 'BHACHA', direction: 'DOWN' },
+                { label: 'भाची', code: 'BHACHI', direction: 'DOWN' },
+            ],
+        },
+    },
+    ATYE_BHAU: {
+        xAxis: [{ label: 'वहिनी', code: 'VAHINI', direction: 'SAME' }],
+        yAxis: {
+            top: [],
+            bottom: [
+                { label: 'मुलगा', code: 'MULGA', direction: 'DOWN' },
+                { label: 'मुलगी', code: 'MULGI', direction: 'DOWN' },
+            ],
+        },
+    },
+    ATYE_BAHIN: {
+        xAxis: [{ label: 'दाजी', code: 'DAJI', direction: 'SAME' }],
+        yAxis: {
+            top: [],
+            bottom: [
+                { label: 'भाचा', code: 'BHACHA', direction: 'DOWN' },
+                { label: 'भाची', code: 'BHACHI', direction: 'DOWN' },
+            ],
+        },
+    },
+    MAV_BHAU: {
+        xAxis: [{ label: 'वहिनी', code: 'VAHINI', direction: 'SAME' }],
+        yAxis: {
+            top: [],
+            bottom: [
+                { label: 'मुलगा', code: 'MULGA', direction: 'DOWN' },
+                { label: 'मुलगी', code: 'MULGI', direction: 'DOWN' },
+            ],
+        },
+    },
+    MAV_BAHIN: {
+        xAxis: [{ label: 'दाजी', code: 'DAJI', direction: 'SAME' }],
+        yAxis: {
+            top: [],
+            bottom: [
+                { label: 'भाचा', code: 'BHACHA', direction: 'DOWN' },
+                { label: 'भाची', code: 'BHACHI', direction: 'DOWN' },
+            ],
+        },
+    },
+    MAMBHAU: {
+        xAxis: [{ label: 'वहिनी', code: 'VAHINI', direction: 'SAME' }],
+        yAxis: {
+            top: [],
+            bottom: [
+                { label: 'मुलगा', code: 'MULGA', direction: 'DOWN' },
+                { label: 'मुलगी', code: 'MULGI', direction: 'DOWN' },
+            ],
+        },
+    },
+    MAMBAHIN: {
+        xAxis: [{ label: 'दाजी', code: 'DAJI', direction: 'SAME' }],
+        yAxis: {
+            top: [],
+            bottom: [
+                { label: 'भाचा', code: 'BHACHA', direction: 'DOWN' },
+                { label: 'भाची', code: 'BHACHI', direction: 'DOWN' },
+            ],
+        },
+    },
 };
 
 export const COUSIN_CODES = [
