@@ -343,8 +343,9 @@ export const verifyOtp = async (req: Request, res: Response) => {
   const user = await prisma.user.findUnique({ where: { phone: normalized } });
   if (user && user.profileCompleted) {
     const token = signAuthToken({ userId: user.id, phone: user.phone });
-    return res.json({ verified: true, token, user });
+    return res.json({ verified: true, exists: true, token, user });
   }
 
-  return res.json({ verified: true, message: 'Phone verified, proceed to registration' });
+  return res.json({ verified: true, exists: false, message: 'Phone verified, proceed to registration' });
 };
+
