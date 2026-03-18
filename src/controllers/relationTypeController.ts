@@ -34,7 +34,8 @@ export const listRelationTypes = async (req: Request, res: Response) => {
       targetGender: rt.gender,
       treeLevel: rt.level,
       verticalGroup: rt.vg,
-      reciprocalCode: rt.reciprocalCode || null
+      reciprocalCode: rt.reciprocalCode || null,
+      category: rt.category
     }));
 
     return res.json(response);

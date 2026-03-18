@@ -509,6 +509,7 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
   if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
 
   const maxDepth = Number(req.query.depth) || 10;
+  const category = req.query.category as string; // 'FAMILY' or 'FRIEND'
 
   try {
     const rootUser = await prisma.user.findUnique({ where: { id: userId } });
@@ -563,6 +564,12 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
 
         if (rel.status === 'REJECTED') continue;
 
+        // Filter by category if provided
+        const meta = RELATION_METADATA[relationCodeToCheck];
+        if (category && meta && meta.category !== category) {
+          continue;
+        }
+
         // Visibility Logic (Strict Private Tree):
         // 1. Creator: You always see what YOU created (ownership via 'createdBy').
         // 2. Confirmed Participant: You see relations involving you IF they are accepted.
@@ -590,7 +597,6 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
 
         // Calculate Generation - Use ABSOLUTE canonical levels from metadata
         // This ensures e.g. all Cousins are on Gen 0, all Uncles on Gen 1, etc.
-        const meta = RELATION_METADATA[relationCodeToCheck];
         let neighborGen = 0; // Default to root level if unknown
 
         if (meta) {

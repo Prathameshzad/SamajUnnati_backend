@@ -25,7 +25,6 @@ function normalizePhone(value?: string | null): string | null {
   if (!value) return null;
   const digits = value.replace(/\D/g, '');
   if (!digits) return null;
-  if (digits.length > 10) return digits.slice(-10);
   return digits;
 }
 
