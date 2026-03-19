@@ -2,7 +2,7 @@
 import { Response } from 'express';
 import prisma from '../lib/prisma';
 import { AuthRequest } from '../middleware/authMiddleware';
-import { getReciprocalCode, getRelationLabel, RELATION_METADATA } from '../utils/relationMetadata';
+import { getIO } from '../lib/socket';
 
 type GenderValue = 'MALE' | 'FEMALE' | null;
 
@@ -15,31 +15,48 @@ function normalizeGender(gender?: string | null): GenderValue {
 }
 
 /**
+ * Resolve display label for a relation type based on language.
+ */
+function resolveLabel(relationType: any, lang: string = 'mr') {
+  if (!relationType || !relationType.translations) return relationType?.code || 'UNKNOWN';
+  const trans = relationType.translations.find((t: any) => t.languageCode === lang) || relationType.translations[0];
+  return trans ? trans.label : relationType.code;
+}
+
+/**
  * Resolve which relation code and label should be shown to the given viewer.
  */
-function resolveRelationForViewer(rel: any, viewerUserId: string) {
+async function resolveRelationForViewer(rel: any, viewerUserId: string, lang: string = 'mr') {
+  // If we already have the relationType included in rel (from findMany include)
   if (rel.fromUserId === viewerUserId) {
     return {
       code: rel.relationTypeCode,
-      label: rel.relationLabel || getRelationLabel(rel.relationTypeCode)
+      label: resolveLabel(rel.relationType, lang)
     };
   }
 
+  // If viewing the incoming side, we need to show the reciprocal
   if (rel.toUserId === viewerUserId) {
-    const reciprocalCode = getReciprocalCode(rel.relationTypeCode);
+    const reciprocalCode = rel.relationType?.reciprocalCode || rel.relationTypeCode;
+    // For label of reciprocal, we might need another DB fetch or if we have all types cached?
+    // Let's assume we fetch the reciprocal type if needed, or if it's common we cache it.
+    // For now, simpler: resolve label if we can find it in a pre-fetched list.
+    const recType = await prisma.relationType.findUnique({
+      where: { code: reciprocalCode },
+      include: { translations: true }
+    });
+
     return {
       code: reciprocalCode,
-      label: getRelationLabel(reciprocalCode)
+      label: resolveLabel(recType, lang)
     };
   }
 
   return {
     code: rel.relationTypeCode,
-    label: rel.relationLabel || getRelationLabel(rel.relationTypeCode)
+    label: resolveLabel(rel.relationType, lang)
   };
 }
-
-import { getIO } from '../lib/socket';
 
 async function createNotification(args: {
   userId: string;
@@ -68,7 +85,6 @@ async function createNotification(args: {
       }
     });
 
-    // Emit real-time event
     try {
       getIO().to(userId).emit('notification', notification);
     } catch (e) {
@@ -79,55 +95,32 @@ async function createNotification(args: {
   }
 }
 
-
-/**
- * Resolves user/relation fields for the given viewer.
- * If I (viewer) added you, I might have set a custom name or photo for you in THIS relation.
- * So we overlay `customName` -> `user.firstName` and `customPhotoUrl` -> `user.photoUrl`.
- */
 function resolveNodeForViewer(nodeUser: any, relation: any, viewerUserId: string) {
-  // Logic: 
-  // If I am the creator of this relation (fromUserId == viewerUserId), 
-  // then `relation.customName` should override `nodeUser.firstName`
-  // and `relation.customPhotoUrl` should override `nodeUser.photoUrl`.
-
-  // NOTE: This logic assumes `relation` connects `viewer` -> `nodeUser`.
-  // If the relation is `nodeUser` -> `viewer` (incoming), then I (viewer) did NOT create it, 
-  // so I can't have custom aliases on it (unless we support custom alias on incoming, which schema allows, but UI flow usually is for people I added).
-
   if (!relation) return nodeUser;
-
   const isMyOutgoing = relation.fromUserId === viewerUserId;
-  // const isMyIncoming = relation.toUserId === viewerUserId; 
-
-  // We only show custom aliases if I created the relation (Outgoing)
-  // because that's where I would have "Edit" rights. 
-  // (Unless you want to allow renaming *anyone* in your tree? 
-  //  For now, let's assume you can only rename people YOU added).
 
   if (isMyOutgoing) {
     return {
       ...nodeUser,
-      firstName: relation.customName || nodeUser.firstName, // Overlay name
-      photoUrl: relation.customPhotoUrl || nodeUser.photoUrl, // Overlay photo
-      // We keep original fields if needed, or UI can just use firstName
+      firstName: relation.customName || nodeUser.firstName,
+      photoUrl: relation.customPhotoUrl || nodeUser.photoUrl,
       originalFirstName: nodeUser.firstName,
       originalPhotoUrl: nodeUser.photoUrl,
     };
   }
-
   return nodeUser;
 }
 
 export const listRelations = async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;
+  const lang = (req.query.lang as string) || 'mr';
   if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
 
   try {
     const raw = await prisma.relation.findMany({
       where: {
         OR: [
-          { createdBy: userId },
+          { createdById: userId },
           {
             status: 'CONFIRMED',
             OR: [
@@ -141,31 +134,25 @@ export const listRelations = async (req: AuthRequest, res: Response) => {
       include: {
         fromUser: true,
         toUser: true,
+        relationType: { include: { translations: true } }
       },
       orderBy: { createdAt: 'desc' },
     });
 
-    const relations = raw.map(rel => {
-      const view = resolveRelationForViewer(rel, userId);
-
-      // Resolve the "other" user with potential custom aliases
-      // If I am fromUser, then toUser might have custom alias.
-      // If I am toUser, fromUser is standard.
+    const relations = await Promise.all(raw.map(async rel => {
+      const view = await resolveRelationForViewer(rel, userId, lang);
       let finalToUser = rel.toUser;
-      let finalFromUser = rel.fromUser;
-
       if (rel.fromUserId === userId) {
         finalToUser = resolveNodeForViewer(rel.toUser, rel, userId);
       }
-      // If I am toUser, I see fromUser as is (no custom alias processing for incoming usually, unless we support it)
 
       return {
         ...rel,
         toUser: finalToUser,
-        fromUser: finalFromUser,
+        fromUser: rel.fromUser,
         relationType: { label: view.label, code: view.code }
       };
-    });
+    }));
 
     return res.json(relations);
   } catch (error) {
@@ -176,6 +163,7 @@ export const listRelations = async (req: AuthRequest, res: Response) => {
 
 export const getTree = async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;
+  const lang = (req.query.lang as string) || 'mr';
   if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
 
   try {
@@ -183,7 +171,7 @@ export const getTree = async (req: AuthRequest, res: Response) => {
     const raw = await prisma.relation.findMany({
       where: {
         OR: [
-          { createdBy: userId },
+          { createdById: userId },
           {
             status: 'CONFIRMED',
             OR: [
@@ -193,13 +181,16 @@ export const getTree = async (req: AuthRequest, res: Response) => {
           }
         ]
       },
-      include: { fromUser: true, toUser: true },
+      include: {
+        fromUser: true,
+        toUser: true,
+        relationType: { include: { translations: true } }
+      },
       orderBy: { createdAt: 'asc' },
     });
 
-    const relations = raw.map(rel => {
-      const view = resolveRelationForViewer(rel, userId);
-
+    const relations = await Promise.all(raw.map(async rel => {
+      const view = await resolveRelationForViewer(rel, userId, lang);
       let finalToUser = rel.toUser;
       if (rel.fromUserId === userId) {
         finalToUser = resolveNodeForViewer(rel.toUser, rel, userId);
@@ -210,7 +201,7 @@ export const getTree = async (req: AuthRequest, res: Response) => {
         toUser: finalToUser,
         relationType: { label: view.label, code: view.code }
       };
-    });
+    }));
 
     return res.json({ rootUser, relations });
   } catch (error) {
@@ -221,23 +212,27 @@ export const getTree = async (req: AuthRequest, res: Response) => {
 
 export const getRequests = async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;
+  const lang = (req.query.lang as string) || 'mr';
   if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
 
   try {
     const raw = await prisma.relation.findMany({
       where: { toUserId: userId, status: 'PENDING' },
-      include: { fromUser: true, toUser: true },
+      include: {
+        fromUser: true,
+        toUser: true,
+        relationType: { include: { translations: true } }
+      },
       orderBy: { createdAt: 'asc' },
     });
 
-    const pending = raw.map(rel => {
-      const view = resolveRelationForViewer(rel, userId);
-      // Requests are incoming, so I see the sender as they are.
+    const pending = await Promise.all(raw.map(async rel => {
+      const view = await resolveRelationForViewer(rel, userId, lang);
       return {
         ...rel,
         relationType: { label: view.label, code: view.code }
       };
-    });
+    }));
 
     return res.json(pending);
   } catch (error) {
@@ -246,9 +241,6 @@ export const getRequests = async (req: AuthRequest, res: Response) => {
   }
 };
 
-/**
- * Normalize phone local helper
- */
 function normalizePhone(value: string): string {
   if (!value) return '';
   const digits = value.replace(/\D/g, '');
@@ -258,9 +250,9 @@ function normalizePhone(value: string): string {
 
 export const createRelation = async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;
+  const lang = (req.query.lang as string) || 'mr';
   if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
 
-  // customName/PhotoUrl can be passed during creation too ideally, but for now we stick to edit
   const { phone, firstName, lastName, gender, relationTypeCode, sourceUserId, customName, customPhotoUrl } = req.body;
   const fromUserId = sourceUserId || userId;
 
@@ -274,6 +266,15 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
   }
 
   try {
+    const relType = await prisma.relationType.findUnique({
+      where: { code: relationTypeCode },
+      include: { translations: true }
+    });
+
+    if (!relType) {
+      return res.status(400).json({ message: 'Invalid relation type' });
+    }
+
     let relatedUser = await prisma.user.findUnique({ where: { phone: cleanPhone } });
 
     if (!relatedUser) {
@@ -284,7 +285,7 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
           firstName,
           lastName: lastName || null,
           gender: normalizeGender(gender),
-          profileCompleted: false, // Explicitly mark as stub
+          profileCompleted: false,
         },
       });
     }
@@ -303,46 +304,45 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
       },
       update: {
         status: 'PENDING',
-        // If re-adding, update custom fields if provided?
-        // Let's assume we maintain them or update if passed
         ...(customName ? { customName } : {}),
         ...(customPhotoUrl ? { customPhotoUrl } : {}),
-        createdBy: userId, // Claim ownership
+        createdById: userId,
       },
       create: {
         fromUserId,
         toUserId: relatedUser.id,
         relationTypeCode,
-        relationLabel: getRelationLabel(relationTypeCode),
+        category: relType.category,
         status: 'PENDING',
         customName: customName || null,
         customPhotoUrl: customPhotoUrl || null,
-        createdBy: userId, // Set ownership
+        createdById: userId,
       },
       include: { toUser: true, fromUser: true },
     });
 
+    const displayLabel = resolveLabel(relType, lang);
     const authUser = await prisma.user.findUnique({ where: { id: userId } });
+
     await createNotification({
       userId: relatedUser.id,
       type: 'RELATION_REQUEST',
       title: 'New relation request',
-      message: `${authUser?.firstName || 'Someone'} has added you as "${getRelationLabel(relationTypeCode)}".`,
+      message: `${authUser?.firstName || 'Someone'} has added you as "${displayLabel}".`,
       relationId: relation.id,
     });
 
-    // Notify the sender as well so they have a record
     await createNotification({
       userId: userId,
-      type: 'RELATION_REQUEST', // or a new type 'RELATION_SENT'? reusing REQUEST for now or generic message
+      type: 'RELATION_REQUEST',
       title: 'Request Sent',
-      message: `You added ${firstName} as "${getRelationLabel(relationTypeCode)}". Waiting for approval.`,
+      message: `You added ${firstName} as "${displayLabel}". Waiting for approval.`,
       relationId: relation.id,
     });
 
     return res.status(201).json({
       ...relation,
-      relationType: { code: relationTypeCode, label: getRelationLabel(relationTypeCode) }
+      relationType: { code: relationTypeCode, label: displayLabel }
     });
   } catch (error) {
     console.error('create relation error', error);
@@ -358,7 +358,11 @@ export const approveRelation = async (req: AuthRequest, res: Response) => {
   try {
     const relation = await prisma.relation.findUnique({
       where: { id },
-      include: { fromUser: true, toUser: true },
+      include: {
+        fromUser: true,
+        toUser: true,
+        relationType: true
+      },
     });
 
     if (!relation || relation.toUserId !== userId) {
@@ -370,8 +374,10 @@ export const approveRelation = async (req: AuthRequest, res: Response) => {
       data: { status: 'CONFIRMED' },
     });
 
-    // Reciprocal
-    const reciprocalCode = getReciprocalCode(relation.relationTypeCode);
+    // Handle Reciprocal
+    const reciprocalCode = relation.relationType?.reciprocalCode || relation.relationTypeCode;
+    const recType = await prisma.relationType.findUnique({ where: { code: reciprocalCode } });
+
     await prisma.relation.upsert({
       where: {
         fromUserId_toUserId_relationTypeCode: {
@@ -385,9 +391,9 @@ export const approveRelation = async (req: AuthRequest, res: Response) => {
         fromUserId: relation.toUserId,
         toUserId: relation.fromUserId,
         relationTypeCode: reciprocalCode,
-        relationLabel: getRelationLabel(reciprocalCode),
+        category: recType?.category || 'FAMILY',
         status: 'CONFIRMED',
-        createdBy: userId,
+        createdById: userId,
       },
     });
 
@@ -448,9 +454,11 @@ export const updateRelation = async (req: AuthRequest, res: Response) => {
   if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
 
   try {
-    const relation = await prisma.relation.findUnique({ where: { id } });
+    const relation = await prisma.relation.findUnique({
+      where: { id },
+      include: { relationType: true }
+    });
 
-    // I can only edit relations WHERE I AM THE fromUserId (creator)
     if (!relation || relation.fromUserId !== userId) {
       return res.status(403).json({ message: 'Not authorized to edit this relation' });
     }
@@ -461,34 +469,26 @@ export const updateRelation = async (req: AuthRequest, res: Response) => {
     };
 
     if (relationTypeCode) {
-      updateData.relationTypeCode = relationTypeCode;
-      updateData.relationLabel = getRelationLabel(relationTypeCode);
+      const newType = await prisma.relationType.findUnique({ where: { code: relationTypeCode } });
+      if (newType) {
+        updateData.relationTypeCode = relationTypeCode;
+        updateData.category = newType.category;
 
-      // Also update reciprocal relation if it exists (for confirmed/pending)
-      // Note: If status is PENDING, reciprocal might not exist or be relevant yet depending on flow, 
-      // but usually we create them in pairs or at least logic expects consistency.
-      // But actually, for PENDING requests, often only one direction exists until approval?
-      // Check createRelation: it creates ONE direction. Reciprocal is created on APPROVE.
-      // So if status is PENDING, we don't need to update reciprocal because it doesn't exist yet.
-      // If status is CONFIRMED, we MUST update reciprocal.
+        if (relation.status === 'CONFIRMED') {
+          const reciprocalCode = newType.reciprocalCode || relationTypeCode;
+          const recType = await prisma.relationType.findUnique({ where: { code: reciprocalCode } });
 
-      if (relation.status === 'CONFIRMED') {
-        const reciprocalCode = getReciprocalCode(relationTypeCode);
-        await prisma.relation.updateMany({
-          where: {
-            fromUserId: relation.toUserId,
-            toUserId: relation.fromUserId,
-            // We don't filter by code because the old code might be anything if we are changing it.
-            // But safer to assume there is only one active relation between two people?
-            // The unique constraint is [from, to, code].
-            // If we change code, we might clash if another relation exists?
-            // Assuming simple tree for now.
-          },
-          data: {
-            relationTypeCode: reciprocalCode,
-            relationLabel: getRelationLabel(reciprocalCode)
-          }
-        });
+          await prisma.relation.updateMany({
+            where: {
+              fromUserId: relation.toUserId,
+              toUserId: relation.fromUserId,
+            },
+            data: {
+              relationTypeCode: reciprocalCode,
+              category: recType?.category || 'FAMILY'
+            }
+          });
+        }
       }
     }
 
@@ -506,138 +506,114 @@ export const updateRelation = async (req: AuthRequest, res: Response) => {
 
 export const getFullTree = async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;
+  const lang = (req.query.lang as string) || 'mr';
   if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
 
   const maxDepth = Number(req.query.depth) || 10;
-  const category = req.query.category as string; // 'FAMILY' or 'FRIEND'
+  const category = req.query.category as string;
 
   try {
     const rootUser = await prisma.user.findUnique({ where: { id: userId } });
     if (!rootUser) return res.status(404).json({ message: 'User not found' });
 
-    // BFS Queue: { id: string }
+    // 1. Pre-fetch all relation types and spouse mapping
+    const allTypesRaw = await prisma.relationType.findMany({ include: { translations: true } });
+    const typeMap = new Map<string, any>();
+    allTypesRaw.forEach(rt => typeMap.set(rt.code, rt));
+    
+    // Using the same SPOUSE_PAIRS logic as metadata
+    const { SPOUSE_PAIRS } = require('../utils/relationMetadata');
+    const flatSpouseCodes = new Set<string>(SPOUSE_PAIRS.flat());
+
     const visited = new Map<string, number>();
     visited.set(userId, 0);
 
+    const processedRelations = new Set<string>();
+    const allRelations: any[] = [];
+    
     let queue = [userId];
     const nodesByGen = new Map<number, any[]>();
+    nodesByGen.set(0, [{
+      user: rootUser,
+      relation: { id: `root-${userId}`, status: 'ROOT', relationType: { code: 'ROOT', label: 'You' } }
+    }]);
 
     let hop = 0;
     while (queue.length > 0 && hop < maxDepth) {
       const nextQueue = new Set<string>();
 
-      const rawRelations = await prisma.relation.findMany({
+      const rawRelations: any[] = await prisma.relation.findMany({
         where: {
           OR: [
             { fromUserId: { in: queue } },
-            {
-              toUserId: { in: queue },
-              OR: [
-                { status: 'CONFIRMED' },
-                { status: 'PENDING', fromUser: { profileCompleted: false } }
-              ]
-            },
+            { toUserId: { in: queue } },
+            // Only include createdById in the first hop to find disconnected islands
+            ...(hop === 0 ? [{ createdById: userId }] : [])
           ],
         },
-        include: { fromUser: true, toUser: true },
+        include: {
+          fromUser: true,
+          toUser: true,
+          relationType: { include: { translations: true } }
+        },
       });
 
       for (const rel of rawRelations) {
-        let neighborUser;
-        let sourceUserId;
-        let relationCodeToCheck;
-        let isOutgoing = false;
-
-        // Determine Source and Neighbor
-        if (queue.includes(rel.fromUserId)) {
-          // Outgoing: Source -> Neighbor
-          sourceUserId = rel.fromUserId;
-          neighborUser = rel.toUser;
-          relationCodeToCheck = rel.relationTypeCode;
-          isOutgoing = true;
-        } else {
-          // Incoming: Neighbor -> Source
-          sourceUserId = rel.toUserId;
-          neighborUser = rel.fromUser;
-          relationCodeToCheck = rel.relationTypeCode;
-        }
-
+        if (processedRelations.has(rel.id)) continue;
+        if (category && rel.category !== category) continue;
         if (rel.status === 'REJECTED') continue;
 
-        // Filter by category if provided
-        const meta = RELATION_METADATA[relationCodeToCheck];
-        if (category && meta && meta.category !== category) {
-          continue;
-        }
-
-        // Visibility Logic (Strict Private Tree):
-        // 1. Creator: You always see what YOU created (ownership via 'createdBy').
-        // 2. Confirmed Participant: You see relations involving you IF they are accepted.
-        // 3. Hidden: Pending relations involving you that YOU didn't create.
-        // 4. Hidden: Relations between others that YOU didn't create.
-
-        const createdBy = (rel as any).createdBy;
-        // Fallback: If createdBy is null (old data), assume fromUserId is the owner
-        const isCreator = createdBy === userId || (!createdBy && rel.fromUserId === userId);
+        const isCreator = rel.createdById === userId;
         const isParticipant = (rel.fromUserId === userId || rel.toUserId === userId);
         const isConfirmed = rel.status === 'CONFIRMED';
+        if (!isCreator && !(isParticipant && isConfirmed)) continue;
 
-        // Visibility Rule: 
-        // Show if (I created it) OR (I am a participant AND it is confirmed)
-        if (!isCreator && !(isParticipant && isConfirmed)) {
-          continue;
-        }
+        // Follow graph strictly from existing nodes (queue)
+        const sourceId = queue.find(id => id === rel.fromUserId || id === rel.toUserId);
+        if (!sourceId) continue;
 
-        // Hide incoming pending requests directed AT ME from the graph (they belong in Notifications/Requests tab)
-        if (rel.status === 'PENDING' && rel.toUserId === userId && !isCreator) {
-          continue;
-        }
+        const neighborUser = (rel.fromUserId === sourceId) ? rel.toUser : rel.fromUser;
+        const isOutgoing = (rel.fromUserId === sourceId);
+        const targetId = neighborUser.id;
+        const sourceGen = visited.get(sourceId) || 0;
 
-        if (visited.has(neighborUser.id)) continue;
+        // Calculate ROOT-relative perspective
+        const rootView = await resolveRelationForViewer(rel, userId, lang);
+        
+        processedRelations.add(rel.id);
+        allRelations.push({
+          id: rel.id,
+          fromUserId: rel.fromUserId,
+          toUserId: rel.toUserId,
+          relationType: { code: rootView.code, label: rootView.label },
+          direction: isOutgoing ? 'OUTGOING' : 'INCOMING',
+          sourceUserId: sourceId,
+          status: rel.status,
+          customName: rel.customName,
+          customPhotoUrl: rel.customPhotoUrl
+        });
 
-        // Calculate Generation - Use ABSOLUTE canonical levels from metadata
-        // This ensures e.g. all Cousins are on Gen 0, all Uncles on Gen 1, etc.
-        let neighborGen = 0; // Default to root level if unknown
+        // Discovery
+        if (visited.has(targetId)) continue;
+        
+        // Use Root-relative generation
+        const resolvedType = typeMap.get(rootView.code);
+        const neighborGen = resolvedType?.treeLevel ?? 0;
 
-        if (meta) {
-          if (meta.vg === 'UP') neighborGen = meta.level;
-          else if (meta.vg === 'DOWN') neighborGen = -meta.level;
-          else neighborGen = 0;
-        }
+        visited.set(targetId, neighborGen);
+        nextQueue.add(targetId);
 
-        visited.set(neighborUser.id, neighborGen);
-        nextQueue.add(neighborUser.id);
-
-        // Add to result
         if (!nodesByGen.has(neighborGen)) nodesByGen.set(neighborGen, []);
-
-        const view = resolveRelationForViewer(rel, sourceUserId);
-
-        // --- CUSTOM ALIAS LOGIC ---
-        // If I (the viewer of the tree) am the one who created this link, I see my custom names.
-        // Wait, `userId` is the viewer.
-        // If `rel.fromUserId === userId`, then I created it.
-        // So I see `rel.toUser` with MY custom aliases.
-
+        
+        // Name resolution: only apply custom names created by the VIEWER for THEIR OWN relations
         let displayNeighbor = neighborUser;
-        if (isOutgoing && rel.fromUserId === userId) {
-          displayNeighbor = resolveNodeForViewer(neighborUser, rel, userId);
+        if (rel.createdById === userId && rel.toUserId === targetId) {
+           displayNeighbor = resolveNodeForViewer(neighborUser, rel, userId);
         }
 
         nodesByGen.get(neighborGen)!.push({
           user: displayNeighbor,
-          relation: {
-            id: rel.id,
-            fromUserId: rel.fromUserId,
-            toUserId: rel.toUserId,
-            relationType: { code: view.code, label: view.label },
-            direction: isOutgoing ? 'OUTGOING' : 'INCOMING',
-            sourceUserId,
-            status: rel.status,
-            // Include custom fields in relation object for UI to edit if needed
-            customName: rel.customName,
-            customPhotoUrl: rel.customPhotoUrl
-          },
+          relation: allRelations[allRelations.length - 1]
         });
       }
 
@@ -651,44 +627,29 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
     }
     levels.sort((a, b) => a.level - b.level);
 
-    return res.json({ rootUser, levels });
+    return res.json({ rootUser, levels, allRelations });
   } catch (error) {
     console.error('getFullTree error', error);
     return res.status(500).json({ message: 'Internal server error' });
   }
 };
 
-
-/**
- * GET /relations/counts
- * Returns accurate counts of pending / confirmed / rejected relations for the current user.
- *
- * Counting strategy (avoids double-counting reciprocal records):
- *  - PENDING   : requests I initiated that are still waiting  (createdBy = me, status = PENDING)
- *  - CONFIRMED : unique people connected to me                (fromUserId = me, status = CONFIRMED)
- *                Every confirmed pair has a reciprocal so counting outgoing is sufficient.
- *  - REJECTED  : requests I initiated that were rejected      (createdBy = me, status = REJECTED)
- */
 export const getRelationCounts = async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;
   if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
 
   try {
     const [pending, confirmed, rejected] = await Promise.all([
-      // Requests I sent that are still pending
       prisma.relation.count({
-        where: { createdBy: userId, status: 'PENDING' },
+        where: { createdById: userId, status: 'PENDING' },
       }),
-      // Connections I own (outgoing confirmed = one record per unique person)
       prisma.relation.count({
         where: { fromUserId: userId, status: 'CONFIRMED' },
       }),
-      // Requests I sent that were rejected
       prisma.relation.count({
-        where: { createdBy: userId, status: 'REJECTED' },
+        where: { createdById: userId, status: 'REJECTED' },
       }),
     ]);
-
     return res.json({ pending, confirmed, rejected });
   } catch (error) {
     console.error('getRelationCounts error', error);
@@ -703,13 +664,10 @@ export const deleteRelation = async (req: AuthRequest, res: Response) => {
 
   try {
     const relation = await prisma.relation.findUnique({ where: { id } });
-    if (!relation) {
-      return res.status(404).json({ message: 'Relation not found' });
-    }
+    if (!relation) return res.status(404).json({ message: 'Relation not found' });
 
-    // Allow deletion if user is a participant OR the creator
     const isParticipant = relation.fromUserId === userId || relation.toUserId === userId;
-    const isCreator = (relation as any).createdBy === userId;
+    const isCreator = relation.createdById === userId;
 
     if (!isParticipant && !isCreator) {
       return res.status(403).json({ message: 'Not authorized to delete this relation' });

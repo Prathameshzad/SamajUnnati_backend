@@ -1,42 +1,40 @@
 // src/controllers/relationTypeController.ts
 import { Request, Response } from 'express';
-import { RELATION_METADATA } from '../utils/relationMetadata';
-
-type GenderValue = 'MALE' | 'FEMALE' | null;
-
-function normalizeGenderQuery(g?: string | undefined): GenderValue {
-  if (!g) return null;
-  const u = g.trim().toUpperCase();
-  if (u === 'MALE') return 'MALE';
-  if (u === 'FEMALE') return 'FEMALE';
-  return null;
-}
+import prisma from '../lib/prisma';
+import { 
+  RELATION_AXIS_CONFIG, 
+  SPOUSE_PAIRS, 
+  COUSIN_CODES, 
+  COUSIN_PARENT_MAP 
+} from '../utils/relationMetadata';
 
 export const listRelationTypes = async (req: Request, res: Response) => {
-  const genderQuery = normalizeGenderQuery(req.query.gender as string | undefined);
+  const { gender, category } = req.query;
+  const lang = (req.query.lang as string) || 'mr';
 
   try {
-    const allTypes = Object.values(RELATION_METADATA);
+    const where: any = {};
+    if (gender) where.targetGender = { in: [gender, null] };
+    if (category) where.category = category;
 
-    // mimic the DB ID for frontend compatibility if needed, or just send codes
-    // The previous frontend API expected: id, code, label, targetGender, etc.
-    // We'll map it to look similar.
+    const types = await prisma.relationType.findMany({
+      where,
+      include: {
+        translations: true,
+      },
+    });
 
-    let filtered = allTypes;
-    if (genderQuery) {
-      filtered = allTypes.filter(rt => rt.gender === null || rt.gender === genderQuery);
-    }
-
-    const response = filtered.map((rt, index) => ({
-      id: index + 1, // Artificial ID
-      code: rt.code,
-      label: rt.label,
-      targetGender: rt.gender,
-      treeLevel: rt.level,
-      verticalGroup: rt.vg,
-      reciprocalCode: rt.reciprocalCode || null,
-      category: rt.category
-    }));
+    const response = types.map(t => {
+      const trans = t.translations.find(tr => tr.languageCode === lang) || t.translations[0];
+      return {
+        code: t.code,
+        label: trans ? trans.label : t.code,
+        targetGender: t.targetGender,
+        treeLevel: t.treeLevel,
+        reciprocalCode: t.reciprocalCode,
+        category: t.category,
+      };
+    });
 
     return res.json(response);
   } catch (error) {
@@ -46,14 +44,35 @@ export const listRelationTypes = async (req: Request, res: Response) => {
 };
 
 export const getRelationConfig = async (req: Request, res: Response) => {
+  const lang = (req.query.lang as string) || 'mr';
+
   try {
-    const { RELATION_METADATA, SPOUSE_PAIRS, RELATION_AXIS_CONFIG, COUSIN_CODES, COUSIN_PARENT_MAP } = await import('../utils/relationMetadata');
+    // 1. Fetch all relation types and translations from DB to build 'metadata'
+    const allTypes = await prisma.relationType.findMany({
+      include: { translations: true }
+    });
+
+    const metadata: Record<string, any> = {};
+    allTypes.forEach(t => {
+      const trans = t.translations.find(tr => tr.languageCode === lang) || t.translations[0];
+      metadata[t.code] = {
+        code: t.code,
+        label: trans ? trans.label : t.code,
+        gender: t.targetGender,
+        level: t.treeLevel ?? 0,
+        vg: (t.treeLevel ?? 0) > 0 ? 'UP' : (t.treeLevel ?? 0) < 0 ? 'DOWN' : 'SAME',
+        reciprocalCode: t.reciprocalCode,
+        category: t.category,
+      };
+    });
+
+    // 2. Combine with static behavior/config from utils
     return res.json({
-      metadata: RELATION_METADATA,
-      spousePairs: SPOUSE_PAIRS,
+      metadata,
       axisConfig: RELATION_AXIS_CONFIG,
+      spousePairs: SPOUSE_PAIRS,
       cousinCodes: COUSIN_CODES,
-      cousinParentMap: COUSIN_PARENT_MAP
+      cousinParentMap: COUSIN_PARENT_MAP,
     });
   } catch (error) {
     console.error('getRelationConfig error', error);

@@ -1,13 +1,13 @@
 import { Response } from 'express';
 import prisma from '../lib/prisma';
 import { AuthRequest } from '../middleware/authMiddleware';
-import { getRelationLabel } from '../utils/relationMetadata';
 
 export const listNotifications = async (
   req: AuthRequest,
   res: Response
 ): Promise<Response | void> => {
   const userId = req.user?.id;
+  const lang = (req.query.lang as string) || 'mr';
   if (!userId) {
     return res.status(401).json({ message: 'Unauthenticated' });
   }
@@ -27,6 +27,7 @@ export const listNotifications = async (
           include: {
             fromUser: true,
             toUser: true,
+            relationType: { include: { translations: true } }
           },
         },
       },
@@ -36,15 +37,17 @@ export const listNotifications = async (
 
     const notifications = notificationsRaw.map((n) => {
       if (n.relation) {
+        const rt = n.relation.relationType;
+        const trans = rt?.translations.find(t => t.languageCode === lang) || rt?.translations[0];
+        const label = trans ? trans.label : n.relation.relationTypeCode;
+
         return {
           ...n,
           relation: {
             ...n.relation,
             relationType: {
               code: n.relation.relationTypeCode,
-              label:
-                n.relation.relationLabel ||
-                getRelationLabel(n.relation.relationTypeCode),
+              label: label,
             },
           },
         };

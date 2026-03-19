@@ -12,6 +12,7 @@ import relationRoutes from './routes/relationRoutes';
 import relationTypeRoutes from './routes/relationTypeRoutes';
 import notificationRoutes from './routes/notificationRoutes';
 import uploadRoutes from './routes/uploadRoutes';
+import friendRoutes from './routes/friendRoutes';
 
 dotenv.config();
 
@@ -58,6 +59,7 @@ app.use('/api/relations', relationRoutes);
 app.use('/api/relation-types', relationTypeRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/upload', uploadRoutes);
+app.use('/api/friends', friendRoutes);
 
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
