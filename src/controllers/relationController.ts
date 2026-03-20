@@ -256,13 +256,12 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
   const { phone, firstName, lastName, gender, relationTypeCode, sourceUserId, customName, customPhotoUrl } = req.body;
   const fromUserId = sourceUserId || userId;
 
-  if (!phone || !relationTypeCode || !firstName) {
-    return res.status(400).json({ message: 'phone, firstName and relationTypeCode are required' });
-  }
-
-  const cleanPhone = normalizePhone(phone);
-  if (!cleanPhone || cleanPhone.length < 10) {
-    return res.status(400).json({ message: 'Invalid phone number' });
+  let cleanPhone = null;
+  if (phone && String(phone).trim()) {
+      cleanPhone = normalizePhone(phone);
+      if (!cleanPhone || cleanPhone.length < 10) {
+        return res.status(400).json({ message: 'Invalid phone number' });
+      }
   }
 
   try {
@@ -275,7 +274,10 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ message: 'Invalid relation type' });
     }
 
-    let relatedUser = await prisma.user.findUnique({ where: { phone: cleanPhone } });
+    let relatedUser = null;
+    if (cleanPhone) {
+        relatedUser = await prisma.user.findUnique({ where: { phone: cleanPhone } });
+    }
 
     if (!relatedUser) {
       relatedUser = await prisma.user.create({
@@ -324,13 +326,15 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
     const displayLabel = resolveLabel(relType, lang);
     const authUser = await prisma.user.findUnique({ where: { id: userId } });
 
-    await createNotification({
-      userId: relatedUser.id,
-      type: 'RELATION_REQUEST',
-      title: 'New relation request',
-      message: `${authUser?.firstName || 'Someone'} has added you as "${displayLabel}".`,
-      relationId: relation.id,
-    });
+    if (relatedUser.phone) {
+      await createNotification({
+        userId: relatedUser.id,
+        type: 'RELATION_REQUEST',
+        title: 'New relation request',
+        message: `${authUser?.firstName || 'Someone'} has added you as "${displayLabel}".`,
+        relationId: relation.id,
+      });
+    }
 
     await createNotification({
       userId: userId,
