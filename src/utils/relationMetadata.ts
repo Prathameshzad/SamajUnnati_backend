@@ -76,8 +76,8 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
         xAxis: [{ label: 'सासू (Mother-in-law)', code: 'SASU', direction: 'SAME' }],
         yAxis: {
             top: [
-                { label: 'आजोबा', code: 'AJOBA', direction: 'UP' },
-                { label: 'आजी', code: 'AAJI', direction: 'UP' },
+                { label: 'आजी सासरा', code: 'AJI_SASRA', direction: 'UP' },
+                { label: 'आजोबा सासरा', code: 'AJOBA_SASRA', direction: 'UP' },
             ],
             bottom: [
                 // For Male viewers (Wife's side)
@@ -96,8 +96,8 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
         xAxis: [{ label: 'सासरा (Father-in-law)', code: 'SASRA', direction: 'SAME' }],
         yAxis: {
             top: [
-                { label: 'नाना', code: 'NANA', direction: 'UP' },
-                { label: 'नानी', code: 'NANI', direction: 'UP' },
+                { label: 'आजी सासरा', code: 'AJI_SASRA', direction: 'UP' },
+                { label: 'आजोबा सासरा', code: 'AJOBA_SASRA', direction: 'UP' },
             ],
             bottom: [
                 // For Male viewers (Wife's side)
@@ -109,6 +109,103 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
                 { label: 'दीर-छोटे', code: 'DIR_CHOTE', direction: 'DOWN', viewerGender: 'FEMALE' },
                 { label: 'दीर-मोठे', code: 'DIR_MOTHE', direction: 'DOWN', viewerGender: 'FEMALE' },
                 { label: 'नणंद', code: 'NANAND', direction: 'DOWN', viewerGender: 'FEMALE' },
+            ],
+        },
+    },
+    AJI_SASRA: {
+        xAxis: [{ label: 'आजी सासू', code: 'AJI_SASU', direction: 'SAME' }],
+        yAxis: {
+            top: [
+                { label: 'पणजी सासू', code: 'PANAJI_SASU', direction: 'UP' },
+                { label: 'पणजोबा सासरा', code: 'PANJOBA_SASRA', direction: 'UP' },
+            ],
+            bottom: [
+                // For Male viewers (Wife's side)
+                { label: 'सासू (Mother-in-law)', code: 'SASU', direction: 'DOWN' },
+                { label: 'सासरा (Father-in-law)', code: 'SASRA', direction: 'DOWN' },
+                { label: 'मामा सासरा', code: 'MAMA_SASRA', direction: 'DOWN' },
+                { label: 'मामी सासू', code: 'MAMI_SASU', direction: 'DOWN' },
+            ],
+        },
+    },
+    AJOBA_SASU: {
+        xAxis: [{ label: 'आजोबा सासू', code: 'AJOBA_SASU', direction: 'SAME' }],
+        yAxis: {
+            top: [
+                { label: 'पणजी सासू', code: 'PANAJI_SASU', direction: 'UP' },
+                { label: 'पणजोबा सासरा', code: 'PANJOBA_SASRA', direction: 'UP' },
+            ],
+            bottom: [
+                { label: 'सासू (Mother-in-law)', code: 'SASU', direction: 'DOWN' },
+                { label: 'सासरा (Father-in-law)', code: 'SASRA', direction: 'DOWN' },
+                { label: 'मामा सासरा', code: 'MAMA_SASRA', direction: 'DOWN' },
+                { label: 'मामी सासू', code: 'MAMI_SASU', direction: 'DOWN' },
+            ],
+        },
+    },
+    MAMA_SASRA: {
+        xAxis: [{ label: 'मामी सासू', code: 'MAMI_SASU', direction: 'SAME' }],
+        yAxis: {
+            top: [
+                { label: 'आजी सासू', code: 'AJI_SASU', direction: 'UP' },
+                { label: 'आजोबा सासू', code: 'AJOBA_SASU', direction: 'UP' },
+            ],
+            bottom: [
+                { label: 'चुलत दीर', code: 'CHULTA_DIR', direction: 'DOWN' },
+                { label: 'चुलत नणंद', code: 'CHULTA_NANAND', direction: 'DOWN' },
+            ],
+        },
+    },
+    MAMI_SASU: {
+        xAxis: [{ label: 'मामा सासरा', code: 'MAMA_SASRA', direction: 'SAME' }],
+        yAxis: {
+            top: [
+                { label: 'आजी सासू', code: 'AJI_SASU', direction: 'UP' },
+                { label: 'आजोबा सासू', code: 'AJOBA_SASU', direction: 'UP' },
+            ],
+            bottom: [
+                { label: 'चुलत दीर', code: 'CHULTA_DIR', direction: 'DOWN' },
+                { label: 'चुलत नणंद', code: 'CHULTA_NANAND', direction: 'DOWN' },
+            ],
+        },
+    },
+    CHULTA_DIR: {
+        xAxis: [],
+        yAxis: {
+            top: [
+                { label: 'आजी सासू', code: 'AJI_SASU', direction: 'UP' },
+                { label: 'आजोबा सासू', code: 'AJOBA_SASU', direction: 'UP' },
+            ],
+            bottom: [],
+        },
+    },
+    CHULTA_NANAND: {
+        xAxis: [],
+        yAxis: {
+            top: [
+                { label: 'आजी सासू', code: 'AJI_SASU', direction: 'UP' },
+                { label: 'आजोबा सासू', code: 'AJOBA_SASU', direction: 'UP' },
+            ],
+            bottom: [],
+        },
+    },
+    PANAJI_SASU: {
+        xAxis: [{ label: 'पणजोबा सासू', code: 'PANJOBA_SASU', direction: 'SAME' }],
+        yAxis: {
+            top: [],
+            bottom: [
+                { label: 'आजी सासू', code: 'AJI_SASU', direction: 'DOWN' },
+                { label: 'आजोबा सासू', code: 'AJOBA_SASU', direction: 'DOWN' },
+            ],
+        },
+    },
+    PANJOBA_SASRA: {
+        xAxis: [{ label: 'पणजोबा सासू', code: 'PANJOBA_SASU', direction: 'SAME' }],
+        yAxis: {
+            top: [],
+            bottom: [
+                { label: 'आजी सासू', code: 'AJI_SASU', direction: 'DOWN' },
+                { label: 'आजोबा सासू', code: 'AJOBA_SASU', direction: 'DOWN' },
             ],
         },
     },
@@ -652,11 +749,15 @@ export const SPOUSE_PAIRS: [string, string][] = [
     ['MULGA', 'SUN'],
     ['MULGI', 'JAVAI'],
     ['NATU', 'NATASUN'],
-    ['NAAT', 'NAT_JAVAI'],
+    ['NAT_JAVAI', 'NAAT'],
     ['PANTU', 'PANTISUN'],
     ['PANTI', 'PANTU_JAVAI'],
     ['DIR_CHOTE', 'VAHINI'],
     ['DIR_MOTHE', 'VAHINI'],
+    ['AJI_SASRA', 'AJI_SASU'],
+    ['AJOBA_SASRA', 'AJOBA_SASU'],
+    ['MAMA_SASRA', 'MAMI_SASU'],
+    ['PANAJI_SASU', 'PANJOBA_SASRA'],
     ['CHULAT_BHAU', 'VAHINI'],
     ['ATYE_BHAU', 'VAHINI'],
     ['MAV_BHAU', 'VAHINI'],

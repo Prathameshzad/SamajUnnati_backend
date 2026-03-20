@@ -43,6 +43,12 @@ const relationTypes = [
   { code: 'PP_AAJI', category: 'FAMILY', targetGender: 'FEMALE', treeLevel: 4, reciprocalCode: 'PP_NAAT' },
   { code: 'PPP_AJOBA', category: 'FAMILY', targetGender: 'MALE', treeLevel: 5, reciprocalCode: 'PPP_NATU' },
   { code: 'PPP_AAJI', category: 'FAMILY', targetGender: 'FEMALE', treeLevel: 5, reciprocalCode: 'PPP_NAAT' },
+  { code: 'AJOBA_SASRA', category: 'FAMILY', targetGender: 'MALE', treeLevel: 2, reciprocalCode: 'NAT_JAVAI' },
+  { code: 'AJOBA_SASU', category: 'FAMILY', targetGender: 'MALE', treeLevel: 2, reciprocalCode: 'NAT_JAVAI' },
+  { code: 'MAMA_SASRA', category: 'FAMILY', targetGender: 'MALE', treeLevel: 1, reciprocalCode: 'JAVAI' },
+  { code: 'MAMI_SASU', category: 'FAMILY', targetGender: 'FEMALE', treeLevel: 1, reciprocalCode: 'JAVAI' },
+  { code: 'PANAJI_SASU', category: 'FAMILY', targetGender: 'FEMALE', treeLevel: 3, reciprocalCode: 'PANTU_JAVAI' },
+  { code: 'PANJOBA_SASRA', category: 'FAMILY', targetGender: 'MALE', treeLevel: 3, reciprocalCode: 'PANTU_JAVAI' },
 
   // SAME (Generation 0)
   { code: 'NAVRA', category: 'FAMILY', targetGender: 'MALE', treeLevel: 0, reciprocalCode: 'BAYKO' },
@@ -65,6 +71,8 @@ const relationTypes = [
   { code: 'MAMBAHIN', category: 'FAMILY', targetGender: 'FEMALE', treeLevel: 0, reciprocalCode: 'ATYE_BHAU' },
   { code: 'NANAND', category: 'FAMILY', targetGender: 'FEMALE', treeLevel: 0, reciprocalCode: 'VAHINI' },
   { code: 'NANANDOI', category: 'FAMILY', targetGender: 'MALE', treeLevel: 0, reciprocalCode: 'VAHINI' },
+  { code: 'CHULTA_DIR', category: 'FAMILY', targetGender: 'MALE', treeLevel: 0, reciprocalCode: 'VAHINI' },
+  { code: 'CHULTA_NANAND', category: 'FAMILY', targetGender: 'FEMALE', treeLevel: 0, reciprocalCode: 'VAHINI' },
 
   // DOWN (Generation -)
   { code: 'MULGA', category: 'FAMILY', targetGender: 'MALE', treeLevel: -1, reciprocalCode: 'VADIL' },
@@ -125,6 +133,12 @@ const translations = [
   { code: 'PP_AAJI', mr: 'खापर पणजी', en: 'Great-Great Grandmother' },
   { code: 'PPP_AJOBA', mr: 'थोर खापर पणजोबा', en: 'Great-Great-Great Grandfather' },
   { code: 'PPP_AAJI', mr: 'थोर खापर पणजी', en: 'Great-Great-Great Grandmother' },
+  { code: 'AJOBA_SASRA', mr: 'आजोबासासरा', en: 'Grandfather-in-law' },
+  { code: 'AJOBA_SASU', mr: 'आजोबासासू', en: 'Grandfather-in-law' },
+  { code: 'MAMA_SASRA', mr: 'मामासासरा', en: 'Uncle-in-law (Maternal)' },
+  { code: 'MAMI_SASU', mr: 'मामीसासू', en: 'Aunt-in-law (Maternal)' },
+  { code: 'PANAJI_SASU', mr: 'पणजीसासू', en: 'Great-grandmother-in-law' },
+  { code: 'PANJOBA_SASRA', mr: 'पणजोबासासरा', en: 'Great-grandfather-in-law' },
 
   // SAME
   { code: 'NAVRA', mr: 'नवरा', en: 'Husband' },
@@ -147,6 +161,8 @@ const translations = [
   { code: 'MAMBAHIN', mr: 'मामेबहीण', en: 'Maternal Uncle Daughter' },
   { code: 'NANAND', mr: 'नणंद', en: "Husband's Sister" },
   { code: 'NANANDOI', mr: 'नणंदोई', en: "Husband of Nanand" },
+  { code: 'CHULTA_DIR', mr: 'चुलतदीर', en: 'Cousin-in-law brother' },
+  { code: 'CHULTA_NANAND', mr: 'चुलतनणंद', en: 'Cousin-in-law sister' },
 
   // DOWN
   { code: 'MULGA', mr: 'मुलगा', en: 'Son' },
