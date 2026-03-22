@@ -1,6 +1,5 @@
 generator client {
   provider = "prisma-client-js"
-  output   = "../generated/prisma/client"
 }
 
 datasource db {
@@ -8,16 +7,16 @@ datasource db {
 }
 
 model User {
-  id                                  String         @id @default(uuid())
-  phone                               String?        @unique
-  email                               String?        @unique
+  id                                  String               @id @default(uuid())
+  phone                               String?              @unique
+  email                               String?              @unique
   photoUrl                            String?
   address                             String?
   pincode                             String?
   designation                         String?
   dateOfBirth                         DateTime?
-  createdAt                           DateTime       @default(now())
-  updatedAt                           DateTime       @updatedAt
+  createdAt                           DateTime             @default(now())
+  updatedAt                           DateTime             @updatedAt
   gender                              Gender?
   area                                String?
   bloodGroup                          String?
@@ -32,20 +31,20 @@ model User {
   occupationDetails                   String?
   religion                            String?
   whatsapp                            String?
-  profileCompleted                    Boolean        @default(false)
+  profileCompleted                    Boolean              @default(false)
   deletedAt                           DateTime?
   // Social features
-  isPrivate                           Boolean        @default(false)
+  isPrivate                           Boolean              @default(false)
   bio                                 String?
   notifications                       Notification[]
-  Relation_Relation_createdByIdToUser Relation[]     @relation("Relation_createdByIdToUser")
-  relationsFrom                       Relation[]     @relation("UserRelationsFrom")
-  relationsTo                         Relation[]     @relation("UserRelationsTo")
-  sentMessages                        Message[]      @relation("MessageSender")
+  Relation_Relation_createdByIdToUser Relation[]           @relation("Relation_createdByIdToUser")
+  relationsFrom                       Relation[]           @relation("UserRelationsFrom")
+  relationsTo                         Relation[]           @relation("UserRelationsTo")
+  sentMessages                        Message[]            @relation("MessageSender")
   conversationMembers                 ConversationMember[]
   messageReads                        MessageRead[]
-  blockedUsers                        UserBlock[]    @relation("BlockedBy")
-  blockedByUsers                      UserBlock[]    @relation("Blocked")
+  blockedUsers                        UserBlock[]          @relation("BlockedBy")
+  blockedByUsers                      UserBlock[]          @relation("Blocked")
   // Post relations
   posts                               Post[]
   postLikes                           PostLike[]
@@ -55,11 +54,9 @@ model User {
   stories                             Story[]
   storyViews                          StoryView[]
   // Follow relations
-  followers                           Follow[]       @relation("Following")
-  following                           Follow[]       @relation("Follower")
+  followers                           Follow[]             @relation("Following")
+  following                           Follow[]             @relation("Follower")
 
-  @@index([phone])
-  @@index([email])
 }
 
 model RelationType {
@@ -137,14 +134,14 @@ model Notification {
 // ─── POST MODELS ────────────────────────────────────────────────────────────
 
 model Post {
-  id            String        @id @default(uuid())
+  id            String         @id @default(uuid())
   userId        String
   caption       String?
   location      String?
-  createdAt     DateTime      @default(now())
-  updatedAt     DateTime      @updatedAt
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
   deletedAt     DateTime?
-  user          User          @relation(fields: [userId], references: [id])
+  user          User           @relation(fields: [userId], references: [id])
   media         PostMedia[]
   likes         PostLike[]
   comments      PostComment[]
@@ -156,12 +153,12 @@ model Post {
 }
 
 model PostMedia {
-  id        String    @id @default(uuid())
-  postId    String
-  url       String
-  type      MediaType
-  order     Int       @default(0)
-  post      Post      @relation(fields: [postId], references: [id], onDelete: Cascade)
+  id     String    @id @default(uuid())
+  postId String
+  url    String
+  type   MediaType
+  order  Int       @default(0)
+  post   Post      @relation(fields: [postId], references: [id], onDelete: Cascade)
 
   @@index([postId])
 }
@@ -196,13 +193,13 @@ model PostComment {
 }
 
 model PostShare {
-  id           String   @id @default(uuid())
-  postId       String
-  userId       String
-  sharedTo     String?
-  createdAt    DateTime @default(now())
-  post         Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
-  user         User     @relation(fields: [userId], references: [id])
+  id        String   @id @default(uuid())
+  postId    String
+  userId    String
+  sharedTo  String?
+  createdAt DateTime @default(now())
+  post      Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id])
 
   @@index([postId])
 }
@@ -296,10 +293,10 @@ enum FollowStatus {
 
 model Conversation {
   id          String               @id @default(uuid())
-  name        String?              // For groups
-  photoUrl    String?              // Group photo
+  name        String? // For groups
+  photoUrl    String? // Group photo
   isGroup     Boolean              @default(false)
-  category    RelationCategory     // FAMILY or FRIEND
+  category    RelationCategory // FAMILY or FRIEND
   createdById String
   createdAt   DateTime             @default(now())
   updatedAt   DateTime             @updatedAt
@@ -328,9 +325,9 @@ model Message {
   id             String        @id @default(uuid())
   conversationId String
   senderId       String
-  content        String?       // Text message
-  mediaUrl       String?       // Photo/video URL
-  mediaType      MediaType?    // PHOTO, VIDEO, etc.
+  content        String? // Text message
+  mediaUrl       String? // Photo/video URL
+  mediaType      MediaType? // PHOTO, VIDEO, etc.
   type           MessageType   @default(TEXT)
   deletedAt      DateTime?
   createdAt      DateTime      @default(now())
@@ -373,12 +370,12 @@ enum MediaType {
 }
 
 model UserBlock {
-  id          String   @id @default(uuid())
-  blockerId   String
-  blockedId   String
-  createdAt   DateTime @default(now())
-  blocker     User     @relation("BlockedBy", fields: [blockerId], references: [id])
-  blocked     User     @relation("Blocked", fields: [blockedId], references: [id])
+  id        String   @id @default(uuid())
+  blockerId String
+  blockedId String
+  createdAt DateTime @default(now())
+  blocker   User     @relation("BlockedBy", fields: [blockerId], references: [id])
+  blocked   User     @relation("Blocked", fields: [blockedId], references: [id])
 
   @@unique([blockerId, blockedId])
   @@index([blockerId])
