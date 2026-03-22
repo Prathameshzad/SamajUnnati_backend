@@ -13,6 +13,10 @@ import relationTypeRoutes from './routes/relationTypeRoutes';
 import notificationRoutes from './routes/notificationRoutes';
 import uploadRoutes from './routes/uploadRoutes';
 import friendRoutes from './routes/friendRoutes';
+import messageRoutes from './routes/messageRoutes';
+import postRoutes from './routes/postRoutes';
+import storyRoutes from './routes/storyRoutes';
+import followRoutes from './routes/followRoutes';
 
 dotenv.config();
 
@@ -31,9 +35,8 @@ app.use(express.json());
 
 // JSON Error Handler
 app.use((err: any, req: Request, res: Response, next: NextFunction) => {
-  if (err instanceof SyntaxError && 'status' in err && err.status === 400 && 'body' in err) {
+  if (err instanceof SyntaxError && 'status' in err && (err as any).status === 400 && 'body' in err) {
     console.error('JSON Syntax Error detected:', err.message);
-    console.error('Malformed Request Body Fragment:', (err as any).body.slice(0, 100));
     return res.status(400).json({ status: 'error', message: 'Invalid JSON body' });
   }
   next(err);
@@ -60,11 +63,16 @@ app.use('/api/relation-types', relationTypeRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/upload', uploadRoutes);
 app.use('/api/friends', friendRoutes);
+app.use('/api/messages', messageRoutes);
+app.use('/api/posts', postRoutes);
+app.use('/api/stories', storyRoutes);
+app.use('/api/follow', followRoutes);
 
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
+app.use('/uploads/media', express.static(path.join(process.cwd(), 'uploads', 'media')));
 
 const server = http.createServer(app);
-const io = initSocket(server);
+initSocket(server);
 
 server.listen(PORT, () => {
   console.log(`MySociety backend running on port ${PORT}`);

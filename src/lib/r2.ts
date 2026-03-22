@@ -7,6 +7,7 @@ const accountId = process.env.CLOUDFLARE_R2_ACCOUNT_ID;
 const accessKeyId = process.env.CLOUDFLARE_R2_ACCESS_KEY_ID;
 const secretAccessKey = process.env.CLOUDFLARE_R2_SECRET_ACCESS_KEY;
 const bucketName = process.env.CLOUDFLARE_R2_BUCKET_NAME;
+const publicUrl = process.env.CLOUDFLARE_R2_PUBLIC_URL || 'https://pub-9b884c9aeb244346b682c31c6d7be9d4.r2.dev';
 
 if (!accountId || !accessKeyId || !secretAccessKey || !bucketName) {
   console.warn(
@@ -59,6 +60,6 @@ export async function uploadProfileImageToR2(
     })
   );
 
-  // Public-style URL
-  return `${endpoint}/${bucketName}/${key}`;
+  // Return the public URL for the frontend to easily display
+  return `${publicUrl.replace(/\/$/, '')}/${key}`;
 }

@@ -34,10 +34,29 @@ model User {
   whatsapp                            String?
   profileCompleted                    Boolean        @default(false)
   deletedAt                           DateTime?
+  // Social features
+  isPrivate                           Boolean        @default(false)
+  bio                                 String?
   notifications                       Notification[]
   Relation_Relation_createdByIdToUser Relation[]     @relation("Relation_createdByIdToUser")
   relationsFrom                       Relation[]     @relation("UserRelationsFrom")
   relationsTo                         Relation[]     @relation("UserRelationsTo")
+  sentMessages                        Message[]      @relation("MessageSender")
+  conversationMembers                 ConversationMember[]
+  messageReads                        MessageRead[]
+  blockedUsers                        UserBlock[]    @relation("BlockedBy")
+  blockedByUsers                      UserBlock[]    @relation("Blocked")
+  // Post relations
+  posts                               Post[]
+  postLikes                           PostLike[]
+  postComments                        PostComment[]
+  postShares                          PostShare[]
+  // Story relations
+  stories                             Story[]
+  storyViews                          StoryView[]
+  // Follow relations
+  followers                           Follow[]       @relation("Following")
+  following                           Follow[]       @relation("Follower")
 
   @@index([phone])
   @@index([email])
@@ -102,15 +121,141 @@ model Notification {
   title      String
   message    String
   relationId String?
+  postId     String?
   state      NotificationState @default(UNREAD)
   createdAt  DateTime          @default(now())
   readAt     DateTime?
   relation   Relation?         @relation(fields: [relationId], references: [id])
+  post       Post?             @relation(fields: [postId], references: [id])
   user       User              @relation(fields: [userId], references: [id])
 
   @@index([userId, state, createdAt])
   @@index([relationId])
+  @@index([postId])
 }
+
+// ─── POST MODELS ────────────────────────────────────────────────────────────
+
+model Post {
+  id            String        @id @default(uuid())
+  userId        String
+  caption       String?
+  location      String?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  deletedAt     DateTime?
+  user          User          @relation(fields: [userId], references: [id])
+  media         PostMedia[]
+  likes         PostLike[]
+  comments      PostComment[]
+  shares        PostShare[]
+  notifications Notification[]
+
+  @@index([userId, createdAt])
+  @@index([createdAt])
+}
+
+model PostMedia {
+  id        String    @id @default(uuid())
+  postId    String
+  url       String
+  type      MediaType
+  order     Int       @default(0)
+  post      Post      @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@index([postId])
+}
+
+model PostLike {
+  id        String   @id @default(uuid())
+  postId    String
+  userId    String
+  createdAt DateTime @default(now())
+  post      Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id])
+
+  @@unique([postId, userId])
+  @@index([postId])
+}
+
+model PostComment {
+  id        String        @id @default(uuid())
+  postId    String
+  userId    String
+  content   String
+  parentId  String?
+  createdAt DateTime      @default(now())
+  deletedAt DateTime?
+  post      Post          @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user      User          @relation(fields: [userId], references: [id])
+  parent    PostComment?  @relation("CommentReplies", fields: [parentId], references: [id])
+  replies   PostComment[] @relation("CommentReplies")
+
+  @@index([postId, createdAt])
+  @@index([parentId])
+}
+
+model PostShare {
+  id           String   @id @default(uuid())
+  postId       String
+  userId       String
+  sharedTo     String?
+  createdAt    DateTime @default(now())
+  post         Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user         User     @relation(fields: [userId], references: [id])
+
+  @@index([postId])
+}
+
+// ─── STORY MODELS ────────────────────────────────────────────────────────────
+
+model Story {
+  id        String      @id @default(uuid())
+  userId    String
+  mediaUrl  String
+  mediaType MediaType
+  caption   String?
+  expiresAt DateTime
+  createdAt DateTime    @default(now())
+  deletedAt DateTime?
+  user      User        @relation(fields: [userId], references: [id])
+  views     StoryView[]
+
+  @@index([userId, expiresAt])
+  @@index([expiresAt])
+}
+
+model StoryView {
+  id       String   @id @default(uuid())
+  storyId  String
+  userId   String
+  viewedAt DateTime @default(now())
+  story    Story    @relation(fields: [storyId], references: [id], onDelete: Cascade)
+  viewer   User     @relation(fields: [userId], references: [id])
+
+  @@unique([storyId, userId])
+  @@index([storyId])
+}
+
+// ─── FOLLOW MODELS ───────────────────────────────────────────────────────────
+
+model Follow {
+  id          String       @id @default(uuid())
+  followerId  String
+  followingId String
+  status      FollowStatus @default(PENDING)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  follower    User         @relation("Follower", fields: [followerId], references: [id])
+  following   User         @relation("Following", fields: [followingId], references: [id])
+
+  @@unique([followerId, followingId])
+  @@index([followerId])
+  @@index([followingId])
+  @@index([status])
+}
+
+// ─── ENUMS ───────────────────────────────────────────────────────────────────
 
 enum Gender {
   MALE
@@ -132,9 +277,110 @@ enum NotificationType {
   RELATION_REQUEST
   RELATION_APPROVED
   RELATION_REJECTED
+  POST_LIKE
+  POST_COMMENT
+  POST_SHARE
+  FOLLOW_REQUEST
+  FOLLOW_ACCEPTED
 }
 
 enum NotificationState {
   UNREAD
   READ
+}
+
+enum FollowStatus {
+  PENDING
+  ACCEPTED
+}
+
+model Conversation {
+  id          String               @id @default(uuid())
+  name        String?              // For groups
+  photoUrl    String?              // Group photo
+  isGroup     Boolean              @default(false)
+  category    RelationCategory     // FAMILY or FRIEND
+  createdById String
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+  members     ConversationMember[]
+  messages    Message[]
+
+  @@index([createdById])
+  @@index([category])
+}
+
+model ConversationMember {
+  id             String       @id @default(uuid())
+  conversationId String
+  userId         String
+  role           MemberRole   @default(MEMBER)
+  joinedAt       DateTime     @default(now())
+  lastReadAt     DateTime?
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id])
+
+  @@unique([conversationId, userId])
+  @@index([userId])
+}
+
+model Message {
+  id             String        @id @default(uuid())
+  conversationId String
+  senderId       String
+  content        String?       // Text message
+  mediaUrl       String?       // Photo/video URL
+  mediaType      MediaType?    // PHOTO, VIDEO, etc.
+  type           MessageType   @default(TEXT)
+  deletedAt      DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  conversation   Conversation  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender         User          @relation("MessageSender", fields: [senderId], references: [id])
+  reads          MessageRead[]
+
+  @@index([conversationId, createdAt])
+  @@index([senderId])
+}
+
+model MessageRead {
+  id        String   @id @default(uuid())
+  messageId String
+  userId    String
+  readAt    DateTime @default(now())
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id])
+
+  @@unique([messageId, userId])
+  @@index([userId])
+}
+
+enum MemberRole {
+  ADMIN
+  MEMBER
+}
+
+enum MessageType {
+  TEXT
+  MEDIA
+  SYSTEM
+}
+
+enum MediaType {
+  PHOTO
+  VIDEO
+  DOCUMENT
+}
+
+model UserBlock {
+  id          String   @id @default(uuid())
+  blockerId   String
+  blockedId   String
+  createdAt   DateTime @default(now())
+  blocker     User     @relation("BlockedBy", fields: [blockerId], references: [id])
+  blocked     User     @relation("Blocked", fields: [blockedId], references: [id])
+
+  @@unique([blockerId, blockedId])
+  @@index([blockerId])
+  @@index([blockedId])
 }

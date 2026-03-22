@@ -68,7 +68,9 @@ export const checkPhone = async (
     }
 
     // Trigger OTP send
-    await OtpService.sendOtp(user.phone);
+    if (user.phone) {
+      await OtpService.sendOtp(user.phone);
+    }
 
     return res.json({
       exists: true,
@@ -257,7 +259,7 @@ export const registerUser = async (
         },
       });
 
-      const token = signAuthToken({ userId: user.id, phone: user.phone });
+      const token = signAuthToken({ userId: user.id, phone: user.phone || normalizedPhone });
       return res.status(200).json({ token, user });
     }
 
@@ -304,7 +306,7 @@ export const registerUser = async (
       },
     });
 
-    const token = signAuthToken({ userId: user.id, phone: user.phone });
+    const token = signAuthToken({ userId: user.id, phone: user.phone || normalizedPhone });
 
     return res.status(201).json({ token, user });
   } catch (error) {
@@ -341,7 +343,7 @@ export const verifyOtp = async (req: Request, res: Response) => {
   // If valid, check if user exists to return token
   const user = await prisma.user.findUnique({ where: { phone: normalized } });
   if (user && user.profileCompleted) {
-    const token = signAuthToken({ userId: user.id, phone: user.phone });
+    const token = signAuthToken({ userId: user.id, phone: user.phone || normalized });
     return res.json({ verified: true, exists: true, token, user });
   }
 
