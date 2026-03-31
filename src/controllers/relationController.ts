@@ -253,11 +253,13 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
   const lang = (req.query.lang as string) || 'mr';
   if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
 
-  const { phone, firstName, lastName, gender, relationTypeCode, sourceUserId, customName, customPhotoUrl } = req.body;
+  const { phone, firstName, lastName, gender, relationTypeCode, sourceUserId, customName, customPhotoUrl, isAlive } = req.body;
   const fromUserId = sourceUserId || userId;
+  
+  const isPersonAlive = isAlive !== undefined ? (String(isAlive) === 'true') : true;
 
   let cleanPhone = null;
-  if (phone && String(phone).trim()) {
+  if (isPersonAlive && phone && String(phone).trim()) {
       cleanPhone = normalizePhone(phone);
       if (!cleanPhone || cleanPhone.length < 10) {
         return res.status(400).json({ message: 'Invalid phone number' });
@@ -271,7 +273,7 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
     });
 
     if (!relType) {
-      return res.status(400).json({ message: 'Invalid relation type' });
+      return res.status(400).json({ message: `Invalid relation type: ${relationTypeCode}` });
     }
 
     let relatedUser = null;
@@ -286,8 +288,9 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
           whatsapp: cleanPhone,
           firstName,
           lastName: lastName || null,
-          gender: normalizeGender(gender),
+          gender: normalizeGender(gender || relType.targetGender),
           profileCompleted: false,
+          isAlive: isPersonAlive,
         },
       });
     }
@@ -453,14 +456,14 @@ export const rejectRelation = async (req: AuthRequest, res: Response) => {
 export const updateRelation = async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;
   const { id } = req.params;
-  const { customName, customPhotoUrl, relationTypeCode } = req.body;
+  const { customName, customPhotoUrl, relationTypeCode, phone } = req.body;
 
   if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
 
   try {
     const relation = await prisma.relation.findUnique({
       where: { id },
-      include: { relationType: true }
+      include: { relationType: true, toUser: true }
     });
 
     if (!relation || relation.fromUserId !== userId) {
@@ -472,36 +475,18 @@ export const updateRelation = async (req: AuthRequest, res: Response) => {
       customPhotoUrl: customPhotoUrl !== undefined ? customPhotoUrl : relation.customPhotoUrl
     };
 
-    if (relationTypeCode) {
-      const newType = await prisma.relationType.findUnique({ where: { code: relationTypeCode } });
-      if (newType) {
-        updateData.relationTypeCode = relationTypeCode;
-        updateData.category = newType.category;
+    // ── Phone number change ──────────────────────────────────────
+    let phoneChanged = false; // Disabled by user request: Phone numbers cannot be edited.
 
-        if (relation.status === 'CONFIRMED') {
-          const reciprocalCode = newType.reciprocalCode || relationTypeCode;
-          const recType = await prisma.relationType.findUnique({ where: { code: reciprocalCode } });
-
-          await prisma.relation.updateMany({
-            where: {
-              fromUserId: relation.toUserId,
-              toUserId: relation.fromUserId,
-            },
-            data: {
-              relationTypeCode: reciprocalCode,
-              category: recType?.category || 'FAMILY'
-            }
-          });
-        }
-      }
-    }
-
+    // ── Relation type change ─────────────────────────────────────
+    // Disabled by user request: User can only update names now.
+    
     const updated = await prisma.relation.update({
       where: { id },
       data: updateData
     });
 
-    return res.json(updated);
+    return res.json({ ...updated, phoneChanged });
   } catch (error) {
     console.error('update relation error', error);
     return res.status(500).json({ message: 'Internal server error' });
@@ -594,15 +579,17 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
           sourceUserId: sourceId,
           status: rel.status,
           customName: rel.customName,
-          customPhotoUrl: rel.customPhotoUrl
+          customPhotoUrl: rel.customPhotoUrl,
+          createdById: rel.createdById
         });
 
         // Discovery
         if (visited.has(targetId)) continue;
         
-        // Use Root-relative generation
+        // Use Cumulative generation relative to source
         const resolvedType = typeMap.get(rootView.code);
-        const neighborGen = resolvedType?.treeLevel ?? 0;
+        const levelDelta = resolvedType?.treeLevel ?? 0;
+        const neighborGen = sourceGen + levelDelta;
 
         visited.set(targetId, neighborGen);
         nextQueue.add(targetId);
@@ -667,7 +654,10 @@ export const deleteRelation = async (req: AuthRequest, res: Response) => {
   if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
 
   try {
-    const relation = await prisma.relation.findUnique({ where: { id } });
+    const relation = await prisma.relation.findUnique({
+      where: { id },
+      include: { fromUser: true }
+    });
     if (!relation) return res.status(404).json({ message: 'Relation not found' });
 
     const isParticipant = relation.fromUserId === userId || relation.toUserId === userId;
@@ -675,6 +665,20 @@ export const deleteRelation = async (req: AuthRequest, res: Response) => {
 
     if (!isParticipant && !isCreator) {
       return res.status(403).json({ message: 'Not authorized to delete this relation' });
+    }
+
+    // If CONFIRMED – mark the reciprocal as REJECTED so the other person sees it
+    if (relation.status === 'CONFIRMED') {
+      await prisma.relation.updateMany({
+        where: { fromUserId: relation.toUserId, toUserId: relation.fromUserId },
+        data: { status: 'REJECTED' }
+      });
+      await createNotification({
+        userId: relation.toUserId,
+        type: 'RELATION_REJECTED',
+        title: 'Connection removed',
+        message: `${relation.fromUser?.firstName || 'Someone'} has removed you from their family tree.`,
+      });
     }
 
     await prisma.relation.delete({ where: { id } });

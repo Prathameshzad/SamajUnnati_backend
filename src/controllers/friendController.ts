@@ -127,6 +127,7 @@ export const getFriendTree = async (req: AuthRequest, res: Response) => {
             direction: isOutgoing ? 'OUTGOING' : 'INCOMING',
             sourceUserId,
             status: rel.status,
+            category: rel.category,
             customName: rel.customName,
             customPhotoUrl: rel.customPhotoUrl
           }
@@ -231,11 +232,13 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
   const lang = (req.query.lang as string) || 'mr';
   if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
 
-  const { phone, firstName, lastName, gender, relationTypeCode, sourceUserId, customName, customPhotoUrl } = req.body;
+  const { phone, firstName, lastName, gender, relationTypeCode, sourceUserId, customName, customPhotoUrl, isAlive } = req.body;
   console.log('DEBUG: createFriend. sourceUserId:', sourceUserId, 'userId:', userId);
 
+  const isPersonAlive = isAlive !== undefined ? (String(isAlive) === 'true') : true;
+
   let cleanPhone = null;
-  if (phone && String(phone).trim()) {
+  if (isPersonAlive && phone && String(phone).trim()) {
       cleanPhone = normalizePhone(phone);
       if (!cleanPhone || cleanPhone.length < 10) {
         return res.status(400).json({ message: 'Invalid phone number' });
@@ -266,6 +269,7 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
           lastName: lastName || null,
           gender: normalizeGender(gender),
           profileCompleted: false,
+          isAlive: isPersonAlive,
         },
       });
     }

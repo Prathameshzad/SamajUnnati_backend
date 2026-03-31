@@ -49,6 +49,9 @@ const relationTypes = [
   { code: 'MAMI_SASU', category: 'FAMILY', targetGender: 'FEMALE', treeLevel: 1, reciprocalCode: 'JAVAI' },
   { code: 'PANAJI_SASU', category: 'FAMILY', targetGender: 'FEMALE', treeLevel: 3, reciprocalCode: 'PANTU_JAVAI' },
   { code: 'PANJOBA_SASRA', category: 'FAMILY', targetGender: 'MALE', treeLevel: 3, reciprocalCode: 'PANTU_JAVAI' },
+  { code: 'CHULAT_SASRA', category: 'FAMILY', targetGender: 'MALE', treeLevel: 1, reciprocalCode: 'PUTAN_JAVAI' },
+  { code: 'ATYA_SASU', category: 'FAMILY', targetGender: 'FEMALE', treeLevel: 1, reciprocalCode: 'BHOCHA_JAVAI' },
+  { code: 'MAVAS_SASU', category: 'FAMILY', targetGender: 'FEMALE', treeLevel: 1, reciprocalCode: 'BHOCHA_JAVAI' },
 
   // SAME (Generation 0)
   { code: 'NAVRA', category: 'FAMILY', targetGender: 'MALE', treeLevel: 0, reciprocalCode: 'BAYKO' },
@@ -139,6 +142,9 @@ const translations = [
   { code: 'MAMI_SASU', mr: 'मामीसासू', en: 'Aunt-in-law (Maternal)' },
   { code: 'PANAJI_SASU', mr: 'पणजीसासू', en: 'Great-grandmother-in-law' },
   { code: 'PANJOBA_SASRA', mr: 'पणजोबासासरा', en: 'Great-grandfather-in-law' },
+  { code: 'CHULAT_SASRA', mr: 'चुलत सासरा', en: 'Paternal Uncle-in-law' },
+  { code: 'ATYA_SASU', mr: 'आत्या सासू', en: 'Paternal Aunt-in-law' },
+  { code: 'MAVAS_SASU', mr: 'मावस सासू', en: 'Maternal Aunt-in-law' },
 
   // SAME
   { code: 'NAVRA', mr: 'नवरा', en: 'Husband' },

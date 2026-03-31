@@ -32,6 +32,7 @@ model User {
   religion                            String?
   whatsapp                            String?
   profileCompleted                    Boolean              @default(false)
+  isAlive                             Boolean              @default(true)
   deletedAt                           DateTime?
   // Social features
   isPrivate                           Boolean              @default(false)
