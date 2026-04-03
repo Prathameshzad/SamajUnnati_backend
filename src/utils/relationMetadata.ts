@@ -1,4 +1,4 @@
-// src/utils/relationMetadata.ts
+﻿// src/utils/relationMetadata.ts
 
 /**
  * Axis configurations for different relation codes.
@@ -32,13 +32,11 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
           label: "भाऊ (Brother)",
           code: "BHAU",
           direction: "SAME",
-          triggerGender: "MALE",
         },
         {
           label: "बहीण (Sister)",
           code: "BAHIN",
           direction: "SAME",
-          triggerGender: "MALE",
         },
         { label: "मित्र (Friend)", code: "MITRA", direction: "SAME" },
       ],
@@ -83,13 +81,11 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
           label: "मेव्हणा",
           code: "MEVHANA",
           direction: "SAME",
-          triggerGender: "MALE",
         },
         {
           label: "मेव्हणी",
           code: "MEVHANI",
           direction: "SAME",
-          triggerGender: "FEMALE",
         },
       ],
     },
@@ -123,13 +119,11 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
           label: "काका",
           code: "KAKA",
           direction: "SAME",
-          triggerGender: "MALE",
         },
         {
           label: "आत्या",
           code: "AATYA",
           direction: "SAME",
-          triggerGender: "FEMALE",
         },
       ],
       right: [{ label: "आई (Mother)", code: "AAI", direction: "SAME" }],
@@ -153,13 +147,11 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
           label: "मामा",
           code: "MAMA",
           direction: "SAME",
-          triggerGender: "MALE",
         },
         {
           label: "मावशी",
           code: "MAVSHI",
           direction: "SAME",
-          triggerGender: "FEMALE",
         },
       ],
     },
@@ -181,13 +173,11 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
           label: "चुलत सासरा (Father-in-law)",
           code: "CHULAT_SASRA",
           direction: "SAME",
-          triggerGender: "MALE",
         },
         {
           label: "आत्या सासू",
           code: "ATYA_SASU",
           direction: "SAME",
-          triggerGender: "FEMALE",
         },
       ],
       right: [
@@ -257,13 +247,11 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
           label: "मामा सासरा",
           code: "MAMA_SASRA",
           direction: "SAME",
-          triggerGender: "MALE",
         },
         {
           label: "मावस सासू",
           code: "MAVAS_SASU",
           direction: "SAME",
-          triggerGender: "FEMALE",
         },
       ],
     },
@@ -444,13 +432,11 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
           label: "भाऊ (Brother)",
           code: "BHAU",
           direction: "SAME",
-          triggerGender: "MALE",
         },
         {
           label: "बहीण (Sister)",
           code: "BAHIN",
           direction: "SAME",
-          triggerGender: "FEMALE",
         },
       ],
       right: [{ label: "वहिनी", code: "VAHINI", direction: "SAME" }],
@@ -471,13 +457,11 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
           label: "भाऊ (Brother)",
           code: "BHAU",
           direction: "SAME",
-          triggerGender: "MALE",
         },
         {
           label: "बहीण (Sister)",
           code: "BAHIN",
           direction: "SAME",
-          triggerGender: "FEMALE",
         },
       ],
     },
@@ -522,13 +506,11 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
           label: "मुलगा",
           code: "MULGA",
           direction: "SAME",
-          triggerGender: "MALE",
         },
         {
           label: "मुलगी",
           code: "MULGI",
           direction: "SAME",
-          triggerGender: "FEMALE",
         },
       ],
       right: [{ label: "सून", code: "SUN", direction: "SAME" }],
@@ -549,13 +531,13 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
           label: "मुलगा",
           code: "MULGA",
           direction: "SAME",
-          triggerGender: "MALE",
+
         },
         {
           label: "मुलगी",
           code: "MULGI",
           direction: "SAME",
-          triggerGender: "FEMALE",
+
         },
       ],
     },
@@ -574,19 +556,16 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
           label: "मामा",
           code: "MAMA",
           direction: "SAME",
-          triggerGender: "MALE",
         },
         {
           label: "मावशी",
           code: "MAVSHI",
           direction: "SAME",
-          triggerGender: "FEMALE",
         },
         {
           label: "आई",
           code: "AAI",
           direction: "SAME",
-          triggerGender: "FEMALE",
         },
       ],
       right: [{ label: "मामी", code: "MAMI", direction: "SAME" }],
@@ -700,19 +679,16 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
           label: "वडील",
           code: "VADIL",
           direction: "SAME",
-          triggerGender: "MALE",
         },
         {
           label: "काका",
           code: "KAKA",
           direction: "SAME",
-          triggerGender: "MALE",
         },
         {
           label: "आत्या",
           code: "AATYA",
           direction: "SAME",
-          triggerGender: "FEMALE",
         },
       ],
       right: [{ label: "काकी", code: "KAKI", direction: "SAME" }],
@@ -1405,6 +1381,7 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
   },
 };
 
+
 export const SPOUSE_PAIRS: [string, string][] = [
   ["VADIL", "AAI"],
   ["AJOBA", "AAJI"],
@@ -1460,4 +1437,86 @@ export const COUSIN_PARENT_MAP: Record<string, string[]> = {
   CHULAT_BAHIN: ["KAKA", "KAKI"],
   ATYE_BHAU: ["AATYA", "FUA"],
   ATYE_BAHIN: ["AATYA", "FUA"],
+};
+
+/**
+ * Canonical generational level for each relation code relative to ROOT (ROOT = 0).
+ * Positive = above root (ancestors/parents), Negative = below root (descendants/children).
+ *
+ * Level 0 (ROOT row): ROOT + BAYKO/NAVRA only.
+ * Level 1 (sibling row): BHAU, BAHIN, cousins, in-law siblings.
+ * Level 2 (parent row): VADIL, AAI, KAKA, MAMA, SASRA, SASU, etc.
+ * Level 3+: grandparents and above.
+ */
+export const RELATION_LEVEL_MAP: Record<string, number> = {
+  PPP_AJOBA: 6, PPP_AAJI: 6,
+  PP_AJOBA: 5, PP_AAJI: 5,
+  PANJOBA: 4, PANAAJI: 4, PANAJI_SASU: 4, PANJOBA_SASRA: 4,
+  AJOBA: 3, AAJI: 3, NANA: 3, NANI: 3,
+  AJI_SASRA: 3, AJI_SASU: 3, AJOBA_SASRA: 3, AJOBA_SASU: 3,
+  VADIL: 2, AAI: 2, SAVATR_VADIL: 2, SAVATR_AAI: 2,
+  KAKA: 2, KAKI: 2, MAMA: 2, MAMI: 2, AATYA: 2, FUA: 2,
+  MAVSHI: 2, MAVSA: 2, CHULTA: 2, CHULTI: 2,
+  SASRA: 2, SASU: 2, MAMA_SASRA: 2, MAMI_SASU: 2,
+  CHULAT_SASRA: 2, ATYA_SASU: 2, MAVAS_SASU: 2,
+  BHAU: 1, BAHIN: 1, VAHINI: 1, DAJI: 1,
+  MEVHANA: 1, MEVHANI: 1, DIR_CHOTE: 1, DIR_MOTHE: 1,
+  NANAND: 1, NANANDOI: 1, CHULAT_BHAU: 1, CHULAT_BAHIN: 1,
+  ATYE_BHAU: 1, ATYE_BAHIN: 1, MAV_BHAU: 1, MAV_BAHIN: 1,
+  MAMBHAU: 1, MAMBAHIN: 1, CHULTA_DIR: 1, CHULTA_NANAND: 1,
+  MITRA: 1, MAITRIN: 1,
+  NAVRA: 0, BAYKO: 0,
+  MULGA: -1, MULGI: -1, SAVATR_MULGA: -1, SAVATR_MULGI: -1,
+  SUN: -1, JAVAI: -1, PUTANYA: -1, PUTANI: -1, BHACHA: -1, BHACHI: -1,
+  NATU: -2, NAAT: -2, NATASUN: -2, NAT_JAVAI: -2,
+  PANTU: -3, PANTI: -3, PANTISUN: -3, PANTU_JAVAI: -3,
+  PP_NATU: -4, PP_NAAT: -4,
+  PPP_NATU: -5, PPP_NAAT: -5,
+};
+
+/**
+ * Canonical horizontal ordering weight for each relation code.
+ * Used by the frontend layout engine to position nodes left/right within a row.
+ *
+ * Convention (within each generational row):
+ *   - VADIL's side (paternal): negative values -> LEFT of center
+ *   - AAI's side (maternal): positive values -> RIGHT of center
+ *   - ROOT itself = 0
+ *   - Couples: husband gets value N, wife gets N+1
+ */
+export const RELATION_X_ORDER: Record<string, number> = {
+  // Gen 0 (root row) - SELF + SPOUSE only
+  NAVRA: 10, BAYKO: 20,
+
+  // Gen +1 (sibling row) - LEFT = biological, RIGHT = in-law
+  ATYE_BHAU: -50, ATYE_BAHIN: -45, CHULAT_BHAU: -40, CHULAT_BAHIN: -35,
+  BHAU: -30, VAHINI: -29, BAHIN: -20, DAJI: -19,
+  MAMBHAU: 35, MAMBAHIN: 40, MAV_BHAU: 45, MAV_BAHIN: 50,
+  DIR_MOTHE: 25, DIR_CHOTE: 30, MEVHANA: 55, MEVHANI: 60,
+  NANAND: 65, NANANDOI: 70, CHULTA_DIR: 75, CHULTA_NANAND: 80,
+  MITRA: -60, MAITRIN: 90,
+
+  // Gen +2 (parent row) - LEFT = VADIL's side, RIGHT = AAI's side
+  AATYA: -115, FUA: -110, KAKA: -105, KAKI: -100,
+  CHULTA: -95, CHULTI: -90, SAVATR_VADIL: -60, VADIL: -50,
+  AAI: 50, SAVATR_AAI: 60, MAMA: 90, MAMI: 95, MAVSA: 100, MAVSHI: 105,
+  SASRA: 120, SASU: 130, MAMA_SASRA: 140, MAMI_SASU: 150,
+  ATYA_SASU: 160, MAVAS_SASU: 170, CHULAT_SASRA: 180,
+
+  // Gen +3 (grandparent row)
+  AJOBA: -50, AAJI: -40, NANA: 40, NANI: 50,
+  AJOBA_SASRA: 80, AJOBA_SASU: 90, AJI_SASRA: 100, AJI_SASU: 110,
+
+  // Gen +4 (great-grandparent row)
+  PANAAJI: -40, PANJOBA_SASRA: -55, PANAJI_SASU: -45,
+
+  // Gen -1 (children row)
+  SAVATR_MULGA: -30, MULGA: -20, SUN: -10, MULGI: 10, JAVAI: 20, SAVATR_MULGI: 30,
+  PUTANYA: -40, PUTANI: -35, BHACHA: 35, BHACHI: 40,
+
+  // Gen -2 (grandchildren row)
+  NATU: -20, NATASUN: -10, NAAT: 10, NAT_JAVAI: 20,
+
+  // Gen -3
+  PANTU: -20, PANTISUN: -10, PANTI: 10, PANTU_JAVAI: 20,
 };

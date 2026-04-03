@@ -91,85 +91,30 @@ export const checkPhone = async (
 
 /**
  * POST /api/auth/register
- * multipart/form-data:
- *  - phone, whatsapp, email
- *  - firstName, middleName, lastName
- *  - religion, community, dateOfBirth, bloodGroup, gender
- *  - education, occupation, occupationDetails
- *  - maritalStatus, matrimonialStatus
- *  - address, pincode, area
- *  - photo (file)
- *  - photoUrl (optional string)
+ * Body: { phone, email, firstName, middleName, lastName, religion, community, dateOfBirth }
  */
 export const registerUser = async (
   req: Request,
   res: Response
 ): Promise<Response | void> => {
   const {
-    // contact
     phone,
-    whatsapp,
     email,
-
-    // name parts
     firstName,
     middleName,
     lastName,
-
-    // personal
     religion,
     community,
     dateOfBirth,
-    bloodGroup,
-    gender,
-
-    // education / work
-    education,
-    occupation,
-    occupationDetails,
-
-    // family / marital
-    maritalStatus,
-    matrimonialStatus,
-
-    // address
-    address,
-    pincode,
-    area,
-
-    // legacy
-    designation,
-
-    // direct URL fallback
-    photoUrl,
   } = req.body as {
     phone?: string;
-    whatsapp?: string;
     email?: string;
-
     firstName?: string;
     middleName?: string;
     lastName?: string;
-
     religion?: string;
     community?: string;
     dateOfBirth?: string;
-    bloodGroup?: string;
-    gender?: string;
-
-    education?: string;
-    occupation?: string;
-    occupationDetails?: string;
-
-    maritalStatus?: string;
-    matrimonialStatus?: string;
-
-    address?: string;
-    pincode?: string;
-    area?: string;
-
-    designation?: string;
-    photoUrl?: string;
   };
 
   // we use firstName as required "name"
@@ -184,28 +129,22 @@ export const registerUser = async (
     return res.status(400).json({ message: 'Invalid phone number' });
   }
 
-  const normalizedGender = normalizeGender(gender);
-
-  const file = (req as any).file as Express.Multer.File | undefined;
-  let uploadedPhotoUrl: string | undefined;
-
-  if (file) {
-    try {
-      uploadedPhotoUrl = await uploadProfileImageToR2(file);
-    } catch (err) {
-      console.error('R2 upload error (registerUser)', err);
-      uploadedPhotoUrl = undefined;
-    }
-  }
-
-  const finalPhotoUrl: string | null =
-    uploadedPhotoUrl ?? (photoUrl ? photoUrl : null);
-
   try {
     // We treat normalizedPhone as canonical
     const existing = await prisma.user.findUnique({
       where: { phone: normalizedPhone },
     });
+
+    const userData = {
+      email: email ?? null,
+      firstName: firstName?.trim() ?? null,
+      middleName: middleName?.trim() ?? null,
+      lastName: lastName?.trim() ?? null,
+      religion: religion ?? null,
+      community: community ?? null,
+      dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : null,
+      profileCompleted: true, // MARK COMPLETED
+    };
 
     if (existing) {
       if (existing.profileCompleted) {
@@ -217,46 +156,7 @@ export const registerUser = async (
       // Claim the stub user
       const user = await prisma.user.update({
         where: { id: existing.id },
-        data: {
-          // contact
-          // phone is immutable/unique key here
-          whatsapp: whatsapp ?? null,
-          email: email ?? null,
-
-          // names
-          firstName: firstName?.trim() ?? null,
-          middleName: middleName?.trim() ?? null,
-          lastName: lastName?.trim() ?? null,
-
-          // personal
-          religion: religion ?? null,
-          community: community ?? null,
-          dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : null,
-          bloodGroup: bloodGroup ?? null,
-          gender: normalizedGender,
-
-          // education / work
-          education: education ?? null,
-          occupation: occupation ?? null,
-          occupationDetails: occupationDetails ?? null,
-
-          // family / marital
-          maritalStatus: maritalStatus ?? null,
-          matrimonialStatus: matrimonialStatus ?? null,
-
-          // address
-          address: address ?? null,
-          pincode: pincode ?? null,
-          area: area ?? null,
-
-          // legacy
-          designation: designation ?? null,
-
-          // image
-          photoUrl: finalPhotoUrl,
-
-          profileCompleted: true, // MARK COMPLETED
-        },
+        data: userData,
       });
 
       const token = signAuthToken({ userId: user.id, phone: user.phone || normalizedPhone });
@@ -265,44 +165,8 @@ export const registerUser = async (
 
     const user = await prisma.user.create({
       data: {
-        // contact
         phone: normalizedPhone,
-        whatsapp: whatsapp ?? null,
-        email: email ?? null,
-
-        // names
-        firstName: firstName?.trim() ?? null,
-        middleName: middleName?.trim() ?? null,
-        lastName: lastName?.trim() ?? null,
-
-        // personal
-        religion: religion ?? null,
-        community: community ?? null,
-        dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : null,
-        bloodGroup: bloodGroup ?? null,
-        gender: normalizedGender,
-
-        // education / work
-        education: education ?? null,
-        occupation: occupation ?? null,
-        occupationDetails: occupationDetails ?? null,
-
-        // family / marital
-        maritalStatus: maritalStatus ?? null,
-        matrimonialStatus: matrimonialStatus ?? null,
-
-        // address
-        address: address ?? null,
-        pincode: pincode ?? null,
-        area: area ?? null,
-
-        // legacy
-        designation: designation ?? null,
-
-        // image
-        photoUrl: finalPhotoUrl,
-
-        profileCompleted: true,
+        ...userData,
       },
     });
 

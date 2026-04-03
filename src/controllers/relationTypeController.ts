@@ -1,11 +1,12 @@
 // src/controllers/relationTypeController.ts
 import { Request, Response } from 'express';
 import prisma from '../lib/prisma';
-import { 
-  RELATION_AXIS_CONFIG, 
-  SPOUSE_PAIRS, 
-  COUSIN_CODES, 
-  COUSIN_PARENT_MAP 
+import {
+  RELATION_AXIS_CONFIG,
+  SPOUSE_PAIRS,
+  COUSIN_CODES,
+  COUSIN_PARENT_MAP,
+  RELATION_X_ORDER,
 } from '../utils/relationMetadata';
 
 export const listRelationTypes = async (req: Request, res: Response) => {
@@ -73,6 +74,7 @@ export const getRelationConfig = async (req: Request, res: Response) => {
       spousePairs: SPOUSE_PAIRS,
       cousinCodes: COUSIN_CODES,
       cousinParentMap: COUSIN_PARENT_MAP,
+      xOrder: RELATION_X_ORDER,
     });
   } catch (error) {
     console.error('getRelationConfig error', error);

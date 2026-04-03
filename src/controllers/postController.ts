@@ -11,6 +11,19 @@ async function canViewUserPosts(viewerId: string, targetUserId: string): Promise
   const target = await prisma.user.findUnique({ where: { id: targetUserId }, select: { isPrivate: true } });
   if (!target) return false;
   if (!target.isPrivate) return true;
+
+  // Confirmed family relation always grants view access (even on private accounts)
+  const familyRelation = await prisma.relation.findFirst({
+    where: {
+      status: 'CONFIRMED',
+      OR: [
+        { fromUserId: viewerId, toUserId: targetUserId },
+        { fromUserId: targetUserId, toUserId: viewerId },
+      ],
+    },
+  });
+  if (familyRelation) return true;
+
   const follow = await prisma.follow.findUnique({
     where: { followerId_followingId: { followerId: viewerId, followingId: targetUserId } },
   });
@@ -75,7 +88,23 @@ export const getFeed = async (req: AuthRequest, res: Response): Promise<Response
       select: { followingId: true },
     });
     const followingIds = following.map((f) => f.followingId);
-    const feedUserIds = [userId, ...followingIds];
+
+    // Also include confirmed family relations in the feed
+    const familyRelations = await prisma.relation.findMany({
+      where: {
+        status: 'CONFIRMED',
+        OR: [
+          { fromUserId: userId },
+          { toUserId: userId },
+        ],
+      },
+      select: { fromUserId: true, toUserId: true },
+    });
+    const familyIds = familyRelations.map((r) =>
+      r.fromUserId === userId ? r.toUserId : r.fromUserId
+    );
+
+    const feedUserIds = [...new Set([userId, ...followingIds, ...familyIds])];
 
     const posts = await prisma.post.findMany({
       where: {

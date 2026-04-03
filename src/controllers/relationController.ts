@@ -3,6 +3,8 @@ import { Response } from 'express';
 import prisma from '../lib/prisma';
 import { AuthRequest } from '../middleware/authMiddleware';
 import { getIO } from '../lib/socket';
+import { RELATION_AXIS_CONFIG } from '../utils/relationMetadata';
+
 
 type GenderValue = 'MALE' | 'FEMALE' | null;
 
@@ -255,15 +257,15 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
 
   const { phone, firstName, lastName, gender, relationTypeCode, sourceUserId, customName, customPhotoUrl, isAlive } = req.body;
   const fromUserId = sourceUserId || userId;
-  
+
   const isPersonAlive = isAlive !== undefined ? (String(isAlive) === 'true') : true;
 
   let cleanPhone = null;
   if (isPersonAlive && phone && String(phone).trim()) {
-      cleanPhone = normalizePhone(phone);
-      if (!cleanPhone || cleanPhone.length < 10) {
-        return res.status(400).json({ message: 'Invalid phone number' });
-      }
+    cleanPhone = normalizePhone(phone);
+    if (!cleanPhone || cleanPhone.length < 10) {
+      return res.status(400).json({ message: 'Invalid phone number' });
+    }
   }
 
   try {
@@ -278,7 +280,7 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
 
     let relatedUser = null;
     if (cleanPhone) {
-        relatedUser = await prisma.user.findUnique({ where: { phone: cleanPhone } });
+      relatedUser = await prisma.user.findUnique({ where: { phone: cleanPhone } });
     }
 
     if (!relatedUser) {
@@ -404,11 +406,18 @@ export const approveRelation = async (req: AuthRequest, res: Response) => {
       },
     });
 
+    // The approver is the toUser (userId = relation.toUserId).
+    // Fetch their name explicitly to avoid stale embedded data.
+    const approver = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { firstName: true },
+    });
+
     await createNotification({
       userId: relation.fromUserId,
       type: 'RELATION_APPROVED',
       title: 'Relation approved',
-      message: `${relation.toUser?.firstName || 'User'} approved your request.`,
+      message: `${approver?.firstName || 'Your family member'} approved your request.`,
       relationId: relation.id,
     });
 
@@ -480,7 +489,7 @@ export const updateRelation = async (req: AuthRequest, res: Response) => {
 
     // ── Relation type change ─────────────────────────────────────
     // Disabled by user request: User can only update names now.
-    
+
     const updated = await prisma.relation.update({
       where: { id },
       data: updateData
@@ -505,21 +514,15 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
     const rootUser = await prisma.user.findUnique({ where: { id: userId } });
     if (!rootUser) return res.status(404).json({ message: 'User not found' });
 
-    // 1. Pre-fetch all relation types and spouse mapping
-    const allTypesRaw = await prisma.relationType.findMany({ include: { translations: true } });
-    const typeMap = new Map<string, any>();
-    allTypesRaw.forEach(rt => typeMap.set(rt.code, rt));
-    
-    // Using the same SPOUSE_PAIRS logic as metadata
-    const { SPOUSE_PAIRS } = require('../utils/relationMetadata');
-    const flatSpouseCodes = new Set<string>(SPOUSE_PAIRS.flat());
 
-    const visited = new Map<string, number>();
-    visited.set(userId, 0);
+    const { SPOUSE_PAIRS, RELATION_LEVEL_MAP } = require('../utils/relationMetadata');
+
+    const visited = new Map<string, { gen: number, code: string }>();
+    visited.set(userId, { gen: 0, code: 'ROOT' });
 
     const processedRelations = new Set<string>();
     const allRelations: any[] = [];
-    
+
     let queue = [userId];
     const nodesByGen = new Map<number, any[]>();
     nodesByGen.set(0, [{
@@ -536,7 +539,6 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
           OR: [
             { fromUserId: { in: queue } },
             { toUserId: { in: queue } },
-            // Only include createdById in the first hop to find disconnected islands
             ...(hop === 0 ? [{ createdById: userId }] : [])
           ],
         },
@@ -557,52 +559,102 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
         const isConfirmed = rel.status === 'CONFIRMED';
         if (!isCreator && !(isParticipant && isConfirmed)) continue;
 
-        // Follow graph strictly from existing nodes (queue)
         const sourceId = queue.find(id => id === rel.fromUserId || id === rel.toUserId);
         if (!sourceId) continue;
 
         const neighborUser = (rel.fromUserId === sourceId) ? rel.toUser : rel.fromUser;
         const isOutgoing = (rel.fromUserId === sourceId);
         const targetId = neighborUser.id;
-        const sourceGen = visited.get(sourceId) || 0;
+        const sourceData = visited.get(sourceId)!;
+        const sourceGen = sourceData.gen;
 
-        // Calculate ROOT-relative perspective
+        // Resolve the relation code from ROOT's perspective
         const rootView = await resolveRelationForViewer(rel, userId, lang);
-        
+
         processedRelations.add(rel.id);
+
+        // Determine the correct visual source for this edge.
+        // For nodes with a canonical absolute level (RELATION_LEVEL_MAP), always
+        // link them from ROOT — not from a sibling/cousin that happened to be the
+        // BFS traversal source.  This prevents VADIL/AAI from appearing connected
+        // to BHAU in the UI.
+        const targetViewCode = (await resolveRelationForViewer(rel, sourceId, lang)).code;
+        const hasAbsoluteLevel = targetViewCode in RELATION_LEVEL_MAP;
+        const visualSourceId = (hasAbsoluteLevel && sourceId !== userId) ? userId : sourceId;
+
         allRelations.push({
           id: rel.id,
           fromUserId: rel.fromUserId,
           toUserId: rel.toUserId,
           relationType: { code: rootView.code, label: rootView.label },
           direction: isOutgoing ? 'OUTGOING' : 'INCOMING',
-          sourceUserId: sourceId,
+          sourceUserId: visualSourceId,
           status: rel.status,
           customName: rel.customName,
           customPhotoUrl: rel.customPhotoUrl,
           createdById: rel.createdById
         });
 
-        // Discovery
         if (visited.has(targetId)) continue;
-        
-        // Use Cumulative generation relative to source
-        const resolvedType = typeMap.get(rootView.code);
-        const levelDelta = resolvedType?.treeLevel ?? 0;
-        const neighborGen = sourceGen + levelDelta;
 
-        visited.set(targetId, neighborGen);
+        // ─── LEVEL ASSIGNMENT ───────────────────────────────────────────
+        // Step 1: Resolve the relation code from the TARGET's perspective viewing the edge
+        const targetViewFromSource = await resolveRelationForViewer(rel, sourceId, lang);
+        const targetRelCode = targetViewFromSource.code;
+
+        let localNeighborGen: number;
+
+        // Step 2: Check if this code has a canonical absolute level in RELATION_LEVEL_MAP
+        if (targetRelCode in RELATION_LEVEL_MAP) {
+          // Use absolute level directly — most accurate, independent of traversal path
+          localNeighborGen = RELATION_LEVEL_MAP[targetRelCode];
+        } else {
+          // Fallback: derive level from source generation + axis direction delta
+          const sourceRelCode = sourceData.code || 'ROOT';
+          const isSpousePairEdge = SPOUSE_PAIRS.some(
+            ([a, b]: [string, string]) =>
+              (a === sourceRelCode && b === targetRelCode) ||
+              (b === sourceRelCode && a === targetRelCode)
+          );
+
+          const axis = RELATION_AXIS_CONFIG[sourceRelCode];
+          let axisDirection: 'UP' | 'DOWN' | 'SAME' | null = null;
+          if (axis) {
+            const allOpts = [
+              ...(axis.xAxis?.left || []),
+              ...(axis.xAxis?.right || []),
+              ...(axis.yAxis?.top || []),
+              ...(axis.yAxis?.bottom || []),
+            ];
+            const matched = allOpts.find(opt => opt.code === targetRelCode);
+            axisDirection = matched?.direction || null;
+          }
+
+          const unitDelta = isSpousePairEdge
+            ? 0
+            : axisDirection === 'SAME'
+              ? 0
+              : axisDirection === 'UP'
+                ? 1
+                : axisDirection === 'DOWN'
+                  ? -1
+                  : 0; // default: treat as same level if unknown
+
+          localNeighborGen = sourceGen + unitDelta;
+        }
+        // ────────────────────────────────────────────────────────────────
+
+        visited.set(targetId, { gen: localNeighborGen, code: targetRelCode });
         nextQueue.add(targetId);
 
-        if (!nodesByGen.has(neighborGen)) nodesByGen.set(neighborGen, []);
-        
-        // Name resolution: only apply custom names created by the VIEWER for THEIR OWN relations
+        if (!nodesByGen.has(localNeighborGen)) nodesByGen.set(localNeighborGen, []);
+
         let displayNeighbor = neighborUser;
         if (rel.createdById === userId && rel.toUserId === targetId) {
-           displayNeighbor = resolveNodeForViewer(neighborUser, rel, userId);
+          displayNeighbor = resolveNodeForViewer(neighborUser, rel, userId);
         }
 
-        nodesByGen.get(neighborGen)!.push({
+        nodesByGen.get(localNeighborGen)!.push({
           user: displayNeighbor,
           relation: allRelations[allRelations.length - 1]
         });
@@ -688,3 +740,4 @@ export const deleteRelation = async (req: AuthRequest, res: Response) => {
     return res.status(500).json({ message: 'Internal server error' });
   }
 };
+
