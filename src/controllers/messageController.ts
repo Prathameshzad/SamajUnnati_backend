@@ -9,19 +9,29 @@ import { uploadMedia } from '../lib/mediaUpload';
 
 /** Returns confirmed relation user IDs for the calling user (phones must exist = real users) */
 async function getEligibleContactIds(userId: string, category: 'FAMILY' | 'FRIEND'): Promise<string[]> {
+  // Fetch all CONFIRMED rows where the user is either side
+  // This covers both normal rows (fromUserId=user) and reciprocal rows (toUserId=user)
   const relations = await prisma.relation.findMany({
     where: {
       status: 'CONFIRMED',
       category,
-      OR: [{ fromUserId: userId }, { toUserId: userId }],
+      OR: [
+        { fromUserId: userId },
+        { toUserId: userId },
+        { createdById: userId }, // covers cases where user created but fromUserId differs
+      ],
     },
   });
 
   const ids = new Set<string>();
   for (const rel of relations) {
-    const otherId = rel.fromUserId === userId ? rel.toUserId : rel.fromUserId;
-    ids.add(otherId);
+    if (rel.fromUserId !== userId) ids.add(rel.fromUserId);
+    if (rel.toUserId !== userId) ids.add(rel.toUserId);
+    // If user is the creator but neither fromUser nor toUser, createdById link won't help
+    // (already covered by fromUserId/toUserId above)
   }
+  // Remove self just in case
+  ids.delete(userId);
 
   const users = await prisma.user.findMany({
     where: {

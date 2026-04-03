@@ -119,39 +119,59 @@ export const listRelations = async (req: AuthRequest, res: Response) => {
   if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
 
   try {
+    // Fetch all relation rows relevant to this user:
+    // 1. Rows they created (their own outgoing adds, including now-REJECTED cross-node originals)
+    // 2. CONFIRMED rows where they are toUserId (reciprocal rows created by the other party pointing back to them)
+    // 3. REJECTED rows where they are toUserId (so they can see rejections)
     const raw = await prisma.relation.findMany({
       where: {
         OR: [
           { createdById: userId },
-          {
-            status: 'CONFIRMED',
-            OR: [
-              { fromUserId: userId },
-              { toUserId: userId }
-            ]
-          },
-          { toUserId: userId, status: 'REJECTED' },
+          { toUserId: userId, status: 'CONFIRMED' },
+          { toUserId: userId, status: 'REJECTED', createdById: { not: userId } },
         ],
       },
       include: {
         fromUser: true,
         toUser: true,
+        User_Relation_createdByIdToUser: true,
         relationType: { include: { translations: true } }
       },
       orderBy: { createdAt: 'desc' },
     });
 
-    const relations = await Promise.all(raw.map(async rel => {
+    // De-duplicate: for a confirmed connection, both the original row AND a reciprocal row
+    // may appear. Always prefer the CONFIRMED row. Key by sorted user-pair + relation type.
+    const deduped = new Map<string, typeof raw[0]>();
+    for (const rel of raw) {
+      const pair = [rel.fromUserId, rel.toUserId].sort().join(':') + ':' + rel.relationTypeCode;
+      const existing = deduped.get(pair);
+      if (!existing || (rel.status === 'CONFIRMED' && existing.status !== 'CONFIRMED')) {
+        deduped.set(pair, rel);
+      }
+    }
+
+    const relations = await Promise.all(Array.from(deduped.values()).map(async rel => {
       const view = await resolveRelationForViewer(rel, userId, lang);
+      const isMyRelation = rel.createdById === userId;
+
+      // Use createdById as the primary 'from' identifier for the relations list.
+      // This ensures that if Root added KAKA from VADIL's node, both Root and KAKA see Root as the logical sender.
+      const logicalFromUser = (rel as any).User_Relation_createdByIdToUser || rel.fromUser;
+      const logicalFromUserId = rel.createdById || rel.fromUserId;
+
       let finalToUser = rel.toUser;
-      if (rel.fromUserId === userId) {
+      if (logicalFromUserId === userId) {
         finalToUser = resolveNodeForViewer(rel.toUser, rel, userId);
       }
 
       return {
         ...rel,
+        fromUserId: logicalFromUserId,
+        fromUser: logicalFromUser,
+        customName: isMyRelation ? rel.customName : null,
+        customPhotoUrl: isMyRelation ? rel.customPhotoUrl : null,
         toUser: finalToUser,
-        fromUser: rel.fromUser,
         relationType: { label: view.label, code: view.code }
       };
     }));
@@ -173,19 +193,20 @@ export const getTree = async (req: AuthRequest, res: Response) => {
     const raw = await prisma.relation.findMany({
       where: {
         OR: [
+          // Only fetch rows the viewer created themselves.
+          // For cross-node adds (Root added KAKA from VADIL), the original row
+          // (VADIL→KAKA) is now REJECTED at approval time, so it won't appear here.
+          // Root sees their own outgoing row; KAKA sees their own reciprocal row.
           { createdById: userId },
-          {
-            status: 'CONFIRMED',
-            OR: [
-              { fromUserId: userId },
-              { toUserId: userId }
-            ]
-          }
+          // Also include confirmed relations where viewer is fromUserId
+          // (handles the normal self-add case & reciprocal rows)
+          { fromUserId: userId, status: 'CONFIRMED' },
         ]
       },
       include: {
         fromUser: true,
         toUser: true,
+        User_Relation_createdByIdToUser: true,
         relationType: { include: { translations: true } }
       },
       orderBy: { createdAt: 'asc' },
@@ -193,14 +214,22 @@ export const getTree = async (req: AuthRequest, res: Response) => {
 
     const relations = await Promise.all(raw.map(async rel => {
       const view = await resolveRelationForViewer(rel, userId, lang);
+      const isMyRelation = rel.createdById === userId;
       let finalToUser = rel.toUser;
       if (rel.fromUserId === userId) {
         finalToUser = resolveNodeForViewer(rel.toUser, rel, userId);
       }
+      // Use createdById as the primary 'from' identifier.
+      const logicalFromUser = (rel as any).User_Relation_createdByIdToUser || rel.fromUser;
+      const logicalFromUserId = rel.createdById || rel.fromUserId;
 
       return {
         ...rel,
+        customName: isMyRelation ? rel.customName : null,
+        customPhotoUrl: isMyRelation ? rel.customPhotoUrl : null,
         toUser: finalToUser,
+        fromUserId: logicalFromUserId,
+        fromUser: logicalFromUser,
         relationType: { label: view.label, code: view.code }
       };
     }));
@@ -223,6 +252,7 @@ export const getRequests = async (req: AuthRequest, res: Response) => {
       include: {
         fromUser: true,
         toUser: true,
+        User_Relation_createdByIdToUser: true,
         relationType: { include: { translations: true } }
       },
       orderBy: { createdAt: 'asc' },
@@ -230,8 +260,15 @@ export const getRequests = async (req: AuthRequest, res: Response) => {
 
     const pending = await Promise.all(raw.map(async rel => {
       const view = await resolveRelationForViewer(rel, userId, lang);
+
+      // Normalize: show the actual root user who added the request as fromUserId/fromUser.
+      const logicalFromUser = (rel as any).User_Relation_createdByIdToUser || rel.fromUser;
+      const logicalFromUserId = rel.createdById || rel.fromUserId;
+
       return {
         ...rel,
+        fromUserId: logicalFromUserId,
+        fromUser: logicalFromUser,
         relationType: { label: view.label, code: view.code }
       };
     }));
@@ -378,43 +415,77 @@ export const approveRelation = async (req: AuthRequest, res: Response) => {
       return res.status(404).json({ message: 'Relation not found or not authorized' });
     }
 
-    const updated = await prisma.relation.update({
-      where: { id },
-      data: { status: 'CONFIRMED' },
-    });
+    // Determine who the reciprocal should point back to.
+    // - Normal case: A adds B from A's own node → fromUserId = createdById = A
+    //   Reciprocal: B→A
+    // - Cross-node case: Root adds KAKA from VADIL's node → fromUserId=VADIL, createdById=Root
+    //   Reciprocal should be: KAKA→Root  (NOT KAKA→VADIL)
+    const addedFromDifferentNode =
+      relation.createdById && relation.createdById !== relation.fromUserId;
 
-    // Handle Reciprocal
+    const reciprocalToUserId: string = addedFromDifferentNode
+      ? relation.createdById!   // Root user — the actual person who added KAKA
+      : relation.fromUserId!;   // Normal case: the structural source = the adder
+
     const reciprocalCode = relation.relationType?.reciprocalCode || relation.relationTypeCode;
     const recType = await prisma.relationType.findUnique({ where: { code: reciprocalCode } });
 
+    // Step 1: Create/confirm the correct reciprocal row (KAKA → Root User)
     await prisma.relation.upsert({
       where: {
         fromUserId_toUserId_relationTypeCode: {
-          fromUserId: relation.toUserId,
-          toUserId: relation.fromUserId,
+          fromUserId: relation.toUserId!,   // KAKA (approver)
+          toUserId: reciprocalToUserId!,    // Root user (the actual adder)
           relationTypeCode: reciprocalCode,
         },
       },
       update: { status: 'CONFIRMED' },
       create: {
-        fromUserId: relation.toUserId,
-        toUserId: relation.fromUserId,
+        fromUserId: relation.toUserId!,
+        toUserId: reciprocalToUserId!,
         relationTypeCode: reciprocalCode,
         category: recType?.category || 'FAMILY',
         status: 'CONFIRMED',
-        createdById: userId,
+        createdById: userId,  // KAKA created this reciprocal row
       },
     });
 
-    // The approver is the toUser (userId = relation.toUserId).
-    // Fetch their name explicitly to avoid stale embedded data.
+    // Step 2: Mark the original relation as CONFIRMED (standard approval)
+    const updated = await prisma.relation.update({
+      where: { id },
+      data: { status: 'CONFIRMED' },
+    });
+
+    // Step 3: If the original row used a structural node (VADIL) as fromUserId instead of
+    // the actual root user, retire it by marking it REJECTED.
+    // This prevents VADIL from appearing in KAKA's relation list.
+    // The reciprocal row (KAKA → Root) is the canonical record for KAKA's perspective.
+    if (addedFromDifferentNode) {
+      await prisma.relation.update({
+        where: { id },
+        data: { status: 'REJECTED' },
+      }).catch(() => { /* ignore */ });
+
+      // Also clean up any other stale reciprocal rows pointing to the structural node
+      await prisma.relation.updateMany({
+        where: {
+          fromUserId: relation.toUserId,
+          toUserId: relation.fromUserId,  // VADIL — the wrong target
+          relationTypeCode: reciprocalCode,
+          status: { not: 'REJECTED' },
+        },
+        data: { status: 'REJECTED' },
+      }).catch(() => { /* ignore */ });
+    }
+
+    // Notify the actual root user (createdById) — not the structural source node
     const approver = await prisma.user.findUnique({
       where: { id: userId },
       select: { firstName: true },
     });
 
     await createNotification({
-      userId: relation.fromUserId,
+      userId: relation.createdById ?? relation.fromUserId,
       type: 'RELATION_APPROVED',
       title: 'Relation approved',
       message: `${approver?.firstName || 'Your family member'} approved your request.`,
@@ -582,6 +653,11 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
         const hasAbsoluteLevel = targetViewCode in RELATION_LEVEL_MAP;
         const visualSourceId = (hasAbsoluteLevel && sourceId !== userId) ? userId : sourceId;
 
+        // Only carry customName/customPhotoUrl when the viewer (Prathamesh) created
+        // this relation row. For incoming relations (created by someone else, e.g. Vinesh
+        // added Prathamesh as PUTANYA), the customName is what VINESH typed for PRATHAMESH
+        // and must NOT be used as Vinesh's display name in Prathamesh's tree.
+        const isViewerCreated = rel.createdById === userId;
         allRelations.push({
           id: rel.id,
           fromUserId: rel.fromUserId,
@@ -590,8 +666,8 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
           direction: isOutgoing ? 'OUTGOING' : 'INCOMING',
           sourceUserId: visualSourceId,
           status: rel.status,
-          customName: rel.customName,
-          customPhotoUrl: rel.customPhotoUrl,
+          customName: isViewerCreated ? rel.customName : null,
+          customPhotoUrl: isViewerCreated ? rel.customPhotoUrl : null,
           createdById: rel.createdById
         });
 

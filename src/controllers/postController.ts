@@ -13,12 +13,16 @@ async function canViewUserPosts(viewerId: string, targetUserId: string): Promise
   if (!target.isPrivate) return true;
 
   // Confirmed family relation always grants view access (even on private accounts)
+  // Check all directions: fromUserId/toUserId (covers both normal and reciprocal rows)
   const familyRelation = await prisma.relation.findFirst({
     where: {
       status: 'CONFIRMED',
       OR: [
         { fromUserId: viewerId, toUserId: targetUserId },
         { fromUserId: targetUserId, toUserId: viewerId },
+        // Also cover cross-node adds: createdById is the root user, toUserId is the relative
+        { createdById: viewerId, toUserId: targetUserId },
+        { createdById: targetUserId, toUserId: viewerId },
       ],
     },
   });
@@ -89,20 +93,27 @@ export const getFeed = async (req: AuthRequest, res: Response): Promise<Response
     });
     const followingIds = following.map((f) => f.followingId);
 
-    // Also include confirmed family relations in the feed
+    // Also include confirmed family members in the feed:
+    // Covers both normal rows (fromUserId=userId) and reciprocal rows (toUserId=userId)
+    // and cross-node adds (createdById=userId)
     const familyRelations = await prisma.relation.findMany({
       where: {
         status: 'CONFIRMED',
         OR: [
           { fromUserId: userId },
           { toUserId: userId },
+          { createdById: userId },
         ],
       },
-      select: { fromUserId: true, toUserId: true },
+      select: { fromUserId: true, toUserId: true, createdById: true },
     });
-    const familyIds = familyRelations.map((r) =>
-      r.fromUserId === userId ? r.toUserId : r.fromUserId
-    );
+    const familyIdSet = new Set<string>();
+    for (const r of familyRelations) {
+      if (r.fromUserId !== userId) familyIdSet.add(r.fromUserId);
+      if (r.toUserId !== userId) familyIdSet.add(r.toUserId);
+    }
+    familyIdSet.delete(userId);
+    const familyIds = Array.from(familyIdSet);
 
     const feedUserIds = [...new Set([userId, ...followingIds, ...familyIds])];
 
