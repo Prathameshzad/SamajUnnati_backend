@@ -578,7 +578,7 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
   const lang = (req.query.lang as string) || 'mr';
   if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
 
-  const maxDepth = Number(req.query.depth) || 10;
+  const maxDepth = Number(req.query.depth) || 5;
   const category = req.query.category as string;
 
   try {
@@ -613,9 +613,24 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
             ...(hop === 0 ? [{ createdById: userId }] : [])
           ],
         },
-        include: {
-          fromUser: true,
-          toUser: true,
+        select: {
+          id: true,
+          fromUserId: true,
+          toUserId: true,
+          relationTypeCode: true,
+          category: true,
+          status: true,
+          customName: true,
+          customPhotoUrl: true,
+          createdById: true,
+          createdAt: true,
+          updatedAt: true,
+          fromUser: {
+            select: { id: true, phone: true, firstName: true, lastName: true, photoUrl: true, gender: true, isAlive: true }
+          },
+          toUser: {
+            select: { id: true, phone: true, firstName: true, lastName: true, photoUrl: true, gender: true, isAlive: true }
+          },
           relationType: { include: { translations: true } }
         },
       });

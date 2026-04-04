@@ -62,10 +62,25 @@ export const getFriendTree = async (req: AuthRequest, res: Response) => {
         category: 'FRIEND',
         status: { not: 'REJECTED' }
       },
-      include: {
-        fromUser: true,
-        toUser: true,
-        relationType: { include: { translations: true } }
+      select: {
+          id: true,
+          fromUserId: true,
+          toUserId: true,
+          relationTypeCode: true,
+          category: true,
+          status: true,
+          customName: true,
+          customPhotoUrl: true,
+          createdById: true,
+          createdAt: true,
+          updatedAt: true,
+          fromUser: {
+            select: { id: true, phone: true, firstName: true, lastName: true, photoUrl: true, gender: true, isAlive: true }
+          },
+          toUser: {
+            select: { id: true, phone: true, firstName: true, lastName: true, photoUrl: true, gender: true, isAlive: true }
+          },
+          relationType: { include: { translations: true } }
       }
     });
 
