@@ -32,10 +32,11 @@ model User {
   religion                            String?
   whatsapp                            String?
   profileCompleted                    Boolean              @default(false)
-  isAlive                             Boolean              @default(true)
-  deletedAt                           DateTime?
-  isPrivate                           Boolean              @default(false)
+  isRegistered                        Boolean              @default(false)
   bio                                 String?
+  deletedAt                           DateTime?
+  isAlive                             Boolean              @default(true)
+  isPrivate                           Boolean              @default(false)
   conversationMembers                 ConversationMember[]
   following                           Follow[]             @relation("Follower")
   followers                           Follow[]             @relation("Following")
@@ -114,10 +115,10 @@ model Notification {
   title      String
   message    String
   relationId String?
-  postId     String?
   state      NotificationState @default(UNREAD)
   createdAt  DateTime          @default(now())
   readAt     DateTime?
+  postId     String?
   post       Post?             @relation(fields: [postId], references: [id])
   relation   Relation?         @relation(fields: [relationId], references: [id])
   user       User              @relation(fields: [userId], references: [id])

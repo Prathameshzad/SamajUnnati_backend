@@ -147,6 +147,7 @@ export const registerUser = async (
       dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : null,
       gender: normalizeGender(gender),
       profileCompleted: true, // MARK COMPLETED
+      isRegistered: true,     // Verified phone ownership during the process
     };
 
     if (existing) {
@@ -207,11 +208,29 @@ export const verifyOtp = async (req: Request, res: Response) => {
   const isValid = await OtpService.verifyOtp(normalized, code);
   if (!isValid) return res.status(401).json({ message: 'Invalid OTP' });
 
-  // If valid, check if user exists to return token
-  const user = await prisma.user.findUnique({ where: { phone: normalized } });
-  if (user && user.profileCompleted) {
-    const token = signAuthToken({ userId: user.id, phone: user.phone || normalized });
-    return res.json({ verified: true, exists: true, token, user });
+  // If valid, ensure user exists and is marked as registered (verified phone)
+  let user = await prisma.user.findUnique({ where: { phone: normalized } });
+  
+  if (user) {
+    if (!user.isRegistered) {
+      user = await prisma.user.update({
+        where: { id: user.id },
+        data: { isRegistered: true },
+      });
+    }
+    if (user.profileCompleted) {
+      const token = signAuthToken({ userId: user.id, phone: user.phone || normalized });
+      return res.json({ verified: true, exists: true, token, user });
+    }
+  } else {
+    // Create new registered stub user
+    user = await prisma.user.create({
+      data: {
+        phone: normalized,
+        isRegistered: true,
+        profileCompleted: false,
+      },
+    });
   }
 
   return res.json({ verified: true, exists: false, message: 'Phone verified, proceed to registration' });
