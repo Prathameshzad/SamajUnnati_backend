@@ -106,6 +106,7 @@ export const registerUser = async (
     religion,
     community,
     dateOfBirth,
+    gender,
   } = req.body as {
     phone?: string;
     email?: string;
@@ -115,6 +116,7 @@ export const registerUser = async (
     religion?: string;
     community?: string;
     dateOfBirth?: string;
+    gender?: string;
   };
 
   // we use firstName as required "name"
@@ -143,6 +145,7 @@ export const registerUser = async (
       religion: religion ?? null,
       community: community ?? null,
       dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : null,
+      gender: normalizeGender(gender),
       profileCompleted: true, // MARK COMPLETED
     };
 
