@@ -306,6 +306,51 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
   }
 
   try {
+    const existingRelation = await prisma.relation.findFirst({
+      where: {
+        toUserId: userId,
+        fromUser: { phone: cleanPhone },
+        status: 'CONFIRMED'
+      },
+      include: {
+        relationType: { include: { translations: true } },
+        fromUser: true
+      }
+    });
+
+    if (existingRelation && isPersonAlive) {
+      // Create the reciprocal relation to add them to the tree manually
+      const displayLabel = resolveLabel(existingRelation.relationType, lang);
+      
+      const reciprocalCode = existingRelation.relationType?.reciprocalCode || existingRelation.relationTypeCode;
+      const recType = await prisma.relationType.findUnique({ where: { code: reciprocalCode } });
+
+      await prisma.relation.upsert({
+        where: {
+          fromUserId_toUserId_relationTypeCode: {
+            fromUserId: userId,
+            toUserId: existingRelation.fromUserId,
+            relationTypeCode: reciprocalCode,
+          },
+        },
+        update: { status: 'CONFIRMED' },
+        create: {
+          fromUserId: userId,
+          toUserId: existingRelation.fromUserId,
+          relationTypeCode: reciprocalCode,
+          category: recType?.category || 'FAMILY',
+          status: 'CONFIRMED',
+          createdById: userId,
+        },
+      });
+
+      return res.status(200).json({
+        alreadyAccepted: true,
+        message: `You have already accepted this person's request previously and this person was telling you ${displayLabel}. They are now added to your tree.`,
+        relation: existingRelation
+      });
+    }
+
     const relType = await prisma.relationType.findUnique({
       where: { code: relationTypeCode },
       include: { translations: true }
@@ -415,68 +460,11 @@ export const approveRelation = async (req: AuthRequest, res: Response) => {
       return res.status(404).json({ message: 'Relation not found or not authorized' });
     }
 
-    // Determine who the reciprocal should point back to.
-    // - Normal case: A adds B from A's own node → fromUserId = createdById = A
-    //   Reciprocal: B→A
-    // - Cross-node case: Root adds KAKA from VADIL's node → fromUserId=VADIL, createdById=Root
-    //   Reciprocal should be: KAKA→Root  (NOT KAKA→VADIL)
-    const addedFromDifferentNode =
-      relation.createdById && relation.createdById !== relation.fromUserId;
-
-    const reciprocalToUserId: string = addedFromDifferentNode
-      ? relation.createdById!   // Root user — the actual person who added KAKA
-      : relation.fromUserId!;   // Normal case: the structural source = the adder
-
-    const reciprocalCode = relation.relationType?.reciprocalCode || relation.relationTypeCode;
-    const recType = await prisma.relationType.findUnique({ where: { code: reciprocalCode } });
-
-    // Step 1: Create/confirm the correct reciprocal row (KAKA → Root User)
-    await prisma.relation.upsert({
-      where: {
-        fromUserId_toUserId_relationTypeCode: {
-          fromUserId: relation.toUserId!,   // KAKA (approver)
-          toUserId: reciprocalToUserId!,    // Root user (the actual adder)
-          relationTypeCode: reciprocalCode,
-        },
-      },
-      update: { status: 'CONFIRMED' },
-      create: {
-        fromUserId: relation.toUserId!,
-        toUserId: reciprocalToUserId!,
-        relationTypeCode: reciprocalCode,
-        category: recType?.category || 'FAMILY',
-        status: 'CONFIRMED',
-        createdById: userId,  // KAKA created this reciprocal row
-      },
-    });
-
     // Step 2: Mark the original relation as CONFIRMED (standard approval)
     const updated = await prisma.relation.update({
       where: { id },
       data: { status: 'CONFIRMED' },
     });
-
-    // Step 3: If the original row used a structural node (VADIL) as fromUserId instead of
-    // the actual root user, retire it by marking it REJECTED.
-    // This prevents VADIL from appearing in KAKA's relation list.
-    // The reciprocal row (KAKA → Root) is the canonical record for KAKA's perspective.
-    if (addedFromDifferentNode) {
-      await prisma.relation.update({
-        where: { id },
-        data: { status: 'REJECTED' },
-      }).catch(() => { /* ignore */ });
-
-      // Also clean up any other stale reciprocal rows pointing to the structural node
-      await prisma.relation.updateMany({
-        where: {
-          fromUserId: relation.toUserId,
-          toUserId: relation.fromUserId,  // VADIL — the wrong target
-          relationTypeCode: reciprocalCode,
-          status: { not: 'REJECTED' },
-        },
-        data: { status: 'REJECTED' },
-      }).catch(() => { /* ignore */ });
-    }
 
     // Notify the actual root user (createdById) — not the structural source node
     const approver = await prisma.user.findUnique({
@@ -641,9 +629,12 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
         if (rel.status === 'REJECTED') continue;
 
         const isCreator = rel.createdById === userId;
-        const isParticipant = (rel.fromUserId === userId || rel.toUserId === userId);
+        const isFromMe = rel.fromUserId === userId;
         const isConfirmed = rel.status === 'CONFIRMED';
-        if (!isCreator && !(isParticipant && isConfirmed)) continue;
+        
+        // Only show relations where the user is the sender (created it or fromUserId)
+        if (!isCreator && !isFromMe) continue;
+        if (!isConfirmed && !isCreator) continue;
 
         const sourceId = queue.find(id => id === rel.fromUserId || id === rel.toUserId);
         if (!sourceId) continue;
@@ -773,7 +764,7 @@ export const getRelationCounts = async (req: AuthRequest, res: Response) => {
   if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
 
   try {
-    const [pending, confirmed, rejected] = await Promise.all([
+    const [pending, confirmed, rejected, accepted] = await Promise.all([
       prisma.relation.count({
         where: { createdById: userId, status: 'PENDING' },
       }),
@@ -783,8 +774,11 @@ export const getRelationCounts = async (req: AuthRequest, res: Response) => {
       prisma.relation.count({
         where: { createdById: userId, status: 'REJECTED' },
       }),
+      prisma.relation.count({
+        where: { toUserId: userId, status: 'CONFIRMED' },
+      }),
     ]);
-    return res.json({ pending, confirmed, rejected });
+    return res.json({ pending, confirmed, rejected, accepted });
   } catch (error) {
     console.error('getRelationCounts error', error);
     return res.status(500).json({ message: 'Internal server error' });
@@ -832,3 +826,73 @@ export const deleteRelation = async (req: AuthRequest, res: Response) => {
   }
 };
 
+export const getAcceptedRequests = async (req: AuthRequest, res: Response) => {
+  const userId = req.user?.id;
+  const lang = (req.query.lang as string) || 'mr';
+  if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
+
+  try {
+    const raw = await prisma.relation.findMany({
+      where: { toUserId: userId, status: 'CONFIRMED' },
+      include: {
+        fromUser: true,
+        toUser: true,
+        relationType: { include: { translations: true } }
+      },
+      orderBy: { updatedAt: 'desc' },
+    });
+
+    const accepted = await Promise.all(raw.map(async rel => {
+      const view = await resolveRelationForViewer(rel, userId, lang);
+      return {
+        ...rel,
+        relationType: { label: view.label, code: view.code }
+      };
+    }));
+
+    return res.json(accepted);
+  } catch (error) {
+    console.error('getAcceptedRequests error', error);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
+export const checkAcceptedByPhone = async (req: AuthRequest, res: Response) => {
+  const userId = req.user?.id;
+  if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
+
+  const { phone } = req.query as { phone?: string };
+  const lang = (req.query.lang as string) || 'en';
+
+  if (!phone) return res.status(400).json({ message: 'Phone is required' });
+  const cleanPhone = normalizePhone(phone);
+  if (!cleanPhone) return res.status(400).json({ message: 'Invalid phone' });
+
+  try {
+    const existingRelation = await prisma.relation.findFirst({
+      where: {
+        toUserId: userId,
+        fromUser: { phone: cleanPhone },
+        status: 'CONFIRMED'
+      },
+      include: {
+        relationType: { include: { translations: true } },
+        fromUser: true
+      }
+    });
+
+    if (existingRelation) {
+      const label = resolveLabel(existingRelation.relationType, lang);
+      return res.json({
+        accepted: true,
+        message: `You have already accepted this person's request previously and this person was telling you ${label}.`,
+        user: existingRelation.fromUser
+      });
+    }
+
+    return res.json({ accepted: false });
+  } catch (error) {
+    console.error('checkAcceptedByPhone error', error);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+};
