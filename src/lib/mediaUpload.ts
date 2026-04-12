@@ -12,20 +12,10 @@ import crypto from 'crypto';
 export async function uploadMedia(file: Express.Multer.File): Promise<string> {
   const { r2Client, uploadProfileImageToR2 } = await import('./r2');
 
-  // Use R2 ONLY if a public URL/domain is configured in env
-  const publicDomain = process.env.CLOUDFLARE_R2_PUBLIC_DOMAIN;
-
-  if (r2Client && publicDomain) {
+  if (r2Client) {
     try {
       const url = await uploadProfileImageToR2(file);
-      // Replace the private cloudflarestorage.com URL with the public domain
-      // Old: https://<accountid>.r2.cloudflarestorage.com/<bucket>/<key>
-      // New: https://your-public-domain.com/<key>
-      const key = url.split('/').slice(-2).join('/'); // bucket/key or just key mapping? 
-      // Most R2 public buckets map the root to the bucket root
-      const actualKey = url.split('/').pop();
-      const folder = url.split('/').slice(-2, -1)[0];
-      return `${publicDomain}/${folder}/${actualKey}`;
+      return url;
     } catch (e) {
       console.warn('R2 upload failed, falling back to local disk:', e);
     }
@@ -45,7 +35,6 @@ export async function uploadMedia(file: Express.Multer.File): Promise<string> {
   const filePath = path.join(uploadDir, fileName);
   fs.writeFileSync(filePath, file.buffer);
 
-  // Return a URL that will be served by express static
-  const baseUrl = process.env.API_BASE_URL || `http://localhost:${process.env.PORT || 8000}`;
-  return `${baseUrl}/uploads/media/${fileName}`;
+  // Return a relative URL so the frontend can prepend the correct API base URL
+  return `/uploads/media/${fileName}`;
 }

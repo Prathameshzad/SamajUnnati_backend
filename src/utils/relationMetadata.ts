@@ -1,4 +1,4 @@
-﻿// src/utils/relationMetadata.ts
+// src/utils/relationMetadata.ts
 
 /**
  * Axis configurations for different relation codes.
@@ -38,6 +38,8 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
           code: "BAHIN",
           direction: "SAME",
         },
+        { label: "सावत्र भाऊ", code: "SAVATR_BHAU", direction: "SAME" },
+        { label: "सावत्र बहीण", code: "SAVATR_BAHIN", direction: "SAME" },
         { label: "मित्र (Friend)", code: "MITRA", direction: "SAME" },
       ],
       right: [
@@ -68,6 +70,12 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
       bottom: [
         { label: "मुलगा (Son)", code: "MULGA", direction: "DOWN" },
         { label: "मुलगी (Daughter)", code: "MULGI", direction: "DOWN" },
+        { label: "सावत्र मुलगा", code: "SAVATR_MULGA", direction: "DOWN" },
+        { label: "सावत्र मुलगी", code: "SAVATR_MULGI", direction: "DOWN" },
+        { label: "पुतण्या (Nephew)", code: "PUTANYA", direction: "DOWN" },
+        { label: "पुतणी (Niece)", code: "PUTANI", direction: "DOWN" },
+        { label: "भाचा (Nephew)", code: "BHACHA", direction: "DOWN" },
+        { label: "भाची (Niece)", code: "BHACHI", direction: "DOWN" },
         { label: "मित्र (Friend)", code: "MITRA", direction: "DOWN" },
         { label: "मैत्रीण (Friend)", code: "MAITRIN", direction: "DOWN" },
       ],
@@ -1491,6 +1499,7 @@ export const RELATION_X_ORDER: Record<string, number> = {
   // Gen +1 (sibling row) - LEFT = biological, RIGHT = in-law
   ATYE_BHAU: -50, ATYE_BAHIN: -45, CHULAT_BHAU: -40, CHULAT_BAHIN: -35,
   BHAU: -30, VAHINI: -29, BAHIN: -20, DAJI: -19,
+  SAVATR_BHAU: -32, SAVATR_BAHIN: -22,
   MAMBHAU: 35, MAMBAHIN: 40, MAV_BHAU: 45, MAV_BAHIN: 50,
   DIR_MOTHE: 25, DIR_CHOTE: 30, MEVHANA: 55, MEVHANI: 60,
   NANAND: 65, NANANDOI: 70, CHULTA_DIR: 75, CHULTA_NANAND: 80,

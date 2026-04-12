@@ -76,18 +76,20 @@ const relationTypes = [
   { code: 'NANANDOI', category: 'FAMILY', targetGender: 'MALE', treeLevel: 0, reciprocalCode: 'VAHINI' },
   { code: 'CHULTA_DIR', category: 'FAMILY', targetGender: 'MALE', treeLevel: 0, reciprocalCode: 'VAHINI' },
   { code: 'CHULTA_NANAND', category: 'FAMILY', targetGender: 'FEMALE', treeLevel: 0, reciprocalCode: 'VAHINI' },
+  { code: 'SAVATR_BHAU', category: 'FAMILY', targetGender: 'MALE', treeLevel: 0, reciprocalCode: 'SAVATR_BHAU' },
+  { code: 'SAVATR_BAHIN', category: 'FAMILY', targetGender: 'FEMALE', treeLevel: 0, reciprocalCode: 'SAVATR_BHAU' },
 
   // DOWN (Generation -)
   { code: 'MULGA', category: 'FAMILY', targetGender: 'MALE', treeLevel: -1, reciprocalCode: 'VADIL' },
   { code: 'MULGI', category: 'FAMILY', targetGender: 'FEMALE', treeLevel: -1, reciprocalCode: 'VADIL' },
+  { code: 'SAVATR_MULGA', category: 'FAMILY', targetGender: 'MALE', treeLevel: -1, reciprocalCode: 'SAVATR_VADIL' },
+  { code: 'SAVATR_MULGI', category: 'FAMILY', targetGender: 'FEMALE', treeLevel: -1, reciprocalCode: 'SAVATR_VADIL' },
   { code: 'JAVAI', category: 'FAMILY', targetGender: 'MALE', treeLevel: -1, reciprocalCode: 'SASRA' },
   { code: 'SUN', category: 'FAMILY', targetGender: 'FEMALE', treeLevel: -1, reciprocalCode: 'SASRA' },
   { code: 'PUTANYA', category: 'FAMILY', targetGender: 'MALE', treeLevel: -1, reciprocalCode: 'KAKA' },
   { code: 'PUTANI', category: 'FAMILY', targetGender: 'FEMALE', treeLevel: -1, reciprocalCode: 'KAKA' },
   { code: 'BHACHA', category: 'FAMILY', targetGender: 'MALE', treeLevel: -1, reciprocalCode: 'MAMA' },
   { code: 'BHACHI', category: 'FAMILY', targetGender: 'FEMALE', treeLevel: -1, reciprocalCode: 'MAMA' },
-  { code: 'SAVATR_MULGA', category: 'FAMILY', targetGender: 'MALE', treeLevel: -1, reciprocalCode: 'SAVATR_VADIL' },
-  { code: 'SAVATR_MULGI', category: 'FAMILY', targetGender: 'FEMALE', treeLevel: -1, reciprocalCode: 'SAVATR_VADIL' },
   { code: 'NATU', category: 'FAMILY', targetGender: 'MALE', treeLevel: -2, reciprocalCode: 'AJOBA' },
   { code: 'NAAT', category: 'FAMILY', targetGender: 'FEMALE', treeLevel: -2, reciprocalCode: 'AJOBA' },
   { code: 'NAT_JAVAI', category: 'FAMILY', targetGender: 'MALE', treeLevel: -2, reciprocalCode: 'AAJI' },
@@ -169,6 +171,8 @@ const translations = [
   { code: 'NANANDOI', mr: 'नणंदोई', en: "Husband of Nanand" },
   { code: 'CHULTA_DIR', mr: 'चुलतदीर', en: 'Cousin-in-law brother' },
   { code: 'CHULTA_NANAND', mr: 'चुलतनणंद', en: 'Cousin-in-law sister' },
+  { code: 'SAVATR_BHAU', mr: 'सावत्रभाऊ', en: 'Step-Brother' },
+  { code: 'SAVATR_BAHIN', mr: 'सावत्रबहीण', en: 'Step-Sister' },
 
   // DOWN
   { code: 'MULGA', mr: 'मुलगा', en: 'Son' },
