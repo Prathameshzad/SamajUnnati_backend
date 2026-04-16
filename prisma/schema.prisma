@@ -60,7 +60,8 @@ model RelationType {
   code           String                @id
   category       RelationCategory
   targetGender   Gender?
-  treeLevel      Int?
+  treeLevel      Int?          // Canonical generation level (0=root, 2=parents, -1=children, etc.)
+  treeSide       String?       // 'ROOT' | 'SPOUSE' — which side of the tree this relation belongs to
   reciprocalCode String?
   relations      Relation[]
   translations   RelationTranslation[]

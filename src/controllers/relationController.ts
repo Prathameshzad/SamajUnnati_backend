@@ -668,7 +668,7 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
           id: rel.id,
           fromUserId: rel.fromUserId,
           toUserId: rel.toUserId,
-          relationType: { code: rootView.code, label: rootView.label },
+          relationType: { code: rootView.code, label: rootView.label, treeSide: rel.relationType?.treeSide },
           direction: isOutgoing ? 'OUTGOING' : 'INCOMING',
           sourceUserId: visualSourceId,
           status: rel.status,
@@ -686,12 +686,15 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
 
         let localNeighborGen: number;
 
-        // Step 2: Check if this code has a canonical absolute level in RELATION_LEVEL_MAP
-        if (targetRelCode in RELATION_LEVEL_MAP) {
-          // Use absolute level directly — most accurate, independent of traversal path
+        // Step 2: Check if this code has a canonical absolute level in DB or Map
+        if (rel.relationType?.treeLevel !== null && rel.relationType?.treeLevel !== undefined) {
+          // Use DB canonical level directly — completely deterministic!
+          localNeighborGen = rel.relationType.treeLevel;
+        } else if (targetRelCode in RELATION_LEVEL_MAP) {
+          // Fallback to static map
           localNeighborGen = RELATION_LEVEL_MAP[targetRelCode];
         } else {
-          // Fallback: derive level from source generation + axis direction delta
+          // Fallback: derive from direction delta
           const sourceRelCode = sourceData.code || 'ROOT';
           const isSpousePairEdge = SPOUSE_PAIRS.some(
             ([a, b]: [string, string]) =>
@@ -720,8 +723,8 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
                 ? 1
                 : axisDirection === 'DOWN'
                   ? -1
-                  : 0; // default: treat as same level if unknown
-
+                  : 0; 
+                  
           localNeighborGen = sourceGen + unitDelta;
         }
         // ────────────────────────────────────────────────────────────────
