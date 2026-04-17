@@ -32,15 +32,23 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
           label: "भाऊ (Brother)",
           code: "BHAU",
           direction: "SAME",
+          triggerGender: "MALE",
         },
         {
           label: "बहीण (Sister)",
           code: "BAHIN",
           direction: "SAME",
+          triggerGender: "MALE",
         },
-        { label: "सावत्र भाऊ", code: "SAVATR_BHAU", direction: "SAME" },
-        { label: "सावत्र बहीण", code: "SAVATR_BAHIN", direction: "SAME" },
-        { label: "मित्र (Friend)", code: "MITRA", direction: "SAME" },
+        // { label: "सावत्र भाऊ", code: "SAVATR_BHAU", direction: "SAME" },
+        // { label: "सावत्र बहीण", code: "SAVATR_BAHIN", direction: "SAME" },
+        // { label: "मित्र (Friend)", code: "MITRA", direction: "SAME" },
+        {
+          label: "नवरा (Husband)",
+          code: "NAVRA",
+          direction: "SAME",
+          triggerGender: "FEMALE",
+        },
       ],
       right: [
         {
@@ -50,34 +58,35 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
           triggerGender: "MALE",
         },
         {
-          label: "नवरा (Husband)",
-          code: "NAVRA",
+          label: "भाऊ (Brother)",
+          code: "BHAU",
           direction: "SAME",
           triggerGender: "FEMALE",
         },
-        { label: "मैत्रीण (Friend)", code: "MAITRIN", direction: "SAME" },
+        {
+          label: "बहीण (Sister)",
+          code: "BAHIN",
+          direction: "SAME",
+          triggerGender: "FEMALE",
+        },
+
+        // { label: "मैत्रीण (Friend)", code: "MAITRIN", direction: "SAME" },
       ],
     },
     yAxis: {
       top: [
         { label: "वडील (Father)", code: "VADIL", direction: "UP" },
         { label: "आई (Mother)", code: "AAI", direction: "UP" },
-        { label: "सावत्रआई", code: "SAVATR_AAI", direction: "UP" },
-        { label: "सावत्र वडील", code: "SAVATR_VADIL", direction: "UP" },
-        { label: "मित्र (Friend)", code: "MITRA", direction: "UP" },
-        { label: "मैत्रीण (Friend)", code: "MAITRIN", direction: "UP" },
+        // { label: "सावत्रआई", code: "SAVATR_AAI", direction: "UP" },
+        // { label: "सावत्र वडील", code: "SAVATR_VADIL", direction: "UP" },
+        // { label: "मित्र (Friend)", code: "MITRA", direction: "UP" },
+        // { label: "मैत्रीण (Friend)", code: "MAITRIN", direction: "UP" },
       ],
       bottom: [
         { label: "मुलगा (Son)", code: "MULGA", direction: "DOWN" },
         { label: "मुलगी (Daughter)", code: "MULGI", direction: "DOWN" },
-        { label: "सावत्र मुलगा", code: "SAVATR_MULGA", direction: "DOWN" },
-        { label: "सावत्र मुलगी", code: "SAVATR_MULGI", direction: "DOWN" },
-        { label: "पुतण्या (Nephew)", code: "PUTANYA", direction: "DOWN" },
-        { label: "पुतणी (Niece)", code: "PUTANI", direction: "DOWN" },
-        { label: "भाचा (Nephew)", code: "BHACHA", direction: "DOWN" },
-        { label: "भाची (Niece)", code: "BHACHI", direction: "DOWN" },
-        { label: "मित्र (Friend)", code: "MITRA", direction: "DOWN" },
-        { label: "मैत्रीण (Friend)", code: "MAITRIN", direction: "DOWN" },
+        // { label: "मित्र (Friend)", code: "MITRA", direction: "DOWN" },
+        // { label: "मैत्रीण (Friend)", code: "MAITRIN", direction: "DOWN" },
       ],
     },
   },
@@ -117,6 +126,22 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
           direction: "DOWN",
           viewerGender: "MALE",
         },
+      ],
+    },
+  },
+  NAVRA: {
+    xAxis: {
+      left: [],
+      right: [{ label: "बायको (Wife)", code: "BAYKO", direction: "SAME" }],
+    },
+    yAxis: {
+      top: [
+        { label: "सासरा (Father-in-law)", code: "SASRA", direction: "UP" },
+        { label: "सासू (Mother-in-law)", code: "SASU", direction: "UP" },
+      ],
+      bottom: [
+        { label: "मुलगा (Son)", code: "MULGA", direction: "DOWN" },
+        { label: "मुलगी (Daughter)", code: "MULGI", direction: "DOWN" },
       ],
     },
   },
@@ -945,22 +970,7 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
     yAxis: { top: [], bottom: [] },
   },
 
-  NAVRA: {
-    xAxis: {
-      left: [],
-      right: [{ label: "बायको (Wife)", code: "BAYKO", direction: "SAME" }],
-    },
-    yAxis: {
-      top: [
-        { label: "सासरा (Father-in-law)", code: "SASRA", direction: "UP" },
-        { label: "सासू (Mother-in-law)", code: "SASU", direction: "UP" },
-      ],
-      bottom: [
-        { label: "मुलगा (Son)", code: "MULGA", direction: "DOWN" },
-        { label: "मुलगी (Daughter)", code: "MULGI", direction: "DOWN" },
-      ],
-    },
-  },
+
   MAVSA: {
     xAxis: {
       left: [],
