@@ -14,10 +14,14 @@ import {
   getRelationCounts,
   getAcceptedRequests,
   checkAcceptedByPhone,
+  getGraphChunk,
+  initWorldCoords,
 } from '../controllers/relationController';
 
 const router = Router();
 
+router.get('/init-coords', authMiddleware, initWorldCoords);
+router.get('/chunk', authMiddleware, getGraphChunk);
 router.get('/counts', authMiddleware, getRelationCounts); // ⬅️ must be before /:id routes
 router.get('/', authMiddleware, listRelations);
 router.get('/tree', authMiddleware, getTree);

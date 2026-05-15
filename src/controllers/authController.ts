@@ -146,8 +146,10 @@ export const registerUser = async (
       community: community ?? null,
       dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : null,
       gender: normalizeGender(gender),
-      profileCompleted: true, // MARK COMPLETED
-      isRegistered: true,     // Verified phone ownership during the process
+      profileCompleted: true,
+      isRegistered: true,
+      worldX: (Math.random() - 0.5) * 100000,
+      worldY: (Math.random() - 0.5) * 100000,
     };
 
     if (existing) {
@@ -229,6 +231,8 @@ export const verifyOtp = async (req: Request, res: Response) => {
         phone: normalized,
         isRegistered: true,
         profileCompleted: false,
+        worldX: (Math.random() - 0.5) * 100000,
+        worldY: (Math.random() - 0.5) * 100000,
       },
     });
   }

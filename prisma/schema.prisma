@@ -37,6 +37,8 @@ model User {
   deletedAt                           DateTime?
   isAlive                             Boolean              @default(true)
   isPrivate                           Boolean              @default(false)
+  worldX                              Float?
+  worldY                              Float?
   conversationMembers                 ConversationMember[]
   following                           Follow[]             @relation("Follower")
   followers                           Follow[]             @relation("Following")

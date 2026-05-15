@@ -6,7 +6,13 @@
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate",
+    "seed:family": "ts-node scripts/stress_seeder.ts seed:family",
+    "seed:friends": "ts-node scripts/stress_seeder.ts seed:friends",
+    "seed:all": "ts-node scripts/stress_seeder.ts seed:all",
+    "seed:dense": "ts-node scripts/stress_seeder.ts seed:dense",
+    "seed:huge": "ts-node scripts/stress_seeder.ts seed:huge",
+    "seed:clear": "ts-node scripts/stress_seeder.ts seed:clear"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.940.0",
@@ -29,6 +35,7 @@
     "typescript": "^5.9.3"
   },
   "devDependencies": {
+    "@faker-js/faker": "^10.4.0",
     "prisma-erd-generator": "^2.4.2",
     "ts-node-dev": "^2.0.0"
   }

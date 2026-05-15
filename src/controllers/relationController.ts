@@ -366,6 +366,10 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
     }
 
     if (!relatedUser) {
+      const creator = await prisma.user.findUnique({ where: { id: userId } });
+      const baseWorldX = creator?.worldX || 0;
+      const baseWorldY = creator?.worldY || 0;
+      
       relatedUser = await prisma.user.create({
         data: {
           phone: cleanPhone,
@@ -375,6 +379,8 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
           gender: normalizeGender(gender || relType.targetGender),
           profileCompleted: false,
           isAlive: isPersonAlive,
+          worldX: baseWorldX + (Math.random() - 0.5) * 2000,
+          worldY: baseWorldY + (Math.random() - 0.5) * 2000,
         },
       });
     }
@@ -783,6 +789,94 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
     return res.json({ rootUser, levels, allRelations });
   } catch (error) {
     console.error('getFullTree error', error);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
+export const getGraphChunk = async (req: AuthRequest, res: Response) => {
+  const userId = req.user?.id;
+  if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
+
+  const x = parseFloat(req.query.x as string) || 0;
+  const y = parseFloat(req.query.y as string) || 0;
+  const radius = parseFloat(req.query.radius as string) || 5000;
+  const lang = (req.query.lang as string) || 'mr';
+
+  try {
+    // 1. Fetch users within the spatial bounds
+    // For simplicity, we use a square bounding box first (more efficient for DB index)
+    // then filter by circular radius if needed.
+    const nodes = await prisma.user.findMany({
+      where: {
+        worldX: { gte: x - radius, lte: x + radius },
+        worldY: { gte: y - radius, lte: y + radius },
+      },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        photoUrl: true,
+        gender: true,
+        isAlive: true,
+        worldX: true,
+        worldY: true,
+      }
+    });
+
+    const nodeIds = nodes.map(n => n.id);
+
+    // 2. Fetch relations between these nodes
+    const relations = await prisma.relation.findMany({
+      where: {
+        OR: [
+          { fromUserId: { in: nodeIds } },
+          { toUserId: { in: nodeIds } }
+        ],
+        status: 'CONFIRMED'
+      },
+      include: {
+        relationType: { include: { translations: true } }
+      }
+    });
+
+    // 3. Return as a chunk
+    return res.json({
+      chunkId: `chunk-${Math.floor(x/radius)}-${Math.floor(y/radius)}`,
+      bounds: { x, y, radius },
+      nodes,
+      edges: relations.map(rel => ({
+        id: rel.id,
+        fromUserId: rel.fromUserId,
+        toUserId: rel.toUserId,
+        relationType: rel.relationType.code,
+        label: resolveLabel(rel.relationType, lang)
+      }))
+    });
+  } catch (error) {
+    console.error('getGraphChunk error', error);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
+export const initWorldCoords = async (req: AuthRequest, res: Response) => {
+  try {
+    const users = await prisma.user.findMany();
+    let updated = 0;
+    for (const user of users) {
+      if (user.worldX === null || user.worldY === null) {
+        await prisma.user.update({
+          where: { id: user.id },
+          data: {
+            worldX: (Math.random() - 0.5) * 20000,
+            worldY: (Math.random() - 0.5) * 20000,
+          }
+        });
+        updated++;
+      }
+    }
+    return res.json({ message: `Initialized coordinates for ${updated} users.` });
+  } catch (error) {
+    console.error('initWorldCoords error', error);
     return res.status(500).json({ message: 'Internal server error' });
   }
 };
