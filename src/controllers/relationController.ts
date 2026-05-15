@@ -582,6 +582,31 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
     const processedRelations = new Set<string>();
     const allRelations: any[] = [];
 
+    // Cache all relation types to avoid N+1 queries during BFS traversal
+    const allRelTypes = await prisma.relationType.findMany({ include: { translations: true } });
+    const relTypeCache = new Map(allRelTypes.map(t => [t.code, t]));
+
+    const resolveRelationWithCache = (rel: any, viewerUserId: string, lang: string = 'mr') => {
+      if (rel.fromUserId === viewerUserId) {
+        return {
+          code: rel.relationTypeCode,
+          label: resolveLabel(rel.relationType || relTypeCache.get(rel.relationTypeCode), lang)
+        };
+      }
+      if (rel.toUserId === viewerUserId) {
+        const reciprocalCode = rel.relationType?.reciprocalCode || rel.relationTypeCode;
+        const recType = relTypeCache.get(reciprocalCode);
+        return {
+          code: reciprocalCode,
+          label: resolveLabel(recType, lang)
+        };
+      }
+      return {
+        code: rel.relationTypeCode,
+        label: resolveLabel(rel.relationType || relTypeCache.get(rel.relationTypeCode), lang)
+      };
+    };
+
     let queue = [userId];
     const nodesByGen = new Map<number, any[]>();
     nodesByGen.set(0, [{
@@ -619,7 +644,7 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
           toUser: {
             select: { id: true, phone: true, firstName: true, lastName: true, photoUrl: true, gender: true, isAlive: true }
           },
-          relationType: { include: { translations: true } }
+          relationType: true // translations are in cache
         },
       });
 
@@ -646,7 +671,7 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
         const sourceGen = sourceData.gen;
 
         // Resolve the relation code from ROOT's perspective
-        const rootView = await resolveRelationForViewer(rel, userId, lang);
+        const rootView = resolveRelationWithCache(rel, userId, lang);
 
         processedRelations.add(rel.id);
 
@@ -655,7 +680,7 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
         // link them from ROOT — not from a sibling/cousin that happened to be the
         // BFS traversal source.  This prevents VADIL/AAI from appearing connected
         // to BHAU in the UI.
-        const targetViewCode = (await resolveRelationForViewer(rel, sourceId, lang)).code;
+        const targetViewCode = resolveRelationWithCache(rel, sourceId, lang).code;
         const hasAbsoluteLevel = targetViewCode in RELATION_LEVEL_MAP;
         const visualSourceId = (hasAbsoluteLevel && sourceId !== userId) ? userId : sourceId;
 
@@ -681,7 +706,7 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
 
         // ─── LEVEL ASSIGNMENT ───────────────────────────────────────────
         // Step 1: Resolve the relation code from the TARGET's perspective viewing the edge
-        const targetViewFromSource = await resolveRelationForViewer(rel, sourceId, lang);
+        const targetViewFromSource = resolveRelationWithCache(rel, sourceId, lang);
         const targetRelCode = targetViewFromSource.code;
 
         let localNeighborGen: number;
