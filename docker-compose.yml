@@ -1,0 +1,20 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    image: samaj-backend
+    container_name: samaj-backend
+
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    ports:
+      - "8003:8000"
+
+    environment:
+      - NODE_ENV=production
+      - PORT=8000
