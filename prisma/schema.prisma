@@ -94,6 +94,7 @@ model Relation {
   relationTypeCode                String
   customName                      String?
   customPhotoUrl                  String?
+  visualSide                      String?
   category                        RelationCategory
   createdById                     String?
   deletedAt                       DateTime?

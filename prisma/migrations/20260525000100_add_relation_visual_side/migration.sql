@@ -1,0 +1,1 @@
+ALTER TABLE "Relation" ADD COLUMN IF NOT EXISTS "visualSide" TEXT;

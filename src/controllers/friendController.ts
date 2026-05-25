@@ -71,6 +71,7 @@ export const getFriendTree = async (req: AuthRequest, res: Response) => {
           status: true,
           customName: true,
           customPhotoUrl: true,
+          visualSide: true,
           createdById: true,
           createdAt: true,
           updatedAt: true,
@@ -144,7 +145,8 @@ export const getFriendTree = async (req: AuthRequest, res: Response) => {
             status: rel.status,
             category: rel.category,
             customName: rel.customName,
-            customPhotoUrl: rel.customPhotoUrl
+            customPhotoUrl: rel.customPhotoUrl,
+            visualSide: rel.visualSide
           }
         });
       }
@@ -218,6 +220,11 @@ function normalizeGender(gender?: string | null): 'MALE' | 'FEMALE' | null {
   return null;
 }
 
+function normalizeVisualSide(side?: string | null): 'top' | 'bottom' | 'left' | 'right' | null {
+  if (side === 'top' || side === 'bottom' || side === 'left' || side === 'right') return side;
+  return null;
+}
+
 async function createNotification(args: {
   userId: string;
   type: 'RELATION_REQUEST' | 'RELATION_APPROVED' | 'RELATION_REJECTED';
@@ -247,7 +254,7 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
   const lang = (req.query.lang as string) || 'mr';
   if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
 
-  const { phone, firstName, lastName, gender, relationTypeCode, sourceUserId, customName, customPhotoUrl, isAlive } = req.body;
+  const { phone, firstName, lastName, gender, relationTypeCode, sourceUserId, customName, customPhotoUrl, isAlive, visualSide } = req.body;
   console.log('DEBUG: createFriend. sourceUserId:', sourceUserId, 'userId:', userId);
 
   const isPersonAlive = isAlive !== undefined ? (String(isAlive) === 'true') : true;
@@ -307,6 +314,7 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
         status: 'PENDING',
         ...(customName ? { customName } : {}),
         ...(customPhotoUrl ? { customPhotoUrl } : {}),
+        visualSide: normalizeVisualSide(visualSide),
         createdById: userId,
       },
       create: {
@@ -317,6 +325,7 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
         status: 'PENDING',
         customName: customName || null,
         customPhotoUrl: customPhotoUrl || null,
+        visualSide: normalizeVisualSide(visualSide),
         createdById: userId,
       },
       include: { toUser: true, fromUser: true },

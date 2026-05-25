@@ -219,17 +219,11 @@ export const getTree = async (req: AuthRequest, res: Response) => {
       if (rel.fromUserId === userId) {
         finalToUser = resolveNodeForViewer(rel.toUser, rel, userId);
       }
-      // Use createdById as the primary 'from' identifier.
-      const logicalFromUser = (rel as any).User_Relation_createdByIdToUser || rel.fromUser;
-      const logicalFromUserId = rel.createdById || rel.fromUserId;
-
       return {
         ...rel,
         customName: isMyRelation ? rel.customName : null,
         customPhotoUrl: isMyRelation ? rel.customPhotoUrl : null,
         toUser: finalToUser,
-        fromUserId: logicalFromUserId,
-        fromUser: logicalFromUser,
         relationType: { label: view.label, code: view.code }
       };
     }));
@@ -641,6 +635,7 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
           status: true,
           customName: true,
           customPhotoUrl: true,
+          visualSide: true,
           createdById: true,
           createdAt: true,
           updatedAt: true,
@@ -681,14 +676,8 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
 
         processedRelations.add(rel.id);
 
-        // Determine the correct visual source for this edge.
-        // For nodes with a canonical absolute level (RELATION_LEVEL_MAP), always
-        // link them from ROOT — not from a sibling/cousin that happened to be the
-        // BFS traversal source.  This prevents VADIL/AAI from appearing connected
-        // to BHAU in the UI.
         const targetViewCode = resolveRelationWithCache(rel, sourceId, lang).code;
-        const hasAbsoluteLevel = targetViewCode in RELATION_LEVEL_MAP;
-        const visualSourceId = (hasAbsoluteLevel && sourceId !== userId) ? userId : sourceId;
+        const visualSourceId = sourceId;
 
         // Only carry customName/customPhotoUrl when the viewer (Prathamesh) created
         // this relation row. For incoming relations (created by someone else, e.g. Vinesh
@@ -705,6 +694,7 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
           status: rel.status,
           customName: isViewerCreated ? rel.customName : null,
           customPhotoUrl: isViewerCreated ? rel.customPhotoUrl : null,
+          visualSide: rel.visualSide,
           createdById: rel.createdById
         });
 
