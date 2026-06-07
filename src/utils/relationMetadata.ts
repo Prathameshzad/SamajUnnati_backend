@@ -250,11 +250,11 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
     },
   },
   BHAUJAI: {
-    xAxis: { 
+    xAxis: {
       left: [{ label: "दीर-छोटे", code: "DIR_CHOTE", direction: "SAME" }],
       right: []
-     },
-    yAxis: { 
+    },
+    yAxis: {
       top: [],
       bottom: []
     }
@@ -601,10 +601,10 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
   VAHINI: {
     xAxis: {
       left: [{ label: "भाऊ", code: "BHAU", direction: "SAME", triggerGender: "MALE" },
-        {label:"मोठा दीर", code: "DIR_MOTHE", direction: "SAME", triggerGender: "FEMALE"}
+      { label: "मोठा दीर", code: "DIR_MOTHE", direction: "SAME", triggerGender: "FEMALE" }
       ],
       right: [
-                {
+        {
           label: "मेव्हणा",
           code: "MEVHANA",
           direction: "SAME",
@@ -1174,7 +1174,7 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
         },
       ],
       right: [{
-        label:"सुनरी", code:"SUNRI", direction:"SAME"
+        label: "सुनरी", code: "SUNRI", direction: "SAME"
       }],
     },
     yAxis: {
@@ -1185,14 +1185,14 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
       ],
     },
   },
-  SUNRI:{
-    xAxis:{
-left: [
-  {label: "मेव्हणा", code: "MEVHANA", direction: "SAME"}
-],
-right: []
+  SUNRI: {
+    xAxis: {
+      left: [
+        { label: "मेव्हणा", code: "MEVHANA", direction: "SAME" }
+      ],
+      right: []
     },
-    yAxis:{
+    yAxis: {
       top: [],
       bottom: [
         { label: "भाचा", code: "BHACHA", direction: "DOWN" },

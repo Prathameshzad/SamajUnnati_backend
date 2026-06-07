@@ -32,6 +32,7 @@ export const listRelationTypes = async (req: Request, res: Response) => {
         label: trans ? trans.label : t.code,
         targetGender: t.targetGender,
         treeLevel: t.treeLevel,
+        treeSide: t.treeSide,
         reciprocalCode: t.reciprocalCode,
         category: t.category,
       };
@@ -61,6 +62,7 @@ export const getRelationConfig = async (req: Request, res: Response) => {
         label: trans ? trans.label : t.code,
         gender: t.targetGender,
         level: t.treeLevel ?? 0,
+        treeSide: t.treeSide,
         vg: (t.treeLevel ?? 0) > 0 ? 'UP' : (t.treeLevel ?? 0) < 0 ? 'DOWN' : 'SAME',
         reciprocalCode: t.reciprocalCode,
         category: t.category,

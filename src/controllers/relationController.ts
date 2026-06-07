@@ -656,10 +656,11 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
 
         const isCreator = rel.createdById === userId;
         const isFromMe = rel.fromUserId === userId;
+        const isToMe = rel.toUserId === userId;
         const isConfirmed = rel.status === 'CONFIRMED';
         
-        // Only show relations where the user is the sender (created it or fromUserId)
-        if (!isCreator && !isFromMe) continue;
+        // Include relations the user created, sent, or received (if confirmed).
+        if (!isCreator && !isFromMe && !isToMe) continue;
         if (!isConfirmed && !isCreator) continue;
 
         const sourceId = queue.find(id => id === rel.fromUserId || id === rel.toUserId);
@@ -684,11 +685,16 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
         // added Prathamesh as PUTANYA), the customName is what VINESH typed for PRATHAMESH
         // and must NOT be used as Vinesh's display name in Prathamesh's tree.
         const isViewerCreated = rel.createdById === userId;
+        const rootRelationType = relTypeCache.get(rootView.code);
         allRelations.push({
           id: rel.id,
           fromUserId: rel.fromUserId,
           toUserId: rel.toUserId,
-          relationType: { code: rootView.code, label: rootView.label, treeSide: rel.relationType?.treeSide },
+          relationType: {
+            code: rootView.code,
+            label: rootView.label,
+            treeSide: rootRelationType?.treeSide ?? rel.relationType?.treeSide,
+          },
           direction: isOutgoing ? 'OUTGOING' : 'INCOMING',
           sourceUserId: visualSourceId,
           status: rel.status,
@@ -704,16 +710,17 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
         // Step 1: Resolve the relation code from the TARGET's perspective viewing the edge
         const targetViewFromSource = resolveRelationWithCache(rel, sourceId, lang);
         const targetRelCode = targetViewFromSource.code;
+        const targetRelationType = relTypeCache.get(targetRelCode);
 
         let localNeighborGen: number;
+        const canonicalLevel = RELATION_LEVEL_MAP[targetRelCode];
 
-        // Step 2: Check if this code has a canonical absolute level in DB or Map
-        if (rel.relationType?.treeLevel !== null && rel.relationType?.treeLevel !== undefined) {
-          // Use DB canonical level directly — completely deterministic!
-          localNeighborGen = rel.relationType.treeLevel;
-        } else if (targetRelCode in RELATION_LEVEL_MAP) {
-          // Fallback to static map
-          localNeighborGen = RELATION_LEVEL_MAP[targetRelCode];
+        // Step 2: Prefer canonical static generation from RELATION_LEVEL_MAP when available.
+        // This protects against stale/mismatched DB treeLevel values for same-generation cousins.
+        if (canonicalLevel !== undefined) {
+          localNeighborGen = canonicalLevel;
+        } else if (targetRelationType?.treeLevel !== null && targetRelationType?.treeLevel !== undefined) {
+          localNeighborGen = targetRelationType.treeLevel;
         } else {
           // Fallback: derive from direction delta
           const sourceRelCode = sourceData.code || 'ROOT';
@@ -744,8 +751,8 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
                 ? 1
                 : axisDirection === 'DOWN'
                   ? -1
-                  : 0; 
-                  
+                  : 0;
+
           localNeighborGen = sourceGen + unitDelta;
         }
         // ────────────────────────────────────────────────────────────────
