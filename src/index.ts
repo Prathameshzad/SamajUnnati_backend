@@ -17,6 +17,7 @@ import messageRoutes from './routes/messageRoutes';
 import postRoutes from './routes/postRoutes';
 import storyRoutes from './routes/storyRoutes';
 import followRoutes from './routes/followRoutes';
+import matrimonyRoutes from './routes/matrimonyRoutes';
 
 dotenv.config();
 
@@ -67,6 +68,7 @@ app.use('/api/messages', messageRoutes);
 app.use('/api/posts', postRoutes);
 app.use('/api/stories', storyRoutes);
 app.use('/api/follow', followRoutes);
+app.use('/api/matrimony', matrimonyRoutes);
 
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 app.use('/uploads/media', express.static(path.join(process.cwd(), 'uploads', 'media')));

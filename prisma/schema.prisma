@@ -32,16 +32,18 @@ model User {
   religion                            String?
   whatsapp                            String?
   profileCompleted                    Boolean              @default(false)
-  isRegistered                        Boolean              @default(false)
   bio                                 String?
   deletedAt                           DateTime?
   isAlive                             Boolean              @default(true)
   isPrivate                           Boolean              @default(false)
+  isRegistered                        Boolean              @default(false)
   worldX                              Float?
   worldY                              Float?
   conversationMembers                 ConversationMember[]
   following                           Follow[]             @relation("Follower")
   followers                           Follow[]             @relation("Following")
+  managedMatrimonyProfiles            MatrimonyProfile[]   @relation("ManagedMatrimonyProfiles")
+  matrimonyProfile                    MatrimonyProfile?
   sentMessages                        Message[]            @relation("MessageSender")
   messageReads                        MessageRead[]
   notifications                       Notification[]
@@ -62,9 +64,9 @@ model RelationType {
   code           String                @id
   category       RelationCategory
   targetGender   Gender?
-  treeLevel      Int?          // Canonical generation level (0=root, 2=parents, -1=children, etc.)
-  treeSide       String?       // 'ROOT' | 'SPOUSE' — which side of the tree this relation belongs to
+  treeLevel      Int?
   reciprocalCode String?
+  treeSide       String?
   relations      Relation[]
   translations   RelationTranslation[]
 
@@ -94,8 +96,8 @@ model Relation {
   relationTypeCode                String
   customName                      String?
   customPhotoUrl                  String?
-  visualSide                      String?
   category                        RelationCategory
+  visualSide                      String?
   createdById                     String?
   deletedAt                       DateTime?
   notifications                   Notification[]
@@ -321,6 +323,167 @@ model UserBlock {
   @@index([blockedId])
 }
 
+model MatrimonyProfile {
+  id                   String                     @id @default(uuid())
+  userId               String                     @unique
+  isLookingForMarriage Boolean                    @default(true)
+  photos               String[]
+  height               Float?
+  complexion           String?
+  education            String?
+  occupation           String?
+  income               String?
+  lifestyle            String?
+  languages            String[]
+  religion             String?
+  community            String?
+  bio                  String?
+  hobbies              String[]
+  interests            String[]
+  isVerified           Boolean                    @default(false)
+  visibility           String                     @default("PUBLIC")
+  profileType          String                     @default("SELF")
+  relationLabel        String?
+  managedByUserId      String?
+  isClaimed            Boolean                    @default(false)
+  createdAt            DateTime                   @default(now())
+  updatedAt            DateTime                   @updatedAt
+  recommendedAs        GraphRecommendationCache[] @relation("RecommendedTarget")
+  recommendations      GraphRecommendationCache[] @relation("RecommendedTo")
+  blockedMe            MatrimonyBlock[]           @relation("BlockedTarget")
+  blocks               MatrimonyBlock[]           @relation("BlockedBy")
+  interestsReceived    MatrimonyInterest[]        @relation("InterestsReceived")
+  interestsSent        MatrimonyInterest[]        @relation("InterestsSent")
+  matchesAsUserA       MatrimonyMatch[]           @relation("MatchesUserA")
+  matchesAsUserB       MatrimonyMatch[]           @relation("MatchesUserB")
+  preference           MatrimonyPreference?
+  managedBy            User?                      @relation("ManagedMatrimonyProfiles", fields: [managedByUserId], references: [id])
+  user                 User                       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  reportedMe           MatrimonyReport[]          @relation("ReportedTarget")
+  reports              MatrimonyReport[]          @relation("ReportedBy")
+  shortlistedMe        MatrimonyShortlist[]       @relation("ShortlistedTarget")
+  shortlists           MatrimonyShortlist[]       @relation("ShortlistedBy")
+}
+
+model MatrimonyPreference {
+  id            String           @id @default(uuid())
+  profileId     String           @unique
+  ageMin        Int?
+  ageMax        Int?
+  heightMin     Float?
+  heightMax     Float?
+  education     String[]
+  occupation    String[]
+  incomeMin     String?
+  religion      String[]
+  community     String[]
+  maritalStatus String[]
+  diet          String[]
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+  profile       MatrimonyProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+}
+
+model MatrimonyInterest {
+  id         String           @id @default(uuid())
+  senderId   String
+  receiverId String
+  status     InterestStatus   @default(INTERESTED)
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+  receiver   MatrimonyProfile @relation("InterestsReceived", fields: [receiverId], references: [id], onDelete: Cascade)
+  sender     MatrimonyProfile @relation("InterestsSent", fields: [senderId], references: [id], onDelete: Cascade)
+
+  @@unique([senderId, receiverId])
+  @@index([senderId])
+  @@index([receiverId])
+}
+
+model MatrimonyMatch {
+  id             String           @id @default(uuid())
+  userAId        String
+  userBId        String
+  conversationId String?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  userA          MatrimonyProfile @relation("MatchesUserA", fields: [userAId], references: [id], onDelete: Cascade)
+  userB          MatrimonyProfile @relation("MatchesUserB", fields: [userBId], references: [id], onDelete: Cascade)
+
+  @@unique([userAId, userBId])
+  @@index([userAId])
+  @@index([userBId])
+}
+
+model MatrimonyShortlist {
+  id        String           @id @default(uuid())
+  userId    String
+  targetId  String
+  createdAt DateTime         @default(now())
+  target    MatrimonyProfile @relation("ShortlistedTarget", fields: [targetId], references: [id], onDelete: Cascade)
+  user      MatrimonyProfile @relation("ShortlistedBy", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, targetId])
+  @@index([userId])
+}
+
+model MatrimonyBlock {
+  id        String           @id @default(uuid())
+  userId    String
+  targetId  String
+  reason    String?
+  createdAt DateTime         @default(now())
+  target    MatrimonyProfile @relation("BlockedTarget", fields: [targetId], references: [id], onDelete: Cascade)
+  user      MatrimonyProfile @relation("BlockedBy", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, targetId])
+  @@index([userId])
+}
+
+model MatrimonyReport {
+  id          String           @id @default(uuid())
+  userId      String
+  targetId    String
+  reason      String
+  description String?
+  createdAt   DateTime         @default(now())
+  target      MatrimonyProfile @relation("ReportedTarget", fields: [targetId], references: [id], onDelete: Cascade)
+  user        MatrimonyProfile @relation("ReportedBy", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model GraphRecommendationCache {
+  id                 String           @id @default(uuid())
+  userId             String
+  targetId           String
+  distance           Int
+  connectionPath     String
+  trustScore         Float
+  compatibilityScore Float
+  overallScore       Float
+  isViewed           Boolean          @default(false)
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+  target             MatrimonyProfile @relation("RecommendedTarget", fields: [targetId], references: [id], onDelete: Cascade)
+  user               MatrimonyProfile @relation("RecommendedTo", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, targetId])
+  @@index([userId])
+  @@index([overallScore(sort: Desc)])
+}
+
+model ConnectionPathCache {
+  id        String   @id @default(uuid())
+  userAId   String
+  userBId   String
+  path      String
+  distance  Int
+  createdAt DateTime @default(now())
+
+  @@unique([userAId, userBId])
+  @@index([userAId])
+}
+
 enum Gender {
   MALE
   FEMALE
@@ -335,6 +498,7 @@ enum RelationStatus {
 enum RelationCategory {
   FAMILY
   FRIEND
+  MATRIMONY
 }
 
 enum NotificationType {
@@ -373,4 +537,10 @@ enum MediaType {
   PHOTO
   VIDEO
   DOCUMENT
+}
+
+enum InterestStatus {
+  INTERESTED
+  SUPER_INTERESTED
+  REJECTED
 }
