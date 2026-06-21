@@ -8,7 +8,7 @@ import { uploadMedia } from '../lib/mediaUpload';
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
 /** Returns confirmed relation user IDs for the calling user (phones must exist = real users) */
-async function getEligibleContactIds(userId: string, category: 'FAMILY' | 'FRIEND'): Promise<string[]> {
+async function getEligibleContactIds(userId: string, category: 'FAMILY' | 'FRIEND' | 'MATRIMONY'): Promise<string[]> {
   // Fetch all CONFIRMED rows where the user is either side
   // This covers both normal rows (fromUserId=user) and reciprocal rows (toUserId=user)
   const relations = await prisma.relation.findMany({
@@ -86,7 +86,7 @@ async function formatConversation(conv: any, viewerId: string) {
 
 export const getMessagableContacts = async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;
-  const category = (req.query.category as 'FAMILY' | 'FRIEND') || 'FAMILY';
+  const category = (req.query.category as 'FAMILY' | 'FRIEND' | 'MATRIMONY') || 'FAMILY';
   if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
 
   try {
@@ -124,7 +124,7 @@ export const getMessagableContacts = async (req: AuthRequest, res: Response) => 
 
 export const listConversations = async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;
-  const category = (req.query.category as 'FAMILY' | 'FRIEND') || 'FAMILY';
+  const category = (req.query.category as 'FAMILY' | 'FRIEND' | 'MATRIMONY') || 'FAMILY';
   if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
 
   try {
@@ -159,7 +159,7 @@ export const getOrCreateDirectConversation = async (req: AuthRequest, res: Respo
   const userId = req.user?.id;
   const { targetUserId, category } = req.body as {
     targetUserId: string;
-    category: 'FAMILY' | 'FRIEND';
+    category: 'FAMILY' | 'FRIEND' | 'MATRIMONY';
   };
   if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
 
@@ -234,7 +234,7 @@ export const createGroupConversation = async (req: AuthRequest, res: Response) =
   const { name, memberIds, category } = req.body as {
     name: string;
     memberIds: string[];
-    category: 'FAMILY' | 'FRIEND';
+    category: 'FAMILY' | 'FRIEND' | 'MATRIMONY';
   };
   if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
   if (!name?.trim()) return res.status(400).json({ message: 'Group name is required' });
