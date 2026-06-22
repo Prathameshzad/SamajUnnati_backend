@@ -590,7 +590,7 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
       if (rel.fromUserId === viewerUserId) {
         return {
           code: rel.relationTypeCode,
-          label: resolveLabel(rel.relationType || relTypeCache.get(rel.relationTypeCode), lang)
+          label: resolveLabel(relTypeCache.get(rel.relationTypeCode), lang)
         };
       }
       if (rel.toUserId === viewerUserId) {
@@ -603,7 +603,7 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
       }
       return {
         code: rel.relationTypeCode,
-        label: resolveLabel(rel.relationType || relTypeCache.get(rel.relationTypeCode), lang)
+        label: resolveLabel(relTypeCache.get(rel.relationTypeCode), lang)
       };
     };
 

@@ -37,6 +37,8 @@ model User {
   isAlive                             Boolean              @default(true)
   isPrivate                           Boolean              @default(false)
   isRegistered                        Boolean              @default(false)
+  appLanguage                         String?              @default("en")
+  relationLanguage                    String?              @default("en")
   worldX                              Float?
   worldY                              Float?
   conversationMembers                 ConversationMember[]

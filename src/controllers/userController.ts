@@ -59,6 +59,10 @@ export const updateMe = async (
     bloodGroup,
     gender,
 
+    // languages
+    appLanguage,
+    relationLanguage,
+
     // education / work
     education,
     occupation,
@@ -89,6 +93,9 @@ export const updateMe = async (
     dateOfBirth?: string;
     bloodGroup?: string;
     gender?: string;
+
+    appLanguage?: string;
+    relationLanguage?: string;
 
     education?: string;
     occupation?: string;
@@ -150,6 +157,10 @@ export const updateMe = async (
         bloodGroup,
         gender:
           typeof gender === 'undefined' ? undefined : normalizedGender,
+
+        // languages
+        appLanguage,
+        relationLanguage,
 
         // education / work
         education,

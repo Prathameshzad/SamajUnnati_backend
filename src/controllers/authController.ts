@@ -107,6 +107,8 @@ export const registerUser = async (
     community,
     dateOfBirth,
     gender,
+    appLanguage,
+    relationLanguage,
   } = req.body as {
     phone?: string;
     email?: string;
@@ -117,6 +119,8 @@ export const registerUser = async (
     community?: string;
     dateOfBirth?: string;
     gender?: string;
+    appLanguage?: string;
+    relationLanguage?: string;
   };
 
   // we use firstName as required "name"
@@ -146,6 +150,8 @@ export const registerUser = async (
       community: community ?? null,
       dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : null,
       gender: normalizeGender(gender),
+      appLanguage: appLanguage ?? 'en',
+      relationLanguage: relationLanguage ?? 'en',
       profileCompleted: true,
       isRegistered: true,
       worldX: (Math.random() - 0.5) * 100000,
