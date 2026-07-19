@@ -1164,13 +1164,11 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
           label: "मेव्हणा",
           code: "MEVHANA",
           direction: "SAME",
-          triggerGender: "MALE",
         },
         {
           label: "मेव्हणी",
           code: "MEVHANI",
           direction: "SAME",
-          triggerGender: "FEMALE",
         },
       ],
       right: [{
@@ -1202,19 +1200,21 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
   },
   MEVHANI: {
     xAxis: {
-      left: [],
+      left: [
+        {
+          label: "साडू", code: "SADU", direction: "SAME"
+        }
+      ],
       right: [
         {
           label: "मेव्हणा",
           code: "MEVHANA",
           direction: "SAME",
-          triggerGender: "MALE",
         },
         {
           label: "मेव्हणी",
           code: "MEVHANI",
           direction: "SAME",
-          triggerGender: "FEMALE",
         },
       ],
     },
@@ -1225,6 +1225,16 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
         { label: "भाची", code: "BHACHI", direction: "DOWN" },
       ],
     },
+  },
+  SADU: {
+    xAxis: {
+      left: [],
+      right: [{ label: "मेव्हणी", code: "MEVHANI", direction: "SAME" }]
+    },
+    yAxis: {
+      top: [],
+      bottom: [{ label: "भाचा", code: "BHACHA", direction: "DOWN" }, { label: "भाची", code: "BHACHI", direction: "DOWN" }]
+    }
   },
   CHULAT_BHAU: {
     xAxis: {

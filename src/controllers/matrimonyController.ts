@@ -3,7 +3,7 @@ import prisma from '../lib/prisma';
 import { FamilyGraphMatchEngine } from '../services/matrimonyEngine';
 
 export class MatrimonyController {
-  
+
   async upsertProfile(req: Request, res: Response) {
     try {
       const userId = (req as any).user.id;
@@ -229,7 +229,7 @@ export class MatrimonyController {
       if (!profile) return res.status(404).json({ status: 'error', message: 'Profile not found' });
 
       const recommendations = await prisma.graphRecommendationCache.findMany({
-        where: { 
+        where: {
           userId: profile.id,
           target: {
             interestsReceived: {
@@ -371,4 +371,141 @@ export class MatrimonyController {
       return res.status(500).json({ status: 'error', message: error.message });
     }
   }
+
+  // --- Advanced Flow for Managed Profiles ---
+
+  private normalizePhone(phone: string | undefined | null) {
+    if (!phone) return null;
+    const clean = phone.replace(/\D/g, '');
+    return clean.length >= 10 ? clean.slice(-10) : null;
+  }
+
+  async checkPhoneForManagedProfile(req: Request, res: Response) {
+    try {
+      const { phone } = req.body;
+      const normalized = this.normalizePhone(phone);
+      if (!normalized) return res.status(400).json({ status: 'error', message: 'Invalid phone number' });
+
+      const childUser = await prisma.user.findUnique({
+        where: { phone: normalized },
+        include: { matrimonyProfile: true }
+      });
+
+      if (!childUser) {
+        return res.json({ status: 'success', exists: false });
+      }
+
+      const hasSelfProfile = childUser.matrimonyProfile?.profileType === 'SELF';
+      const isManaged = childUser.matrimonyProfile?.profileType === 'MANAGED';
+
+      return res.json({
+        status: 'success',
+        exists: true,
+        user: {
+          id: childUser.id,
+          firstName: childUser.firstName,
+          lastName: childUser.lastName,
+          gender: childUser.gender,
+        },
+        hasSelfProfile,
+        isManaged,
+        managedById: childUser.matrimonyProfile?.managedByUserId
+      });
+    } catch (error: any) {
+      return res.status(500).json({ status: 'error', message: error.message });
+    }
+  }
+
+  async requestManagedProfileApproval(req: Request, res: Response) {
+    try {
+      const parentUserId = (req as any).user.id;
+      const { targetUserId, relationLabel } = req.body;
+
+      // Ensure the target is actually registered and does not have a SELF profile yet?
+      // For now, just create a relation request of type MATRIMONY_MANAGER
+      
+      const parent = await prisma.user.findUnique({ where: { id: parentUserId } });
+      
+      const existing = await prisma.relation.findFirst({
+        where: {
+          fromUserId: parentUserId,
+          toUserId: targetUserId,
+          relationTypeCode: 'MATRIMONY_MANAGER',
+          category: 'MATRIMONY'
+        }
+      });
+      if (existing) {
+        return res.status(400).json({ status: 'error', message: 'Approval request already sent' });
+      }
+
+      const relation = await prisma.relation.create({
+        data: {
+          fromUserId: parentUserId,
+          toUserId: targetUserId,
+          relationTypeCode: 'MATRIMONY_MANAGER',
+          category: 'MATRIMONY',
+          status: 'PENDING',
+          customName: relationLabel
+        }
+      });
+
+      // Send Notification to the target
+      await prisma.notification.create({
+        data: {
+          userId: targetUserId,
+          type: 'MATRIMONY_PROFILE_APPROVAL',
+          title: 'Matrimony Profile Management',
+          message: `${parent?.firstName || 'Someone'} wants to create and manage a Matrimony Profile for you.`,
+          relationId: relation.id
+        }
+      });
+
+      return res.json({ status: 'success', message: 'Approval request sent to the user' });
+    } catch (error: any) {
+      return res.status(500).json({ status: 'error', message: error.message });
+    }
+  }
+
+  async verifyOtpAndCreateUser(req: Request, res: Response) {
+    try {
+      const parentUserId = (req as any).user.id;
+      const { phone, otp, firstName, lastName, gender, relationLabel } = req.body;
+
+      const normalized = this.normalizePhone(phone);
+      if (!normalized) return res.status(400).json({ status: 'error', message: 'Invalid phone number' });
+
+      // In real life, verify OTP here. For now simulate success if otp = 1234
+      if (otp !== '1234') {
+        return res.status(400).json({ status: 'error', message: 'Invalid OTP' });
+      }
+
+      // Create User
+      let childUser = await prisma.user.create({
+        data: {
+          phone: normalized,
+          firstName,
+          lastName,
+          gender: gender || null,
+          isRegistered: false,
+        }
+      });
+
+      // Create a confirmed relation indicating parent manages them
+      await prisma.relation.create({
+        data: {
+          fromUserId: parentUserId,
+          toUserId: childUser.id,
+          relationTypeCode: 'MATRIMONY_MANAGER',
+          category: 'MATRIMONY',
+          status: 'CONFIRMED',
+          customName: relationLabel
+        }
+      });
+
+      return res.json({ status: 'success', user: childUser });
+    } catch (error: any) {
+      return res.status(500).json({ status: 'error', message: error.message });
+    }
+  }
 }
+

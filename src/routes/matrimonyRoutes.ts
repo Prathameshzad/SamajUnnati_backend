@@ -31,4 +31,9 @@ router.post('/profile/for-child', controller.upsertProfileForChild.bind(controll
 router.get('/managed-profiles', controller.getManagedProfiles.bind(controller));
 router.post('/profile/claim', controller.claimProfile.bind(controller));
 
+// Managed Profile Advanced Flow
+router.post('/profile/check-phone-managed', controller.checkPhoneForManagedProfile.bind(controller));
+router.post('/profile/request-approval', controller.requestManagedProfileApproval.bind(controller));
+router.post('/profile/verify-otp-managed', controller.verifyOtpAndCreateUser.bind(controller));
+
 export default router;

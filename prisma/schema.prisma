@@ -512,6 +512,7 @@ enum NotificationType {
   POST_SHARE
   FOLLOW_REQUEST
   FOLLOW_ACCEPTED
+  MATRIMONY_PROFILE_APPROVAL
 }
 
 enum NotificationState {

@@ -78,6 +78,7 @@ const relationTypes = [
   { code: 'CHULTA_NANAND', category: 'FAMILY', targetGender: 'FEMALE', treeLevel: 0, reciprocalCode: 'VAHINI' },
   { code: 'SAVATR_BHAU', category: 'FAMILY', targetGender: 'MALE', treeLevel: 0, reciprocalCode: 'SAVATR_BHAU' },
   { code: 'SAVATR_BAHIN', category: 'FAMILY', targetGender: 'FEMALE', treeLevel: 0, reciprocalCode: 'SAVATR_BHAU' },
+  { code: 'SADU', category: 'FAMILY', targetGender: 'MALE', treeLevel: 0, reciprocalCode: 'SADU' },
 
   // DOWN (Generation -)
   { code: 'MULGA', category: 'FAMILY', targetGender: 'MALE', treeLevel: -1, reciprocalCode: 'VADIL' },
@@ -173,6 +174,7 @@ const translations = [
   { code: 'CHULTA_NANAND', mr: 'चुलतनणंद', en: 'Cousin-in-law sister', zh: '堂姑子 (堂姐妹的丈夫)' },
   { code: 'SAVATR_BHAU', mr: 'सावत्रभाऊ', en: 'Step-Brother', zh: '继兄弟' },
   { code: 'SAVATR_BAHIN', mr: 'सावत्रबहीण', en: 'Step-Sister', zh: '继姐妹' },
+  { code: 'SADU', mr: 'साडू', en: "Wife's sister's husband", zh: '连襟 (妻子的姐妹的丈夫)' },
 
   // DOWN
   { code: 'MULGA', mr: 'मुलगा', en: 'Son', zh: '儿子' },
