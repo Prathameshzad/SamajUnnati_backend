@@ -1,3 +1,5 @@
+name: samaj
+
 services:
   backend:
     build:
