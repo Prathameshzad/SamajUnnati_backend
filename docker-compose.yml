@@ -18,9 +18,17 @@ services:
       - "8003:8000"
 
     environment:
-      - NODE_ENV=development
-      - PORT=8000
+      NODE_ENV: development
+      PORT: 8000
 
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+    networks:
+      - default
+      - shikshadisha
+
+networks:
+  shikshadisha:
+    external: true
+    name: shikshadisha-network
