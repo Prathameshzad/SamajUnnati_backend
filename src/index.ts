@@ -19,6 +19,9 @@ import storyRoutes from './routes/storyRoutes';
 import followRoutes from './routes/followRoutes';
 import matrimonyRoutes from './routes/matrimonyRoutes';
 
+import { RabbitMQService } from './services/rabbitmqService';
+import { RedisService } from './services/redisService';
+
 dotenv.config();
 
 const app: Application = express();
@@ -51,11 +54,13 @@ app.get('/health', async (req: Request, res: Response) => {
   try {
     const prisma = (await import('./lib/prisma')).default;
     await prisma.$queryRaw`SELECT 1`;
-    res.status(200).json({ status: 'ok', database: 'connected', uptime: process.uptime() });
+    const redisStatus = RedisService.isAlive() ? 'connected' : 'disconnected/standby';
+    res.status(200).json({ status: 'ok', database: 'connected', redis: redisStatus, uptime: process.uptime() });
   } catch (error: any) {
     res.status(500).json({ status: 'error', database: 'failed', error: error.message });
   }
 });
+
 
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
@@ -78,4 +83,7 @@ initSocket(server);
 
 server.listen(PORT, () => {
   console.log(`MySociety backend running on port ${PORT}`);
+  RabbitMQService.startConsumer().catch((err) => {
+    console.warn('[RabbitMQ Init Error]', err.message);
+  });
 });

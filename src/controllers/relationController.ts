@@ -4,6 +4,7 @@ import prisma from '../lib/prisma';
 import { AuthRequest } from '../middleware/authMiddleware';
 import { getIO } from '../lib/socket';
 import { RELATION_AXIS_CONFIG } from '../utils/relationMetadata';
+import { TreeCacheService } from '../services/treeCacheService';
 
 
 type GenderValue = 'MALE' | 'FEMALE' | null;
@@ -431,6 +432,8 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
       relationId: relation.id,
     });
 
+    await TreeCacheService.invalidateUserTree(fromUserId, relatedUser.id, userId);
+
     return res.status(201).json({
       ...relation,
       relationType: { code: relationTypeCode, label: displayLabel }
@@ -480,6 +483,8 @@ export const approveRelation = async (req: AuthRequest, res: Response) => {
       relationId: relation.id,
     });
 
+    await TreeCacheService.invalidateUserTree(relation.fromUserId, relation.toUserId, relation.createdById, userId);
+
     return res.json(updated);
   } catch (error) {
     console.error('approve relation error', error);
@@ -513,6 +518,8 @@ export const rejectRelation = async (req: AuthRequest, res: Response) => {
       message: `${relation.toUser?.firstName || 'User'} rejected your request.`,
       relationId: relation.id,
     });
+
+    await TreeCacheService.invalidateUserTree(relation.fromUserId, relation.toUserId, relation.createdById, userId);
 
     return res.json(updated);
   } catch (error) {
@@ -554,6 +561,8 @@ export const updateRelation = async (req: AuthRequest, res: Response) => {
       data: updateData
     });
 
+    await TreeCacheService.invalidateUserTree(relation.fromUserId, relation.toUserId, relation.createdById, userId);
+
     return res.json({ ...updated, phoneChanged });
   } catch (error) {
     console.error('update relation error', error);
@@ -570,6 +579,11 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
   const category = req.query.category as string;
 
   try {
+    const cachedTree = await TreeCacheService.getFullTreeCache(userId, maxDepth, lang, category);
+    if (cachedTree) {
+      return res.json(cachedTree);
+    }
+
     const rootUser = await prisma.user.findUnique({ where: { id: userId } });
     if (!rootUser) return res.status(404).json({ message: 'User not found' });
 
@@ -781,9 +795,9 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
     for (const [gen, nodes] of nodesByGen.entries()) {
       levels.push({ level: gen, nodes });
     }
-    levels.sort((a, b) => a.level - b.level);
-
-    return res.json({ rootUser, levels, allRelations });
+    const responseData = { rootUser, levels, allRelations };
+    await TreeCacheService.setFullTreeCache(userId, maxDepth, lang, category, responseData);
+    return res.json(responseData);
   } catch (error) {
     console.error('getFullTree error', error);
     return res.status(500).json({ message: 'Internal server error' });
@@ -938,6 +952,8 @@ export const deleteRelation = async (req: AuthRequest, res: Response) => {
     }
 
     await prisma.relation.delete({ where: { id } });
+    await TreeCacheService.invalidateUserTree(relation.fromUserId, relation.toUserId, relation.createdById, userId);
+
     return res.json({ message: 'Relation deleted' });
   } catch (error) {
     console.error('delete relation error', error);

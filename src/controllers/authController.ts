@@ -18,7 +18,6 @@ function normalizeGender(gender?: string | null): GenderValue | null {
 /**
  * Normalize phone number:
  * - Keep digits only
- * - Use last 10 digits (so +91 / 0 prefixes don’t matter)
  * Returns null if nothing valid.
  */
 function normalizePhone(value?: string | null): string | null {
@@ -32,7 +31,7 @@ function normalizePhone(value?: string | null): string | null {
  * POST /api/auth/check-phone
  * Body: { phone }
  *
- * If user exists → { exists: true, token, user }
+ * If user exists → Sends OTP, returns { exists: true, message }
  * If not → { exists: false }
  */
 export const checkPhone = async (
@@ -63,28 +62,48 @@ export const checkPhone = async (
       });
     }
 
+    const isDev = process.env.NODE_ENV !== 'production';
+
     if (!user) {
-      return res.json({ exists: false });
+      const otpResult = await OtpService.sendOtp(normalized, 'REGISTER');
+      if (otpResult.rateLimited) {
+        return res.status(429).json({
+          message: otpResult.message,
+          rateLimited: true,
+          retryAfterSeconds: otpResult.retryAfterSeconds,
+        });
+      }
+      return res.json({
+        exists: false,
+        message: 'OTP sent for registration',
+        ...(isDev && otpResult.code ? { code: otpResult.code } : {}),
+      });
     }
 
-    // Trigger OTP send
-    if (user.phone) {
-      await OtpService.sendOtp(user.phone);
+    // Trigger OTP send with rate limit check
+    const otpResult = await OtpService.sendOtp(normalized, 'LOGIN');
+    if (otpResult.rateLimited) {
+      return res.status(429).json({
+        message: otpResult.message,
+        rateLimited: true,
+        retryAfterSeconds: otpResult.retryAfterSeconds,
+      });
     }
 
     return res.json({
       exists: true,
-      message: 'OTP sent to registered number'
+      message: 'OTP sent to registered number',
+      ...(isDev && otpResult.code ? { code: otpResult.code } : {}),
     });
   } catch (error: any) {
     console.error('check-phone error details:', {
       message: error.message,
       stack: error.stack,
-      code: error.code
+      code: error.code,
     });
     return res.status(500).json({
       message: 'Internal server error during phone check',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
     });
   }
 };
@@ -193,15 +212,27 @@ export const registerUser = async (
 
 /**
  * POST /api/auth/request-otp
- * Body: { phone }
+ * Body: { phone, type }
  */
 export const requestOtp = async (req: Request, res: Response) => {
-  const { phone } = req.body;
+  const { phone, type } = req.body;
   const normalized = normalizePhone(phone);
   if (!normalized) return res.status(400).json({ message: 'Invalid phone' });
 
-  await OtpService.sendOtp(normalized);
-  return res.json({ message: 'OTP sent' });
+  const otpResult = await OtpService.sendOtp(normalized, type || 'RESEND');
+  if (otpResult.rateLimited) {
+    return res.status(429).json({
+      message: otpResult.message,
+      rateLimited: true,
+      retryAfterSeconds: otpResult.retryAfterSeconds,
+    });
+  }
+
+  const isDev = process.env.NODE_ENV !== 'production';
+  return res.json({
+    message: 'OTP sent',
+    ...(isDev && otpResult.code ? { code: otpResult.code } : {}),
+  });
 };
 
 /**
@@ -214,11 +245,11 @@ export const verifyOtp = async (req: Request, res: Response) => {
   if (!normalized) return res.status(400).json({ message: 'Invalid phone' });
 
   const isValid = await OtpService.verifyOtp(normalized, code);
-  if (!isValid) return res.status(401).json({ message: 'Invalid OTP' });
+  if (!isValid) return res.status(401).json({ message: 'Invalid OTP code' });
 
   // If valid, ensure user exists and is marked as registered (verified phone)
   let user = await prisma.user.findUnique({ where: { phone: normalized } });
-  
+
   if (user) {
     if (!user.isRegistered) {
       user = await prisma.user.update({
@@ -245,4 +276,3 @@ export const verifyOtp = async (req: Request, res: Response) => {
 
   return res.json({ verified: true, exists: false, message: 'Phone verified, proceed to registration' });
 };
-

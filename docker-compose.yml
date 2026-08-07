@@ -20,3 +20,7 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=8000
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
