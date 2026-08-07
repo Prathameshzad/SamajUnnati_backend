@@ -24,12 +24,3 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
-    networks:
-      - default
-      - shared_network
-
-networks:
-  shared_network:
-    external: true
-    name: shikshadisha_default # Name of the docker network where sd_postgres, redis, rabbitmq reside
-
