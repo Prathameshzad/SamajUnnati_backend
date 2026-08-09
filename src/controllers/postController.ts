@@ -178,7 +178,7 @@ export const getUserPosts = async (req: AuthRequest, res: Response): Promise<Res
 
     const targetUser = await prisma.user.findUnique({
       where: { id: userId },
-      select: { id: true, firstName: true, lastName: true, photoUrl: true, isPrivate: true, bio: true },
+      select: { id: true, firstName: true, lastName: true, photoUrl: true, isPrivate: true, bio: true, dateOfBirth: true, bloodGroup: true, education: true, occupation: true, maritalStatus: true, pincode: true, address: true, area: true },
     });
 
     if (!canView) {

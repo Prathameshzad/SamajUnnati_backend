@@ -177,7 +177,18 @@ export const listRelations = async (req: AuthRequest, res: Response) => {
       };
     }));
 
-    return res.json(relations);
+    const filteredRelations = relations.filter(rel => {
+      if (rel.status === 'PENDING') {
+        const isMyRelation = rel.fromUserId === userId || rel.createdById === userId;
+        const relativeUser = isMyRelation ? rel.toUser : rel.fromUser;
+        if (!relativeUser) return false;
+        if (relativeUser.isAlive === false) return false;
+        if (!relativeUser.phone || !String(relativeUser.phone).trim()) return false;
+      }
+      return true;
+    });
+
+    return res.json(filteredRelations);
   } catch (error) {
     console.error('list relations error', error);
     return res.status(500).json({ message: 'Internal server error' });
@@ -268,7 +279,15 @@ export const getRequests = async (req: AuthRequest, res: Response) => {
       };
     }));
 
-    return res.json(pending);
+    const filteredPending = pending.filter(rel => {
+      const sender = rel.fromUser;
+      if (!sender) return false;
+      if (sender.isAlive === false) return false;
+      if (!sender.phone || !String(sender.phone).trim()) return false;
+      return true;
+    });
+
+    return res.json(filteredPending);
   } catch (error) {
     console.error('requests error', error);
     return res.status(500).json({ message: 'Internal server error' });
@@ -287,10 +306,20 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
   const lang = (req.query.lang as string) || 'mr';
   if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
 
-  const { phone, firstName, lastName, gender, relationTypeCode, sourceUserId, customName, customPhotoUrl, isAlive } = req.body;
+  const {
+    phone, firstName, lastName, gender, relationTypeCode, sourceUserId, customName, customPhotoUrl, isAlive, dateOfBirth, bloodGroup,
+    education, occupation, maritalStatus, pincode, address, area
+  } = req.body;
   const fromUserId = sourceUserId || userId;
 
   const isPersonAlive = isAlive !== undefined ? (String(isAlive) === 'true') : true;
+
+  let parsedDob: Date | null = null;
+  if (dateOfBirth) {
+    const d = new Date(dateOfBirth);
+    if (!isNaN(d.getTime())) parsedDob = d;
+  }
+  const cleanBloodGroup = bloodGroup ? String(bloodGroup).trim() : null;
 
   let cleanPhone = null;
   if (isPersonAlive && phone && String(phone).trim()) {
@@ -364,7 +393,7 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
       const creator = await prisma.user.findUnique({ where: { id: userId } });
       const baseWorldX = creator?.worldX || 0;
       const baseWorldY = creator?.worldY || 0;
-      
+
       relatedUser = await prisma.user.create({
         data: {
           phone: cleanPhone,
@@ -372,12 +401,39 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
           firstName,
           lastName: lastName || null,
           gender: normalizeGender(gender || relType.targetGender),
+          dateOfBirth: parsedDob,
+          bloodGroup: cleanBloodGroup,
+          education: education ? String(education).trim() : null,
+          occupation: occupation ? String(occupation).trim() : null,
+          maritalStatus: maritalStatus ? String(maritalStatus).trim() : null,
+          pincode: pincode ? String(pincode).trim() : null,
+          address: address ? String(address).trim() : null,
+          area: area ? String(area).trim() : null,
           profileCompleted: false,
           isAlive: isPersonAlive,
           worldX: baseWorldX + (Math.random() - 0.5) * 2000,
           worldY: baseWorldY + (Math.random() - 0.5) * 2000,
         },
       });
+    } else {
+      // Existing user found (e.g. by phone) -> update profile fields if provided
+      const updateFields: any = {};
+      if (parsedDob) updateFields.dateOfBirth = parsedDob;
+      if (cleanBloodGroup) updateFields.bloodGroup = cleanBloodGroup;
+      if (isAlive !== undefined) updateFields.isAlive = isPersonAlive;
+      if (education) updateFields.education = String(education).trim();
+      if (occupation) updateFields.occupation = String(occupation).trim();
+      if (maritalStatus) updateFields.maritalStatus = String(maritalStatus).trim();
+      if (pincode) updateFields.pincode = String(pincode).trim();
+      if (address) updateFields.address = String(address).trim();
+      if (area) updateFields.area = String(area).trim();
+
+      if (Object.keys(updateFields).length > 0) {
+        relatedUser = await prisma.user.update({
+          where: { id: relatedUser.id },
+          data: updateFields
+        });
+      }
     }
 
     if (relatedUser.id === fromUserId) {
@@ -531,17 +587,28 @@ export const rejectRelation = async (req: AuthRequest, res: Response) => {
 export const updateRelation = async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;
   const { id } = req.params;
-  const { customName, customPhotoUrl, relationTypeCode, phone } = req.body;
+  const {
+    targetUserId: bodyTargetUserId,
+    customName, customPhotoUrl, relationTypeCode, phone, isAlive, dateOfBirth, bloodGroup,
+    education, occupation, maritalStatus, pincode, address, area
+  } = req.body;
 
   if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
 
   try {
     const relation = await prisma.relation.findUnique({
       where: { id },
-      include: { relationType: true, toUser: true }
+      include: { relationType: true, toUser: true, fromUser: true }
     });
 
-    if (!relation || relation.fromUserId !== userId) {
+    if (!relation) {
+      return res.status(404).json({ message: 'Relation not found' });
+    }
+
+    const isParticipant = relation.fromUserId === userId || relation.toUserId === userId;
+    const isCreator = relation.createdById === userId;
+
+    if (!isParticipant && !isCreator) {
       return res.status(403).json({ message: 'Not authorized to edit this relation' });
     }
 
@@ -550,20 +617,62 @@ export const updateRelation = async (req: AuthRequest, res: Response) => {
       customPhotoUrl: customPhotoUrl !== undefined ? customPhotoUrl : relation.customPhotoUrl
     };
 
-    // ── Phone number change ──────────────────────────────────────
-    let phoneChanged = false; // Disabled by user request: Phone numbers cannot be edited.
-
-    // ── Relation type change ─────────────────────────────────────
-    // Disabled by user request: User can only update names now.
-
     const updated = await prisma.relation.update({
       where: { id },
       data: updateData
     });
 
+    // Update target relative user's profile fields if specified
+    const targetUserData: any = {};
+    if (isAlive !== undefined) targetUserData.isAlive = Boolean(isAlive);
+    if (dateOfBirth !== undefined) {
+      if (dateOfBirth) {
+        const d = new Date(dateOfBirth);
+        targetUserData.dateOfBirth = !isNaN(d.getTime()) ? d : null;
+      } else {
+        targetUserData.dateOfBirth = null;
+      }
+    }
+    if (bloodGroup !== undefined) targetUserData.bloodGroup = bloodGroup ? String(bloodGroup).trim() : null;
+    if (education !== undefined) targetUserData.education = education ? String(education).trim() : null;
+    if (occupation !== undefined) targetUserData.occupation = occupation ? String(occupation).trim() : null;
+    if (maritalStatus !== undefined) targetUserData.maritalStatus = maritalStatus ? String(maritalStatus).trim() : null;
+    if (pincode !== undefined) targetUserData.pincode = pincode ? String(pincode).trim() : null;
+    if (address !== undefined) targetUserData.address = address ? String(address).trim() : null;
+    if (area !== undefined) targetUserData.area = area ? String(area).trim() : null;
+
+    if (Object.keys(targetUserData).length > 0) {
+      let resolvedTargetUserId = bodyTargetUserId;
+      if (!resolvedTargetUserId) {
+        if (relation.fromUserId === userId) {
+          resolvedTargetUserId = relation.toUserId;
+        } else if (relation.toUserId === userId) {
+          resolvedTargetUserId = relation.fromUserId;
+        } else {
+          resolvedTargetUserId = relation.createdById === userId ? relation.toUserId : relation.fromUserId;
+        }
+      }
+
+      console.log('[updateRelation] targetUserData:', JSON.stringify(targetUserData));
+      console.log('[updateRelation] resolvedTargetUserId:', resolvedTargetUserId, '| userId:', userId);
+      console.log('[updateRelation] bodyTargetUserId received:', bodyTargetUserId);
+
+      if (resolvedTargetUserId) {
+        await prisma.user.update({
+          where: { id: resolvedTargetUserId },
+          data: targetUserData
+        });
+        console.log('[updateRelation] ✅ User updated successfully for:', resolvedTargetUserId);
+      } else {
+        console.warn('[updateRelation] ⚠️ No resolvedTargetUserId — user profile NOT updated');
+      }
+    } else {
+      console.log('[updateRelation] No profile fields to update in targetUserData');
+    }
+
     await TreeCacheService.invalidateUserTree(relation.fromUserId, relation.toUserId, relation.createdById, userId);
 
-    return res.json({ ...updated, phoneChanged });
+    return res.json({ ...updated, isAlive });
   } catch (error) {
     console.error('update relation error', error);
     return res.status(500).json({ message: 'Internal server error' });
@@ -654,10 +763,10 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
           createdAt: true,
           updatedAt: true,
           fromUser: {
-            select: { id: true, phone: true, firstName: true, lastName: true, photoUrl: true, gender: true, isAlive: true }
+            select: { id: true, phone: true, firstName: true, lastName: true, photoUrl: true, gender: true, isAlive: true, dateOfBirth: true, bloodGroup: true, education: true, occupation: true, maritalStatus: true, pincode: true, address: true, area: true }
           },
           toUser: {
-            select: { id: true, phone: true, firstName: true, lastName: true, photoUrl: true, gender: true, isAlive: true }
+            select: { id: true, phone: true, firstName: true, lastName: true, photoUrl: true, gender: true, isAlive: true, dateOfBirth: true, bloodGroup: true, education: true, occupation: true, maritalStatus: true, pincode: true, address: true, area: true }
           },
           relationType: true // translations are in cache
         },
@@ -899,7 +1008,17 @@ export const getRelationCounts = async (req: AuthRequest, res: Response) => {
   try {
     const [pending, confirmed, rejected, accepted] = await Promise.all([
       prisma.relation.count({
-        where: { createdById: userId, status: 'PENDING' },
+        where: {
+          createdById: userId,
+          status: 'PENDING',
+          toUser: {
+            isAlive: true,
+            AND: [
+              { phone: { not: null } },
+              { phone: { not: '' } }
+            ]
+          }
+        },
       }),
       prisma.relation.count({
         where: { fromUserId: userId, status: 'CONFIRMED' },

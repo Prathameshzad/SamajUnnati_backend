@@ -76,10 +76,10 @@ export const getFriendTree = async (req: AuthRequest, res: Response) => {
           createdAt: true,
           updatedAt: true,
           fromUser: {
-            select: { id: true, phone: true, firstName: true, lastName: true, photoUrl: true, gender: true, isAlive: true }
+            select: { id: true, phone: true, firstName: true, lastName: true, photoUrl: true, gender: true, isAlive: true, dateOfBirth: true, bloodGroup: true, education: true, occupation: true, maritalStatus: true, pincode: true, address: true, area: true }
           },
           toUser: {
-            select: { id: true, phone: true, firstName: true, lastName: true, photoUrl: true, gender: true, isAlive: true }
+            select: { id: true, phone: true, firstName: true, lastName: true, photoUrl: true, gender: true, isAlive: true, dateOfBirth: true, bloodGroup: true, education: true, occupation: true, maritalStatus: true, pincode: true, address: true, area: true }
           },
           relationType: { include: { translations: true } }
       }
@@ -198,7 +198,18 @@ export const listFriends = async (req: AuthRequest, res: Response) => {
       };
     }));
 
-    return res.json(friends);
+    const filteredFriends = friends.filter(rel => {
+      if (rel.status === 'PENDING') {
+        const isMyRelation = rel.fromUserId === userId || rel.createdById === userId;
+        const relativeUser = isMyRelation ? rel.toUser : rel.fromUser;
+        if (!relativeUser) return false;
+        if (relativeUser.isAlive === false) return false;
+        if (!relativeUser.phone || !String(relativeUser.phone).trim()) return false;
+      }
+      return true;
+    });
+
+    return res.json(filteredFriends);
   } catch (error) {
     console.error('list friends error', error);
     return res.status(500).json({ message: 'Internal server error' });
@@ -254,10 +265,20 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
   const lang = (req.query.lang as string) || 'mr';
   if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
 
-  const { phone, firstName, lastName, gender, relationTypeCode, sourceUserId, customName, customPhotoUrl, isAlive, visualSide } = req.body;
+  const {
+    phone, firstName, lastName, gender, relationTypeCode, sourceUserId, customName, customPhotoUrl, isAlive, visualSide, dateOfBirth, bloodGroup,
+    education, occupation, maritalStatus, pincode, address, area
+  } = req.body;
   console.log('DEBUG: createFriend. sourceUserId:', sourceUserId, 'userId:', userId);
 
   const isPersonAlive = isAlive !== undefined ? (String(isAlive) === 'true') : true;
+
+  let parsedDob: Date | null = null;
+  if (dateOfBirth) {
+    const d = new Date(dateOfBirth);
+    if (!isNaN(d.getTime())) parsedDob = d;
+  }
+  const cleanBloodGroup = bloodGroup ? String(bloodGroup).trim() : null;
 
   let cleanPhone = null;
   if (isPersonAlive && phone && String(phone).trim()) {
@@ -290,6 +311,14 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
           firstName,
           lastName: lastName || null,
           gender: normalizeGender(gender),
+          dateOfBirth: parsedDob,
+          bloodGroup: cleanBloodGroup,
+          education: education ? String(education).trim() : null,
+          occupation: occupation ? String(occupation).trim() : null,
+          maritalStatus: maritalStatus ? String(maritalStatus).trim() : null,
+          pincode: pincode ? String(pincode).trim() : null,
+          address: address ? String(address).trim() : null,
+          area: area ? String(area).trim() : null,
           profileCompleted: false,
           isAlive: isPersonAlive,
         },

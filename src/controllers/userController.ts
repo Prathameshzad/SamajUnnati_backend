@@ -4,6 +4,7 @@ import type { Express } from 'express';
 import prisma from '../lib/prisma';
 import { AuthRequest } from '../middleware/authMiddleware';
 import { uploadProfileImageToR2 } from '../lib/r2';
+import { TreeCacheService } from '../services/treeCacheService';
 
 type GenderValue = 'MALE' | 'FEMALE';
 
@@ -132,14 +133,16 @@ export const updateMe = async (
     let finalPhotoUrl: string | null | undefined;
     if (uploadedPhotoUrl) {
       finalPhotoUrl = uploadedPhotoUrl;
+    } else if ((req.body as any).photoUrl) {
+      finalPhotoUrl = (req.body as any).photoUrl;
     } else {
-      // no file → do not touch photoUrl (keep undefined so Prisma ignores it)
       finalPhotoUrl = undefined;
     }
 
     const user = await prisma.user.update({
       where: { id: req.user.id },
       data: {
+        photoUrl: finalPhotoUrl,
         // contact
         phone,
         whatsapp,
@@ -178,11 +181,10 @@ export const updateMe = async (
 
         // legacy
         designation,
-
-        // image
-        photoUrl: finalPhotoUrl,
       },
     });
+
+    await TreeCacheService.invalidateUserTree(req.user.id);
 
     return res.json(user);
   } catch (error) {

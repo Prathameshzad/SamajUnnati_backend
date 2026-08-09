@@ -3,12 +3,16 @@ import { RedisService } from './redisService';
 
 const DEFAULT_TREE_TTL = 1800; // 30 minutes
 
+// Bump this version whenever the shape of the cached tree data changes (new fields, etc.)
+// This ensures stale Redis entries from before a deploy are never served.
+const CACHE_SCHEMA_VERSION = 'v2'; // bumped: added dateOfBirth, bloodGroup, education, occupation to tree nodes
+
 export class TreeCacheService {
   /**
    * Key pattern generators
    */
   private static getFullTreeKey(userId: string, depth: number, lang: string, category?: string): string {
-    return `tree:full:${userId}:${depth}:${lang}:${category || 'ALL'}`;
+    return `tree:full:${CACHE_SCHEMA_VERSION}:${userId}:${depth}:${lang}:${category || 'ALL'}`;
   }
 
   private static getGraphChunkKey(userId: string, nodeId: string, radius: number, lang: string): string {
