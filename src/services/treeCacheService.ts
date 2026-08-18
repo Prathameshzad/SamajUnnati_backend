@@ -89,7 +89,9 @@ export class TreeCacheService {
     if (validIds.length === 0) return;
 
     for (const id of validIds) {
+      await RedisService.delPattern(`tree:full:*:${id}:*`);
       await RedisService.delPattern(`tree:full:${id}:*`);
+      await RedisService.delPattern(`tree:chunk:*:${id}:*`);
       await RedisService.delPattern(`tree:chunk:${id}:*`);
       await RedisService.del(this.getRelationCountsKey(id));
       console.log(`[TREE CACHE INVALIDATED] Cleared tree cache for user ${id}`);

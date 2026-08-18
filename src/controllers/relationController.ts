@@ -17,6 +17,11 @@ function normalizeGender(gender?: string | null): GenderValue {
   return null;
 }
 
+function normalizeVisualSide(side?: string | null): 'top' | 'bottom' | 'left' | 'right' | null {
+  if (side === 'top' || side === 'bottom' || side === 'left' || side === 'right') return side;
+  return null;
+}
+
 /**
  * Resolve display label for a relation type based on language.
  */
@@ -308,7 +313,7 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
 
   const {
     phone, firstName, lastName, gender, relationTypeCode, sourceUserId, customName, customPhotoUrl, isAlive, dateOfBirth, bloodGroup,
-    education, occupation, maritalStatus, pincode, address, area
+    education, occupation, maritalStatus, pincode, address, area, visualSide
   } = req.body;
   const fromUserId = sourceUserId || userId;
 
@@ -367,6 +372,8 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
           createdById: userId,
         },
       });
+
+      await TreeCacheService.invalidateUserTree(userId, existingRelation.fromUserId);
 
       return res.status(200).json({
         alreadyAccepted: true,
@@ -452,6 +459,7 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
         status: 'PENDING',
         ...(customName ? { customName } : {}),
         ...(customPhotoUrl ? { customPhotoUrl } : {}),
+        visualSide: normalizeVisualSide(visualSide),
         createdById: userId,
       },
       create: {
@@ -462,6 +470,7 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
         status: 'PENDING',
         customName: customName || null,
         customPhotoUrl: customPhotoUrl || null,
+        visualSide: normalizeVisualSide(visualSide),
         createdById: userId,
       },
       include: { toUser: true, fromUser: true },
@@ -1045,7 +1054,7 @@ export const deleteRelation = async (req: AuthRequest, res: Response) => {
   try {
     const relation = await prisma.relation.findUnique({
       where: { id },
-      include: { fromUser: true }
+      include: { fromUser: true, toUser: true }
     });
     if (!relation) return res.status(404).json({ message: 'Relation not found' });
 
@@ -1062,14 +1071,23 @@ export const deleteRelation = async (req: AuthRequest, res: Response) => {
         where: { fromUserId: relation.toUserId, toUserId: relation.fromUserId },
         data: { status: 'REJECTED' }
       });
+      const otherUserId = relation.fromUserId === userId ? relation.toUserId : relation.fromUserId;
+      const remover = relation.fromUserId === userId ? relation.fromUser : relation.toUser;
       await createNotification({
-        userId: relation.toUserId,
+        userId: otherUserId,
         type: 'RELATION_REJECTED',
         title: 'Connection removed',
-        message: `${relation.fromUser?.firstName || 'Someone'} has removed you from their family tree.`,
+        message: `${remover?.firstName || 'Someone'} has removed you from their family tree.`,
       });
     }
 
+    // 1. Unlink notifications referencing this relation to avoid foreign key failure
+    await prisma.notification.updateMany({
+      where: { relationId: id },
+      data: { relationId: null }
+    });
+
+    // 2. Delete the relation
     await prisma.relation.delete({ where: { id } });
     await TreeCacheService.invalidateUserTree(relation.fromUserId, relation.toUserId, relation.createdById, userId);
 

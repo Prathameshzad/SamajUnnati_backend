@@ -1,6 +1,8 @@
 import { Response } from 'express';
 import prisma from '../lib/prisma';
 import { AuthRequest } from '../middleware/authMiddleware';
+import { getIO } from '../lib/socket';
+import { TreeCacheService } from '../services/treeCacheService';
 
 /**
  * Resolve display label for a relation type based on language.
@@ -252,13 +254,265 @@ async function createNotification(args: {
         title,
         message,
         relationId: relationId ?? null,
-      }
+      },
+      include: {
+        relation: {
+          include: {
+            fromUser: true,
+            toUser: true,
+          },
+        },
+      },
     });
-    // In a real app, emit via socket here too if available
+
+    // Emit real-time notification via Socket.IO (matches family pattern)
+    try {
+      getIO().to(userId).emit('notification', notification);
+    } catch (e) {
+      console.warn('Socket emit failed', e);
+    }
   } catch (err) {
     console.error('Failed to create notification', err);
   }
 }
+
+/**
+ * GET /friends/requests
+ * Returns all pending incoming friend requests for the authenticated user.
+ * Mirrors getRequests from relationController (family pattern).
+ */
+export const getFriendRequests = async (req: AuthRequest, res: Response) => {
+  const userId = req.user?.id;
+  const lang = (req.query.lang as string) || 'mr';
+  if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
+
+  try {
+    const raw = await prisma.relation.findMany({
+      where: {
+        toUserId: userId,
+        status: 'PENDING',
+        category: 'FRIEND',
+      },
+      include: {
+        fromUser: true,
+        toUser: true,
+        User_Relation_createdByIdToUser: true,
+        relationType: { include: { translations: true } }
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    const pending = await Promise.all(raw.map(async rel => {
+      const view = await resolveRelationForViewer(rel, userId, lang);
+
+      // Show the actual requester (createdById) as the logical sender
+      const logicalFromUser = (rel as any).User_Relation_createdByIdToUser || rel.fromUser;
+      const logicalFromUserId = rel.createdById || rel.fromUserId;
+
+      return {
+        ...rel,
+        fromUserId: logicalFromUserId,
+        fromUser: logicalFromUser,
+        relationType: { label: view.label, code: view.code }
+      };
+    }));
+
+    // Filter out requests from deceased/phoneless users (same as family pattern)
+    const filteredPending = pending.filter(rel => {
+      const sender = rel.fromUser;
+      if (!sender) return false;
+      if (sender.isAlive === false) return false;
+      if (!sender.phone || !String(sender.phone).trim()) return false;
+      return true;
+    });
+
+    return res.json(filteredPending);
+  } catch (error) {
+    console.error('getFriendRequests error', error);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
+/**
+ * POST /friends/:id/approve
+ * Approve a pending friend request. Notifies the original requester.
+ * Mirrors approveRelation from relationController (family pattern).
+ */
+export const approveFriend = async (req: AuthRequest, res: Response) => {
+  const userId = req.user?.id;
+  const { id } = req.params;
+  if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
+
+  try {
+    const relation = await prisma.relation.findUnique({
+      where: { id },
+      include: {
+        fromUser: true,
+        toUser: true,
+        relationType: { include: { translations: true } },
+      },
+    });
+
+    if (!relation || relation.toUserId !== userId) {
+      return res.status(404).json({ message: 'Friend request not found or not authorized' });
+    }
+
+    if (relation.category !== 'FRIEND') {
+      return res.status(400).json({ message: 'Not a friend request' });
+    }
+
+    if (relation.status !== 'PENDING') {
+      return res.status(400).json({ message: 'Request is no longer pending' });
+    }
+
+    // Mark the request as CONFIRMED
+    const updated = await prisma.relation.update({
+      where: { id },
+      data: { status: 'CONFIRMED' },
+    });
+
+    const approver = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { firstName: true },
+    });
+
+    // Notify the original requester (createdById or fromUserId)
+    await createNotification({
+      userId: relation.createdById ?? relation.fromUserId,
+      type: 'RELATION_APPROVED',
+      title: 'Friend request approved',
+      message: `${approver?.firstName || 'Someone'} approved your friend request.`,
+      relationId: relation.id,
+    });
+
+    await TreeCacheService.invalidateUserTree(relation.fromUserId, relation.toUserId, relation.createdById, userId);
+
+    return res.json(updated);
+  } catch (error) {
+    console.error('approveFriend error', error);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
+/**
+ * POST /friends/:id/reject
+ * Reject a pending friend request. Notifies the original requester.
+ * Mirrors rejectRelation from relationController (family pattern).
+ */
+export const rejectFriend = async (req: AuthRequest, res: Response) => {
+  const userId = req.user?.id;
+  const { id } = req.params;
+  if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
+
+  try {
+    const relation = await prisma.relation.findUnique({
+      where: { id },
+      include: {
+        toUser: true,
+        fromUser: true,
+      },
+    });
+
+    if (!relation || relation.toUserId !== userId) {
+      return res.status(404).json({ message: 'Friend request not found or not authorized' });
+    }
+
+    if (relation.category !== 'FRIEND') {
+      return res.status(400).json({ message: 'Not a friend request' });
+    }
+
+    if (relation.status !== 'PENDING') {
+      return res.status(400).json({ message: 'Request is no longer pending' });
+    }
+
+    const updated = await prisma.relation.update({
+      where: { id },
+      data: { status: 'REJECTED' },
+    });
+
+    // Notify the original requester
+    await createNotification({
+      userId: relation.createdById ?? relation.fromUserId,
+      type: 'RELATION_REJECTED',
+      title: 'Friend request rejected',
+      message: `${relation.toUser?.firstName || 'Someone'} rejected your friend request.`,
+      relationId: relation.id,
+    });
+
+    await TreeCacheService.invalidateUserTree(relation.fromUserId, relation.toUserId, relation.createdById, userId);
+
+    return res.json(updated);
+  } catch (error) {
+    console.error('rejectFriend error', error);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
+/**
+ * DELETE /friends/:id
+ * Remove a friend relation. Notifies the other party if already confirmed.
+ * Mirrors deleteRelation from relationController (family pattern).
+ */
+export const deleteFriend = async (req: AuthRequest, res: Response) => {
+  const userId = req.user?.id;
+  const { id } = req.params;
+  if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
+
+  try {
+    const relation = await prisma.relation.findUnique({
+      where: { id },
+      include: { fromUser: true, toUser: true }
+    });
+
+    if (!relation) return res.status(404).json({ message: 'Friend not found' });
+
+    // Must be a participant or the creator
+    const isParticipant = relation.fromUserId === userId || relation.toUserId === userId;
+    const isCreator = relation.createdById === userId;
+
+    if (!isParticipant && !isCreator) {
+      return res.status(403).json({ message: 'Not authorized to remove this friend' });
+    }
+
+    if (relation.category !== 'FRIEND') {
+      return res.status(400).json({ message: 'Not a friend relation' });
+    }
+
+    // If already confirmed, mark the reciprocal side as REJECTED so the other party is aware
+    if (relation.status === 'CONFIRMED') {
+      await prisma.relation.updateMany({
+        where: { fromUserId: relation.toUserId, toUserId: relation.fromUserId },
+        data: { status: 'REJECTED' }
+      });
+      // Notify the other party
+      const otherUserId = relation.fromUserId === userId ? relation.toUserId : relation.fromUserId;
+      const remover = relation.fromUserId === userId ? relation.fromUser : relation.toUser;
+      await createNotification({
+        userId: otherUserId,
+        type: 'RELATION_REJECTED',
+        title: 'Friend removed',
+        message: `${remover?.firstName || 'Someone'} has removed you from their friend list.`,
+        relationId: relation.id,
+      });
+    }
+
+    // 1. Unlink notifications referencing this relation to avoid foreign key failure
+    await prisma.notification.updateMany({
+      where: { relationId: id },
+      data: { relationId: null }
+    });
+
+    // 2. Delete the relation
+    await prisma.relation.delete({ where: { id } });
+
+    await TreeCacheService.invalidateUserTree(relation.fromUserId, relation.toUserId, relation.createdById, userId);
+
+    return res.json({ message: 'Friend removed' });
+  } catch (error) {
+    console.error('deleteFriend error', error);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+};
 
 export const createFriend = async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;
@@ -363,15 +617,27 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
     const displayLabel = resolveLabel(relType, lang);
     const authUser = await prisma.user.findUnique({ where: { id: userId } });
 
+    // Notify the recipient of the friend request (if they have a phone = real registered user)
     if (relatedUser.phone) {
       await createNotification({
         userId: relatedUser.id,
         type: 'RELATION_REQUEST',
         title: 'New friend request',
-        message: `${authUser?.firstName || 'Someone'} has added you as a "${displayLabel}".`,
+        message: `${authUser?.firstName || 'Someone'} has sent you a friend request as "${displayLabel}".`,
         relationId: relation.id,
       });
     }
+
+    // Notify the sender that the request was sent (mirrors family pattern)
+    await createNotification({
+      userId: userId,
+      type: 'RELATION_REQUEST',
+      title: 'Friend request sent',
+      message: `You added ${firstName} as "${displayLabel}". Waiting for approval.`,
+      relationId: relation.id,
+    });
+
+    await TreeCacheService.invalidateUserTree(fromUserId, relatedUser.id, userId);
 
     return res.status(201).json({
       ...relation,
