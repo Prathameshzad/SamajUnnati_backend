@@ -70,7 +70,7 @@ const RELATION_TREE_SIDE: Record<string, 'ROOT' | 'SPOUSE'> = {
   VAHINI_SASU: 'SPOUSE', DAJI_SASRA: 'SPOUSE',
 
   // ── Partner's siblings / in-laws (SPOUSE side) ───────────────────────────
-  MEVHANA: 'SPOUSE', MEVHANI: 'SPOUSE',
+  MEVHANA: 'SPOUSE', MEVHANI: 'SPOUSE', SADU: 'SPOUSE',
   DIR_CHOTE: 'SPOUSE', DIR_MOTHE: 'SPOUSE',
   NANAND: 'SPOUSE', NANANDOI: 'SPOUSE',
   CHULTA_DIR: 'SPOUSE', CHULTA_NANAND: 'SPOUSE',
