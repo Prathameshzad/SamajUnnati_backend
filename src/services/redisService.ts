@@ -98,29 +98,22 @@ class RedisServiceClass {
   }
 
   /**
-   * Delete keys matching pattern using SCAN for safety
+   * Delete keys matching pattern using sequential SCAN loop to ensure completion
    */
   public async delPattern(pattern: string): Promise<number> {
     if (!this.client) return 0;
     let count = 0;
     try {
-      let stream = this.client.scanStream({
-        match: pattern,
-        count: 100,
-      });
-
-      return new Promise((resolve) => {
-        stream.on('data', async (resultKeys: string[]) => {
-          if (resultKeys.length > 0) {
-            stream.pause();
-            await this.client?.del(...resultKeys).catch(() => {});
-            count += resultKeys.length;
-            stream.resume();
-          }
-        });
-        stream.on('end', () => resolve(count));
-        stream.on('error', () => resolve(count));
-      });
+      let cursor = '0';
+      do {
+        const [nextCursor, keys] = await this.client.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
+        cursor = nextCursor;
+        if (keys && keys.length > 0) {
+          await this.client.unlink(...keys);
+          count += keys.length;
+        }
+      } while (cursor !== '0');
+      return count;
     } catch (err: any) {
       console.warn(`[REDIS DEL PATTERN ERROR] Pattern "${pattern}":`, err.message);
       return count;

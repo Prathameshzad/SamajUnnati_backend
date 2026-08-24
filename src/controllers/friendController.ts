@@ -53,7 +53,16 @@ export const getFriendTree = async (req: AuthRequest, res: Response) => {
 
   try {
     const rootUser = await prisma.user.findUnique({
-      where: { id: userId }
+      where: { id: userId },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        photoUrl: true,
+        gender: true,
+        isAlive: true,
+        phone: true,
+      }
     });
 
     if (!rootUser) return res.status(404).json({ message: 'User not found' });
@@ -78,10 +87,10 @@ export const getFriendTree = async (req: AuthRequest, res: Response) => {
           createdAt: true,
           updatedAt: true,
           fromUser: {
-            select: { id: true, phone: true, firstName: true, lastName: true, photoUrl: true, gender: true, isAlive: true, dateOfBirth: true, bloodGroup: true, education: true, occupation: true, maritalStatus: true, pincode: true, address: true, area: true }
+            select: { id: true, phone: true, firstName: true, lastName: true, photoUrl: true, gender: true, isAlive: true }
           },
           toUser: {
-            select: { id: true, phone: true, firstName: true, lastName: true, photoUrl: true, gender: true, isAlive: true, dateOfBirth: true, bloodGroup: true, education: true, occupation: true, maritalStatus: true, pincode: true, address: true, area: true }
+            select: { id: true, phone: true, firstName: true, lastName: true, photoUrl: true, gender: true, isAlive: true }
           },
           relationType: { include: { translations: true } }
       }
@@ -194,8 +203,38 @@ export const listFriends = async (req: AuthRequest, res: Response) => {
 
     const friends = await Promise.all(raw.map(async rel => {
       const view = await resolveRelationForViewer(rel, userId, lang);
+      const isMyRelation = rel.createdById === userId;
       return {
-        ...rel,
+        id: rel.id,
+        fromUserId: rel.fromUserId,
+        toUserId: rel.toUserId,
+        status: rel.status,
+        relationTypeCode: rel.relationTypeCode,
+        category: rel.category,
+        customName: isMyRelation ? rel.customName : null,
+        customPhotoUrl: isMyRelation ? rel.customPhotoUrl : null,
+        createdById: rel.createdById,
+        createdAt: rel.createdAt,
+        fromUser: rel.fromUser ? {
+          id: rel.fromUser.id,
+          firstName: rel.fromUser.firstName,
+          lastName: rel.fromUser.lastName,
+          photoUrl: rel.fromUser.photoUrl,
+          gender: rel.fromUser.gender,
+          phone: rel.fromUser.phone,
+          area: rel.fromUser.area,
+          isAlive: rel.fromUser.isAlive,
+        } : null,
+        toUser: rel.toUser ? {
+          id: rel.toUser.id,
+          firstName: rel.toUser.firstName,
+          lastName: rel.toUser.lastName,
+          photoUrl: rel.toUser.photoUrl,
+          gender: rel.toUser.gender,
+          phone: rel.toUser.phone,
+          area: rel.toUser.area,
+          isAlive: rel.toUser.isAlive,
+        } : null,
         relationType: { label: view.label, code: view.code }
       };
     }));

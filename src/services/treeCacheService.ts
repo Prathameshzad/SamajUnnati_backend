@@ -5,7 +5,7 @@ const DEFAULT_TREE_TTL = 1800; // 30 minutes
 
 // Bump this version whenever the shape of the cached tree data changes (new fields, etc.)
 // This ensures stale Redis entries from before a deploy are never served.
-const CACHE_SCHEMA_VERSION = 'v2'; // bumped: added dateOfBirth, bloodGroup, education, occupation to tree nodes
+const CACHE_SCHEMA_VERSION = 'v5'; // bumped: strictly Male on Left, Female on Right across all perspectives
 
 export class TreeCacheService {
   /**
@@ -93,6 +93,7 @@ export class TreeCacheService {
       await RedisService.delPattern(`tree:full:${id}:*`);
       await RedisService.delPattern(`tree:chunk:*:${id}:*`);
       await RedisService.delPattern(`tree:chunk:${id}:*`);
+      await RedisService.delPattern(`tree:*:${id}:*`);
       await RedisService.del(this.getRelationCountsKey(id));
       console.log(`[TREE CACHE INVALIDATED] Cleared tree cache for user ${id}`);
     }

@@ -172,12 +172,36 @@ export const listRelations = async (req: AuthRequest, res: Response) => {
       }
 
       return {
-        ...rel,
+        id: rel.id,
         fromUserId: logicalFromUserId,
-        fromUser: logicalFromUser,
+        toUserId: rel.toUserId,
+        status: rel.status,
+        relationTypeCode: rel.relationTypeCode,
+        category: rel.category,
         customName: isMyRelation ? rel.customName : null,
         customPhotoUrl: isMyRelation ? rel.customPhotoUrl : null,
-        toUser: finalToUser,
+        createdById: rel.createdById,
+        createdAt: rel.createdAt,
+        fromUser: logicalFromUser ? {
+          id: logicalFromUser.id,
+          firstName: logicalFromUser.firstName,
+          lastName: logicalFromUser.lastName,
+          photoUrl: logicalFromUser.photoUrl,
+          gender: logicalFromUser.gender,
+          phone: logicalFromUser.phone,
+          area: logicalFromUser.area,
+          isAlive: logicalFromUser.isAlive,
+        } : null,
+        toUser: finalToUser ? {
+          id: finalToUser.id,
+          firstName: finalToUser.firstName,
+          lastName: finalToUser.lastName,
+          photoUrl: finalToUser.photoUrl,
+          gender: finalToUser.gender,
+          phone: finalToUser.phone,
+          area: finalToUser.area,
+          isAlive: finalToUser.isAlive,
+        } : null,
         relationType: { label: view.label, code: view.code }
       };
     }));
@@ -633,6 +657,7 @@ export const updateRelation = async (req: AuthRequest, res: Response) => {
 
     // Update target relative user's profile fields if specified
     const targetUserData: any = {};
+    if (customPhotoUrl !== undefined) targetUserData.photoUrl = customPhotoUrl ? String(customPhotoUrl).trim() : null;
     if (isAlive !== undefined) targetUserData.isAlive = Boolean(isAlive);
     if (dateOfBirth !== undefined) {
       if (dateOfBirth) {
@@ -650,18 +675,18 @@ export const updateRelation = async (req: AuthRequest, res: Response) => {
     if (address !== undefined) targetUserData.address = address ? String(address).trim() : null;
     if (area !== undefined) targetUserData.area = area ? String(area).trim() : null;
 
-    if (Object.keys(targetUserData).length > 0) {
-      let resolvedTargetUserId = bodyTargetUserId;
-      if (!resolvedTargetUserId) {
-        if (relation.fromUserId === userId) {
-          resolvedTargetUserId = relation.toUserId;
-        } else if (relation.toUserId === userId) {
-          resolvedTargetUserId = relation.fromUserId;
-        } else {
-          resolvedTargetUserId = relation.createdById === userId ? relation.toUserId : relation.fromUserId;
-        }
+    let resolvedTargetUserId = bodyTargetUserId;
+    if (!resolvedTargetUserId) {
+      if (relation.fromUserId === userId) {
+        resolvedTargetUserId = relation.toUserId;
+      } else if (relation.toUserId === userId) {
+        resolvedTargetUserId = relation.fromUserId;
+      } else {
+        resolvedTargetUserId = relation.createdById === userId ? relation.toUserId : relation.fromUserId;
       }
+    }
 
+    if (Object.keys(targetUserData).length > 0) {
       console.log('[updateRelation] targetUserData:', JSON.stringify(targetUserData));
       console.log('[updateRelation] resolvedTargetUserId:', resolvedTargetUserId, '| userId:', userId);
       console.log('[updateRelation] bodyTargetUserId received:', bodyTargetUserId);
@@ -679,7 +704,14 @@ export const updateRelation = async (req: AuthRequest, res: Response) => {
       console.log('[updateRelation] No profile fields to update in targetUserData');
     }
 
-    await TreeCacheService.invalidateUserTree(relation.fromUserId, relation.toUserId, relation.createdById, userId);
+    await TreeCacheService.invalidateUserTree(
+      relation.fromUserId,
+      relation.toUserId,
+      relation.createdById,
+      userId,
+      resolvedTargetUserId,
+      bodyTargetUserId
+    );
 
     return res.json({ ...updated, isAlive });
   } catch (error) {
@@ -693,7 +725,7 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
   const lang = (req.query.lang as string) || 'mr';
   if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
 
-  const maxDepth = Number(req.query.depth) || 5;
+  const maxDepth = Number(req.query.depth) || 10;
   const category = req.query.category as string;
 
   try {
@@ -702,9 +734,20 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
       return res.json(cachedTree);
     }
 
-    const rootUser = await prisma.user.findUnique({ where: { id: userId } });
-    if (!rootUser) return res.status(404).json({ message: 'User not found' });
-
+    const rootUserDb = await prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        photoUrl: true,
+        gender: true,
+        isAlive: true,
+        phone: true,
+      }
+    });
+    if (!rootUserDb) return res.status(404).json({ message: 'User not found' });
+    const rootUser = rootUserDb;
 
     const { SPOUSE_PAIRS, RELATION_LEVEL_MAP } = require('../utils/relationMetadata');
 
@@ -772,10 +815,10 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
           createdAt: true,
           updatedAt: true,
           fromUser: {
-            select: { id: true, phone: true, firstName: true, lastName: true, photoUrl: true, gender: true, isAlive: true, dateOfBirth: true, bloodGroup: true, education: true, occupation: true, maritalStatus: true, pincode: true, address: true, area: true }
+            select: { id: true, phone: true, firstName: true, lastName: true, photoUrl: true, gender: true, isAlive: true }
           },
           toUser: {
-            select: { id: true, phone: true, firstName: true, lastName: true, photoUrl: true, gender: true, isAlive: true, dateOfBirth: true, bloodGroup: true, education: true, occupation: true, maritalStatus: true, pincode: true, address: true, area: true }
+            select: { id: true, phone: true, firstName: true, lastName: true, photoUrl: true, gender: true, isAlive: true }
           },
           relationType: true // translations are in cache
         },

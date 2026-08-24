@@ -244,8 +244,8 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
         { label: "सासू", code: "SASU", direction: "DOWN" },
       ],
       bottom: [
-        { label: "मुलगा", code: "BHACHA", direction: "DOWN" },
-        { label: "मुलगी", code: "BHACNI", direction: "DOWN" },
+        { label: "पुतण्या", code: "PUTANYA", direction: "DOWN" },
+        { label: "पुतणी", code: "PUTANI", direction: "DOWN" },
       ],
     },
   },
@@ -286,8 +286,8 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
         { label: "सासू", code: "SASU", direction: "DOWN" },
       ],
       bottom: [
-        { label: "मुलगा", code: "BHACHA", direction: "DOWN" },
-        { label: "मुलगी", code: "BHACNI", direction: "DOWN" },
+        { label: "पुतण्या", code: "PUTANYA", direction: "DOWN" },
+        { label: "पुतणी", code: "PUTANI", direction: "DOWN" },
       ],
     },
   },
@@ -311,8 +311,8 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
     },
     yAxis: {
       top: [
-        { label: "आजी सासरा", code: "AJI_SASRA", direction: "UP" },
         { label: "आजोबा सासरा", code: "AJOBA_SASRA", direction: "UP" },
+        { label: "आजी सासू", code: "AJI_SASU", direction: "UP" },
       ],
       bottom: [
         // For Male viewers (Wife's side)
@@ -382,8 +382,8 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
     },
     yAxis: {
       top: [
-        { label: "आजी सासरा", code: "AJI_SASRA", direction: "UP" },
         { label: "आजोबा सासरा", code: "AJOBA_SASRA", direction: "UP" },
+        { label: "आजी सासू", code: "AJI_SASU", direction: "UP" },
       ],
       bottom: [
         // For Male viewers (Wife's side)
@@ -1257,8 +1257,8 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
     yAxis: {
       top: [],
       bottom: [
-        { label: "मुलगा", code: "MULGA", direction: "DOWN" },
-        { label: "मुलगी", code: "MULGI", direction: "DOWN" },
+        { label: "भाचा", code: "BHACHA", direction: "DOWN" },
+        { label: "भाची", code: "BHACHI", direction: "DOWN" },
       ],
     },
   },
@@ -1309,8 +1309,8 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
     yAxis: {
       top: [],
       bottom: [
-        { label: "मुलगा", code: "MULGA", direction: "DOWN" },
-        { label: "मुलगी", code: "MULGI", direction: "DOWN" },
+        { label: "भाचा", code: "BHACHA", direction: "DOWN" },
+        { label: "भाची", code: "BHACHI", direction: "DOWN" },
       ],
     },
   },
@@ -1413,8 +1413,8 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
     yAxis: {
       top: [],
       bottom: [
-        { label: "मुलगा", code: "MULGA", direction: "DOWN" },
-        { label: "मुलगी", code: "MULGI", direction: "DOWN" },
+        { label: "भाचा", code: "BHACHA", direction: "DOWN" },
+        { label: "भाची", code: "BHACHI", direction: "DOWN" },
       ],
     },
   },
@@ -1614,26 +1614,38 @@ export const RELATION_LEVEL_MAP: Record<string, number> = {
  *   - Couples: husband gets value N, wife gets N+1
  */
 export const RELATION_X_ORDER: Record<string, number> = {
-  // Gen 0 (root row) - SELF + SPOUSE only
-  NAVRA: 10, BAYKO: 20,
+  // Gen 0 (root row) - SELF + SPOUSE (Husband/Male on Left, Wife/Female on Right)
+  NAVRA: -10, BAYKO: 10,
 
-  // Gen +1 (sibling row) - LEFT = biological, RIGHT = in-law
-  ATYE_BHAU: -50, ATYE_BAHIN: -45, CHULAT_BHAU: -40, CHULAT_BAHIN: -35,
-  BHAU: -30, VAHINI: -29, BAHIN: -20, DAJI: -19,
-  SAVATR_BHAU: -32, SAVATR_BAHIN: -22,
-  MAMBHAU: 35, MAMBAHIN: 40, MAV_BHAU: 45, MAV_BAHIN: 50,
-  DIR_MOTHE: 25, DIR_CHOTE: 30, MEVHANA: 55, MEVHANI: 60, SADU: 63,
-  NANAND: 65, NANANDOI: 70, CHULTA_DIR: 75, CHULTA_NANAND: 80,
-  MITRA: -60, MAITRIN: 90,
+  // Gen +1 (sibling row) - Root blood family (Negative = Left of Center)
+  // Tier 1: Direct siblings & their spouses (Husband/Male on Left, Wife/Female on Right)
+  BHAU: -10, VAHINI: -9, DAJI: -6, BAHIN: -5,
+  SAVATR_BHAU: -12, SAVATR_BAHIN: -8,
 
-  // Gen +2 (parent row) - LEFT = VADIL's side, RIGHT = AAI's side
-  AATYA: -115, FUA: -110, KAKA: -105, KAKI: -100,
-  CHULTA: -95, CHULTI: -90, SAVATR_VADIL: -60, VADIL: -50,
-  AAI: 50, SAVATR_AAI: 60, MAMA: 90, MAMI: 95, MAVSA: 100, MAVSHI: 105,
-  SASRA: 120, SASU: 130, MAMA_SASRA: 140, MAMI_SASU: 150,
-  ATYA_SASU: 160, MAVAS_SASU: 170, CHULAT_SASRA: 180,
+  // Tier 2: Paternal cousins (Male on Left, Female on Right)
+  CHULAT_BHAU: -30, CHULAT_BAHIN: -25,
+  ATYE_BHAU: -35, ATYE_BAHIN: -32,
 
-  // Gen +3 (grandparent row)
+  // Tier 3: Maternal cousins (Male on Left, Female on Right)
+  MAMBHAU: -50, MAMBAHIN: -45, MAV_BHAU: -55, MAV_BAHIN: -52,
+
+  // Gen +1 (sibling row) - Spouse family (Positive = Right of Center)
+  // Tier 1: Spouse direct siblings & spouses (Male on Left, Female on Right)
+  DIR_MOTHE: 10, DIR_CHOTE: 15, NANANDOI: 20, NANAND: 21, MEVHANA: 25, MEVHANI: 26,
+  // Tier 2: Spouse cousins & Sadu (Outward to the right)
+  SADU: 40, CHULTA_DIR: 45, CHULTA_NANAND: 50,
+
+  // Tier 4: Friends (Furthest outer flanks)
+  MITRA: -90, MAITRIN: 90,
+
+  // Gen +2 (parent row) - LEFT = VADIL's side, RIGHT = AAI's side (Male on Left, Female on Right)
+  VADIL: -10, AAI: 10, SAVATR_VADIL: -15, SAVATR_AAI: 15,
+  KAKA: -30, KAKI: -25, FUA: -40, AATYA: -35, CHULTA: -45, CHULTI: -42,
+  MAMA: 30, MAMI: 35, MAVSA: 40, MAVSHI: 45,
+  SASRA: 60, SASU: 65, MAMA_SASRA: 75, MAMI_SASU: 80,
+  CHULAT_SASRA: 85, ATYA_SASU: 90, MAVAS_SASU: 95,
+
+  // Gen +3 (grandparent row) - Male on Left, Female on Right
   AJOBA: -50, AAJI: -40, NANA: 40, NANI: 50,
   AJOBA_SASRA: 80, AJOBA_SASU: 90, AJI_SASRA: 100, AJI_SASU: 110,
 

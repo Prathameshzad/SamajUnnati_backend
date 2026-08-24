@@ -184,11 +184,49 @@ export const updateMe = async (
       },
     });
 
-    await TreeCacheService.invalidateUserTree(req.user.id);
+    // Invalidate tree cache for this user and all connected users
+    const connectedRelations = await prisma.relation.findMany({
+      where: {
+        OR: [
+          { fromUserId: req.user.id },
+          { toUserId: req.user.id },
+          { createdById: req.user.id },
+        ]
+      },
+      select: { fromUserId: true, toUserId: true, createdById: true }
+    });
+    const idsToInvalidate = new Set<string>([req.user.id]);
+    for (const rel of connectedRelations) {
+      if (rel.fromUserId) idsToInvalidate.add(rel.fromUserId);
+      if (rel.toUserId) idsToInvalidate.add(rel.toUserId);
+      if (rel.createdById) idsToInvalidate.add(rel.createdById);
+    }
+    await TreeCacheService.invalidateUserTree(...Array.from(idsToInvalidate));
 
     return res.json(user);
   } catch (error) {
     console.error('update me error', error);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
+export const getUserById = async (
+  req: AuthRequest,
+  res: Response
+): Promise<Response | void> => {
+  try {
+    const { id } = req.params;
+    if (!id) return res.status(400).json({ message: 'User ID is required' });
+
+    const user = await prisma.user.findUnique({
+      where: { id },
+    });
+
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    return res.json(user);
+  } catch (error) {
+    console.error('getUserById error', error);
     return res.status(500).json({ message: 'Internal server error' });
   }
 };
