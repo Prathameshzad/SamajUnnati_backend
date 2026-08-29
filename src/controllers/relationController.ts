@@ -5,6 +5,8 @@ import { AuthRequest } from '../middleware/authMiddleware';
 import { getIO } from '../lib/socket';
 import { RELATION_AXIS_CONFIG } from '../utils/relationMetadata';
 import { TreeCacheService } from '../services/treeCacheService';
+import { awardPoints, deductPoints } from '../services/scoreService';
+import { getUserBadgeData } from '../services/badgeService';
 
 
 type GenderValue = 'MALE' | 'FEMALE' | null;
@@ -521,6 +523,14 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
       relationId: relation.id,
     });
 
+    // ── Award score to the creator ──
+    try {
+      const scoreReason = isPersonAlive ? 'ADD_ALIVE' : 'ADD_DECEASED';
+      await awardPoints(userId, scoreReason, relation.id);
+    } catch (scoreErr) {
+      console.warn('[createRelation] Score award failed:', scoreErr);
+    }
+
     await TreeCacheService.invalidateUserTree(fromUserId, relatedUser.id, userId);
 
     return res.status(201).json({
@@ -571,6 +581,14 @@ export const approveRelation = async (req: AuthRequest, res: Response) => {
       message: `${approver?.firstName || 'Your family member'} approved your request.`,
       relationId: relation.id,
     });
+
+    // ── Award +20 score to the original creator ──
+    try {
+      const creatorId = relation.createdById ?? relation.fromUserId;
+      await awardPoints(creatorId, 'RELATION_APPROVED', relation.id);
+    } catch (scoreErr) {
+      console.warn('[approveRelation] Score award failed:', scoreErr);
+    }
 
     await TreeCacheService.invalidateUserTree(relation.fromUserId, relation.toUserId, relation.createdById, userId);
 
@@ -1058,7 +1076,7 @@ export const getRelationCounts = async (req: AuthRequest, res: Response) => {
   if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
 
   try {
-    const [pending, confirmed, rejected, accepted] = await Promise.all([
+    const [pending, confirmed, rejected, accepted, badge] = await Promise.all([
       prisma.relation.count({
         where: {
           createdById: userId,
@@ -1081,8 +1099,9 @@ export const getRelationCounts = async (req: AuthRequest, res: Response) => {
       prisma.relation.count({
         where: { toUserId: userId, status: 'CONFIRMED' },
       }),
+      getUserBadgeData(userId),
     ]);
-    return res.json({ pending, confirmed, rejected, accepted });
+    return res.json({ pending, confirmed, rejected, accepted, badge });
   } catch (error) {
     console.error('getRelationCounts error', error);
     return res.status(500).json({ message: 'Internal server error' });
@@ -1132,6 +1151,25 @@ export const deleteRelation = async (req: AuthRequest, res: Response) => {
 
     // 2. Delete the relation
     await prisma.relation.delete({ where: { id } });
+
+    // 3. Deduct points from creator
+    try {
+      const creatorId = relation.createdById ?? relation.fromUserId;
+      const targetUser = relation.createdById === relation.fromUserId ? relation.toUser : relation.fromUser;
+      const isTargetAlive = targetUser?.isAlive !== false;
+
+      let pointsToDeduct = isTargetAlive ? 5 : 2;
+      let reason: 'REMOVE_ALIVE' | 'REMOVE_DECEASED' = isTargetAlive ? 'REMOVE_ALIVE' : 'REMOVE_DECEASED';
+
+      if (relation.status === 'CONFIRMED') {
+        pointsToDeduct += 20; // Reverse the +20 approval bonus as well
+      }
+
+      await deductPoints(creatorId, pointsToDeduct, reason, relation.id);
+    } catch (scoreErr) {
+      console.warn('[deleteRelation] Score deduction failed:', scoreErr);
+    }
+
     await TreeCacheService.invalidateUserTree(relation.fromUserId, relation.toUserId, relation.createdById, userId);
 
     return res.json({ message: 'Relation deleted' });

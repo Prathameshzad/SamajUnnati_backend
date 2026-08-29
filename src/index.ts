@@ -18,6 +18,7 @@ import postRoutes from './routes/postRoutes';
 import storyRoutes from './routes/storyRoutes';
 import followRoutes from './routes/followRoutes';
 import matrimonyRoutes from './routes/matrimonyRoutes';
+import scoreRoutes from './routes/scoreRoutes';
 
 import { RabbitMQService } from './services/rabbitmqService';
 import { RedisService } from './services/redisService';
@@ -74,6 +75,7 @@ app.use('/api/posts', postRoutes);
 app.use('/api/stories', storyRoutes);
 app.use('/api/follow', followRoutes);
 app.use('/api/matrimony', matrimonyRoutes);
+app.use('/api/scores', scoreRoutes);
 
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 app.use('/uploads/media', express.static(path.join(process.cwd(), 'uploads', 'media')));

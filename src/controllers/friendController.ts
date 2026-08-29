@@ -3,6 +3,7 @@ import prisma from '../lib/prisma';
 import { AuthRequest } from '../middleware/authMiddleware';
 import { getIO } from '../lib/socket';
 import { TreeCacheService } from '../services/treeCacheService';
+import { awardPoints, deductPoints } from '../services/scoreService';
 
 /**
  * Resolve display label for a relation type based on language.
@@ -424,6 +425,14 @@ export const approveFriend = async (req: AuthRequest, res: Response) => {
       relationId: relation.id,
     });
 
+    // Award +20 points to creator
+    try {
+      const creatorId = relation.createdById ?? relation.fromUserId;
+      await awardPoints(creatorId, 'RELATION_APPROVED', relation.id);
+    } catch (scoreErr) {
+      console.warn('[approveFriend] Score award failed:', scoreErr);
+    }
+
     await TreeCacheService.invalidateUserTree(relation.fromUserId, relation.toUserId, relation.createdById, userId);
 
     return res.json(updated);
@@ -543,6 +552,24 @@ export const deleteFriend = async (req: AuthRequest, res: Response) => {
 
     // 2. Delete the relation
     await prisma.relation.delete({ where: { id } });
+
+    // 3. Deduct points from creator
+    try {
+      const creatorId = relation.createdById ?? relation.fromUserId;
+      const targetUser = relation.createdById === relation.fromUserId ? relation.toUser : relation.fromUser;
+      const isTargetAlive = targetUser?.isAlive !== false;
+
+      let pointsToDeduct = isTargetAlive ? 5 : 2;
+      let reason: 'REMOVE_ALIVE' | 'REMOVE_DECEASED' = isTargetAlive ? 'REMOVE_ALIVE' : 'REMOVE_DECEASED';
+
+      if (relation.status === 'CONFIRMED') {
+        pointsToDeduct += 20; // Reverse the +20 approval bonus as well
+      }
+
+      await deductPoints(creatorId, pointsToDeduct, reason, relation.id);
+    } catch (scoreErr) {
+      console.warn('[deleteFriend] Score deduction failed:', scoreErr);
+    }
 
     await TreeCacheService.invalidateUserTree(relation.fromUserId, relation.toUserId, relation.createdById, userId);
 
@@ -675,6 +702,14 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
       message: `You added ${firstName} as "${displayLabel}". Waiting for approval.`,
       relationId: relation.id,
     });
+
+    // Award score to the creator
+    try {
+      const scoreReason = isPersonAlive ? 'ADD_ALIVE' : 'ADD_DECEASED';
+      await awardPoints(userId, scoreReason, relation.id);
+    } catch (scoreErr) {
+      console.warn('[createFriend] Score award failed:', scoreErr);
+    }
 
     await TreeCacheService.invalidateUserTree(fromUserId, relatedUser.id, userId);
 

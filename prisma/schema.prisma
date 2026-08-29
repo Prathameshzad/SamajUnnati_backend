@@ -60,6 +60,7 @@ model User {
   storyViews                          StoryView[]
   blockedByUsers                      UserBlock[]          @relation("Blocked")
   blockedUsers                        UserBlock[]          @relation("BlockedBy")
+  userScore                           UserScore?
 }
 
 model RelationType {
@@ -484,6 +485,41 @@ model ConnectionPathCache {
 
   @@unique([userAId, userBId])
   @@index([userAId])
+}
+
+// ─── Gamification ───────────────────────────────────────────────────────────
+
+model UserScore {
+  id        String       @id @default(uuid())
+  userId    String       @unique
+  total     Int          @default(0)
+  level     Int          @default(1)
+  updatedAt DateTime     @updatedAt
+  user      User         @relation(fields: [userId], references: [id])
+  events    ScoreEvent[]
+
+  @@index([total(sort: Desc)])
+}
+
+model ScoreEvent {
+  id          String    @id @default(uuid())
+  userId      String
+  points      Int
+  reason      ScoreReason
+  relationId  String?
+  createdAt   DateTime  @default(now())
+  userScore   UserScore @relation(fields: [userId], references: [id])
+
+  @@index([userId, createdAt])
+}
+
+enum ScoreReason {
+  ADD_ALIVE
+  ADD_DECEASED
+  RELATION_APPROVED
+  REMOVE_ALIVE
+  REMOVE_DECEASED
+  REMOVE_RELATION
 }
 
 enum Gender {

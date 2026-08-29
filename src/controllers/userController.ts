@@ -5,6 +5,7 @@ import prisma from '../lib/prisma';
 import { AuthRequest } from '../middleware/authMiddleware';
 import { uploadProfileImageToR2 } from '../lib/r2';
 import { TreeCacheService } from '../services/treeCacheService';
+import { getUserBadgeData } from '../services/badgeService';
 
 type GenderValue = 'MALE' | 'FEMALE';
 
@@ -24,14 +25,16 @@ export const getMe = async (
       return res.status(401).json({ message: 'Unauthenticated' });
     }
 
-    const user = await prisma.user.findUnique({
-      where: { id: req.user.id },
-      // no select: return ALL fields including photoUrl, firstName, etc.
-    });
+    const [user, badge] = await Promise.all([
+      prisma.user.findUnique({
+        where: { id: req.user.id },
+      }),
+      getUserBadgeData(req.user.id),
+    ]);
 
     if (!user) return res.status(404).json({ message: 'User not found' });
 
-    return res.json(user);
+    return res.json({ ...user, badge });
   } catch (error) {
     console.error('get me error', error);
     return res.status(500).json({ message: 'Internal server error' });
@@ -218,13 +221,16 @@ export const getUserById = async (
     const { id } = req.params;
     if (!id) return res.status(400).json({ message: 'User ID is required' });
 
-    const user = await prisma.user.findUnique({
-      where: { id },
-    });
+    const [user, badge] = await Promise.all([
+      prisma.user.findUnique({
+        where: { id },
+      }),
+      getUserBadgeData(id),
+    ]);
 
     if (!user) return res.status(404).json({ message: 'User not found' });
 
-    return res.json(user);
+    return res.json({ ...user, badge });
   } catch (error) {
     console.error('getUserById error', error);
     return res.status(500).json({ message: 'Internal server error' });
