@@ -5,6 +5,7 @@ import prisma from '../lib/prisma';
 import { signAuthToken } from '../lib/jwt';
 import { uploadProfileImageToR2 } from '../lib/r2';
 import { OtpService } from '../services/otpService';
+import { config } from '../config/env';
 
 type GenderValue = 'MALE' | 'FEMALE';
 
@@ -62,7 +63,7 @@ export const checkPhone = async (
       });
     }
 
-    const isDev = process.env.NODE_ENV !== 'production';
+    const isDev = !config.isProduction && (config.isDevelopment || config.otp.debugResponse);
 
     if (!user) {
       const otpResult = await OtpService.sendOtp(normalized, 'REGISTER');
@@ -73,10 +74,11 @@ export const checkPhone = async (
           retryAfterSeconds: otpResult.retryAfterSeconds,
         });
       }
+      const debugCode = (isDev && otpResult.code) ? otpResult.code : undefined;
       return res.json({
         exists: false,
         message: 'OTP sent for registration',
-        ...(isDev && otpResult.code ? { code: otpResult.code } : {}),
+        ...(debugCode ? { code: debugCode, otp: debugCode } : {}),
       });
     }
 
@@ -90,10 +92,11 @@ export const checkPhone = async (
       });
     }
 
+    const debugCode = (isDev && otpResult.code) ? otpResult.code : undefined;
     return res.json({
       exists: true,
       message: 'OTP sent to registered number',
-      ...(isDev && otpResult.code ? { code: otpResult.code } : {}),
+      ...(debugCode ? { code: debugCode, otp: debugCode } : {}),
     });
   } catch (error: any) {
     console.error('check-phone error details:', {
@@ -234,10 +237,11 @@ export const requestOtp = async (req: Request, res: Response) => {
     });
   }
 
-  const isDev = process.env.NODE_ENV !== 'production';
+  const isDev = !config.isProduction && (config.isDevelopment || config.otp.debugResponse);
+  const debugCode = (isDev && otpResult.code) ? otpResult.code : undefined;
   return res.json({
     message: 'OTP sent',
-    ...(isDev && otpResult.code ? { code: otpResult.code } : {}),
+    ...(debugCode ? { code: debugCode, otp: debugCode } : {}),
   });
 };
 

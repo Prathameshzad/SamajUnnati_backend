@@ -221,8 +221,9 @@ export const config = {
   cors: { origins: csv(raw.CORS_ORIGINS) },
 
   otp: {
-    // Hard guarantee: never echo an OTP back to the caller in production.
-    debugResponse: raw.OTP_DEBUG_RESPONSE && !isProduction,
+    // In development, automatically return the OTP so the frontend can auto-fill.
+    // In production, strictly enforce that OTP is never echoed in HTTP responses.
+    debugResponse: !isProduction && (raw.NODE_ENV === 'development' || raw.OTP_DEBUG_RESPONSE),
     ttlSeconds: raw.OTP_TTL_SECONDS,
     maxPerWindow: raw.OTP_MAX_PER_WINDOW,
     rateWindowSeconds: raw.OTP_RATE_WINDOW_SECONDS,
