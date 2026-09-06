@@ -61,6 +61,12 @@ model User {
   blockedByUsers                      UserBlock[]          @relation("Blocked")
   blockedUsers                        UserBlock[]          @relation("BlockedBy")
   userScore                           UserScore?
+  // phone already has @unique (which implies an index), so authController's
+  // findUnique({ where: { phone } }) on every login was already covered.
+
+  // getGraphChunk filters `worldX BETWEEN ... AND worldY BETWEEN ...` with no
+  // index at all previously, forcing a full table scan on every spatial query.
+  @@index([worldX, worldY])
 }
 
 model RelationType {
@@ -115,6 +121,23 @@ model Relation {
   @@index([relationTypeCode])
   @@index([category])
   @@index([status])
+  // `createdById` had no index at all despite being filtered on directly in
+  // listRelations/getRequests/getRelationCounts/badgeService (createdById: userId).
+  // Every one of those queries was a sequential scan of the whole table.
+  @@index([createdById])
+  // Composite indexes for the exact (column, status) filter pairs used across
+  // relationController and badgeService, e.g. `{ fromUserId: userId, status: 'CONFIRMED' }`
+  // in getRequests/messageController.getEligibleContactIds, and
+  // `{ createdById: userId, status: 'PENDING' }` in getRelationCounts. A plain
+  // single-column index on fromUserId/toUserId/createdById still has to filter
+  // status afterward; these composites let Postgres satisfy the whole predicate
+  // from the index.
+  @@index([fromUserId, status])
+  @@index([toUserId, status])
+  @@index([createdById, status])
+  // badgeService.getUserBadgeData filters `category IN (...) AND status = CONFIRMED
+  // AND deletedAt IS NULL`, run on every getMe/getUserById/getRelationCounts call.
+  @@index([category, status, deletedAt])
 }
 
 model Notification {
@@ -502,13 +525,13 @@ model UserScore {
 }
 
 model ScoreEvent {
-  id          String    @id @default(uuid())
-  userId      String
-  points      Int
-  reason      ScoreReason
-  relationId  String?
-  createdAt   DateTime  @default(now())
-  userScore   UserScore @relation(fields: [userId], references: [id])
+  id         String      @id @default(uuid())
+  userId     String
+  points     Int
+  reason     ScoreReason
+  relationId String?
+  createdAt  DateTime    @default(now())
+  userScore  UserScore   @relation(fields: [userId], references: [id])
 
   @@index([userId, createdAt])
 }

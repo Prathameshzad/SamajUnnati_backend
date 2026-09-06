@@ -1,7 +1,10 @@
 // src/routes/storyRoutes.ts
 import { Router } from 'express';
 import { authMiddleware } from '../middleware/authMiddleware';
-import { uploadMiddleware } from '../middleware/uploadMiddleware';
+import { uploadSingleMedia } from '../middleware/uploadMiddleware';
+import { validate } from '../middleware/validate';
+import { asyncHandler } from '../lib/asyncHandler';
+import { readLimiter, writeLimiter, uploadLimiter } from '../middleware/rateLimit';
 import {
   createStory,
   getStoryFeed,
@@ -9,14 +12,23 @@ import {
   viewStory,
   deleteStory,
 } from '../controllers/storyController';
+import { createStorySchema, storyIdSchema } from '../schemas/contentSchemas';
 
 const router = Router();
-router.use(authMiddleware as any);
+router.use(authMiddleware);
 
-router.get('/feed', getStoryFeed as any);
-router.get('/my', getMyStories as any);
-router.post('/', uploadMiddleware.single('media'), createStory as any);
-router.post('/:id/view', viewStory as any);
-router.delete('/:id', deleteStory as any);
+router.get('/feed', readLimiter, asyncHandler(getStoryFeed));
+router.get('/my', readLimiter, asyncHandler(getMyStories));
+
+router.post(
+  '/',
+  uploadLimiter,
+  ...uploadSingleMedia('media'),
+  validate(createStorySchema),
+  asyncHandler(createStory)
+);
+
+router.post('/:id/view', writeLimiter, validate(storyIdSchema), asyncHandler(viewStory));
+router.delete('/:id', writeLimiter, validate(storyIdSchema), asyncHandler(deleteStory));
 
 export default router;

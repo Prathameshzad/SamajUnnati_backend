@@ -1,45 +1,62 @@
 // src/services/redisService.ts
-import Redis, { RedisOptions } from 'ioredis';
+import Redis, { type RedisOptions } from 'ioredis';
+import { config } from '../config/env';
+import { createLogger } from '../lib/logger';
+
+const log = createLogger('redis');
 
 class RedisServiceClass {
   private client: Redis | null = null;
-  private isConnected: boolean = false;
+  private isConnected = false;
+  /** Suppresses repeated identical connection-error logs while Redis is down. */
+  private lastErrorAt = 0;
 
   constructor() {
     this.init();
   }
 
-  private init() {
+  private init(): void {
     try {
-      const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
-
       const options: RedisOptions = {
-        retryStrategy(times) {
-          const delay = Math.min(times * 100, 3000);
-          return delay;
-        },
-        maxRetriesPerRequest: 3,
-        enableOfflineQueue: true,
+        retryStrategy: (times) => Math.min(times * 200, 5_000),
+        maxRetriesPerRequest: 1,
+        /**
+         * Fail fast instead of queueing.
+         *
+         * This was `enableOfflineQueue: true`, which means that while Redis is
+         * unreachable every cache read is *queued* and only rejects after the
+         * retry budget expires. The cache is on the critical path of the tree
+         * endpoints, so a Redis outage turned into multi-second latency on every
+         * request rather than a clean miss that falls through to Postgres.
+         */
+        enableOfflineQueue: false,
+        connectTimeout: 5_000,
+        enableReadyCheck: true,
         lazyConnect: false,
       };
 
-      this.client = new Redis(redisUrl, options);
+      this.client = new Redis(config.redis.url, options);
 
-      this.client.on('connect', () => {
+      this.client.on('ready', () => {
         this.isConnected = true;
-        console.log('[REDIS SERVICE] Connected to Redis server successfully.');
+        log.info('connected');
       });
 
       this.client.on('error', (err) => {
         this.isConnected = false;
-        console.warn(`[REDIS SERVICE WARNING] ${err.message}`);
+        const now = Date.now();
+        // Redis emits 'error' on every reconnect attempt; throttle to once a minute.
+        if (now - this.lastErrorAt > 60_000) {
+          this.lastErrorAt = now;
+          log.warn({ err: err.message }, 'connection error (cache degraded, serving from database)');
+        }
       });
 
       this.client.on('close', () => {
         this.isConnected = false;
       });
-    } catch (err: any) {
-      console.warn('[REDIS SERVICE INIT ERROR]', err.message);
+    } catch (err) {
+      log.error({ err }, 'initialisation failed');
       this.isConnected = false;
     }
   }
@@ -52,112 +69,168 @@ class RedisServiceClass {
     return this.client;
   }
 
-  /**
-   * Fetch item from Redis and parse JSON
-   */
+  /** Only issue commands when the connection is actually usable. */
+  private usable(): Redis | null {
+    return this.isAlive() ? this.client : null;
+  }
+
   public async get<T>(key: string): Promise<T | null> {
-    if (!this.client) return null;
+    const client = this.usable();
+    if (!client) return null;
     try {
-      const data = await this.client.get(key);
-      if (!data) return null;
-      return JSON.parse(data) as T;
-    } catch (err: any) {
-      console.warn(`[REDIS GET ERROR] Key "${key}":`, err.message);
+      const data = await client.get(key);
+      return data ? (JSON.parse(data) as T) : null;
+    } catch (err) {
+      log.debug({ err, key }, 'get failed');
       return null;
     }
   }
 
-  /**
-   * Store item in Redis with optional TTL in seconds
-   */
-  public async set(key: string, value: any, ttlSeconds?: number): Promise<void> {
-    if (!this.client) return;
+  /** Batched read. One round-trip instead of N — used by the relation-type registry. */
+  public async mget<T>(keys: string[]): Promise<(T | null)[]> {
+    const client = this.usable();
+    if (!client || keys.length === 0) return keys.map(() => null);
+    try {
+      const values = await client.mget(...keys);
+      return values.map((value) => (value ? (JSON.parse(value) as T) : null));
+    } catch (err) {
+      log.debug({ err }, 'mget failed');
+      return keys.map(() => null);
+    }
+  }
+
+  public async set(key: string, value: unknown, ttlSeconds?: number): Promise<void> {
+    const client = this.usable();
+    if (!client) return;
     try {
       const serialized = JSON.stringify(value);
       if (ttlSeconds && ttlSeconds > 0) {
-        await this.client.setex(key, ttlSeconds, serialized);
+        await client.setex(key, ttlSeconds, serialized);
       } else {
-        await this.client.set(key, serialized);
+        await client.set(key, serialized);
       }
-    } catch (err: any) {
-      console.warn(`[REDIS SET ERROR] Key "${key}":`, err.message);
+    } catch (err) {
+      log.debug({ err, key }, 'set failed');
     }
   }
 
   /**
-   * Delete one or more keys
+   * Sets only if absent, returning whether we won.
+   * Used as a single-flight lock so a cache miss on a hot key results in one
+   * database rebuild rather than one per concurrent request.
    */
-  public async del(...keys: string[]): Promise<number> {
-    if (!this.client || keys.length === 0) return 0;
+  public async setIfAbsent(key: string, value: unknown, ttlSeconds: number): Promise<boolean> {
+    const client = this.usable();
+    if (!client) return false;
     try {
-      return await this.client.del(...keys);
-    } catch (err: any) {
-      console.warn(`[REDIS DEL ERROR] Keys [${keys.join(', ')}]:`, err.message);
-      return 0;
-    }
-  }
-
-  /**
-   * Delete keys matching pattern using sequential SCAN loop to ensure completion
-   */
-  public async delPattern(pattern: string): Promise<number> {
-    if (!this.client) return 0;
-    let count = 0;
-    try {
-      let cursor = '0';
-      do {
-        const [nextCursor, keys] = await this.client.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
-        cursor = nextCursor;
-        if (keys && keys.length > 0) {
-          await this.client.unlink(...keys);
-          count += keys.length;
-        }
-      } while (cursor !== '0');
-      return count;
-    } catch (err: any) {
-      console.warn(`[REDIS DEL PATTERN ERROR] Pattern "${pattern}":`, err.message);
-      return count;
-    }
-  }
-
-  /**
-   * Increment counter for key
-   */
-  public async incr(key: string): Promise<number> {
-    if (!this.client) return 0;
-    try {
-      return await this.client.incr(key);
-    } catch (err: any) {
-      console.warn(`[REDIS INCR ERROR] Key "${key}":`, err.message);
-      return 0;
-    }
-  }
-
-  /**
-   * Set key expiration in seconds
-   */
-  public async expire(key: string, seconds: number): Promise<boolean> {
-    if (!this.client) return false;
-    try {
-      const res = await this.client.expire(key, seconds);
-      return res === 1;
-    } catch (err: any) {
-      console.warn(`[REDIS EXPIRE ERROR] Key "${key}":`, err.message);
+      const result = await client.set(key, JSON.stringify(value), 'EX', ttlSeconds, 'NX');
+      return result === 'OK';
+    } catch (err) {
+      log.debug({ err, key }, 'setIfAbsent failed');
       return false;
     }
   }
 
-  /**
-   * Get TTL for a key in seconds
-   */
-  public async ttl(key: string): Promise<number> {
-    if (!this.client) return -2;
+  public async del(...keys: string[]): Promise<number> {
+    const client = this.usable();
+    if (!client || keys.length === 0) return 0;
     try {
-      return await this.client.ttl(key);
-    } catch (err: any) {
-      console.warn(`[REDIS TTL ERROR] Key "${key}":`, err.message);
+      return await client.del(...keys);
+    } catch (err) {
+      log.debug({ err }, 'del failed');
+      return 0;
+    }
+  }
+
+  /**
+   * Atomically increments a counter and returns the new value.
+   * This is how cache invalidation works now — see CacheService.
+   */
+  public async incr(key: string): Promise<number> {
+    const client = this.usable();
+    if (!client) return 0;
+    try {
+      return await client.incr(key);
+    } catch (err) {
+      log.debug({ err, key }, 'incr failed');
+      return 0;
+    }
+  }
+
+  /** Increments several counters in one round-trip. */
+  public async incrMany(keys: string[]): Promise<void> {
+    const client = this.usable();
+    if (!client || keys.length === 0) return;
+    try {
+      const pipeline = client.pipeline();
+      for (const key of keys) pipeline.incr(key);
+      await pipeline.exec();
+    } catch (err) {
+      log.debug({ err }, 'incrMany failed');
+    }
+  }
+
+  public async expire(key: string, seconds: number): Promise<boolean> {
+    const client = this.usable();
+    if (!client) return false;
+    try {
+      return (await client.expire(key, seconds)) === 1;
+    } catch (err) {
+      log.debug({ err, key }, 'expire failed');
+      return false;
+    }
+  }
+
+  public async ttl(key: string): Promise<number> {
+    const client = this.usable();
+    if (!client) return -2;
+    try {
+      return await client.ttl(key);
+    } catch (err) {
+      log.debug({ err, key }, 'ttl failed');
       return -2;
     }
+  }
+
+  /**
+   * Pattern deletion via SCAN.
+   *
+   * Deliberately NOT used on request paths any more. SCAN walks the entire
+   * keyspace, so calling it on every relation write (as invalidateUserTree did,
+   * five patterns per affected user, including the catch-all `tree:*:<id>:*`)
+   * costs O(total keys) per write and stalls Redis as data grows.
+   * Kept only for administrative cleanup.
+   */
+  public async delPattern(pattern: string): Promise<number> {
+    const client = this.usable();
+    if (!client) return 0;
+    let count = 0;
+    try {
+      let cursor = '0';
+      do {
+        const [next, keys] = await client.scan(cursor, 'MATCH', pattern, 'COUNT', 500);
+        cursor = next;
+        if (keys.length > 0) {
+          await client.unlink(...keys);
+          count += keys.length;
+        }
+      } while (cursor !== '0');
+      return count;
+    } catch (err) {
+      log.warn({ err, pattern }, 'delPattern failed');
+      return count;
+    }
+  }
+
+  public async quit(): Promise<void> {
+    if (!this.client) return;
+    try {
+      await this.client.quit();
+    } catch {
+      this.client.disconnect();
+    }
+    this.client = null;
+    this.isConnected = false;
   }
 }
 

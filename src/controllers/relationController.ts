@@ -2,12 +2,44 @@
 import { Response } from 'express';
 import prisma from '../lib/prisma';
 import { AuthRequest } from '../middleware/authMiddleware';
-import { getIO } from '../lib/socket';
-import { RELATION_AXIS_CONFIG } from '../utils/relationMetadata';
+import { emitToUser } from '../lib/socket';
+import {
+  RELATION_AXIS_CONFIG,
+  SPOUSE_PAIRS,
+  RELATION_LEVEL_MAP,
+} from '../utils/relationMetadata';
 import { TreeCacheService } from '../services/treeCacheService';
 import { awardPoints, deductPoints } from '../services/scoreService';
 import { getUserBadgeData } from '../services/badgeService';
+import {
+  getRelationTypeRegistry,
+  type RelationTypeRegistry,
+} from '../services/relationTypeRegistry';
+import { deletionPenalty } from '../config/gamification';
+import { badRequest, forbidden, notFound, unauthenticated } from '../lib/errors';
+import { createLogger } from '../lib/logger';
 
+const log = createLogger('relations');
+
+/**
+ * Field set returned for the "other person" in a relation.
+ *
+ * `listRelations` already hand-picked these fields; `getTree`, `getRequests` and
+ * `getAcceptedRequests` used `include: { fromUser: true, toUser: true }`, which
+ * returns *every* User column — including `email`, `address`, `pincode`,
+ * `dateOfBirth` and `bloodGroup` — for every person in the response. Selecting
+ * explicitly keeps that PII out of the payload and shrinks the response.
+ */
+export const RELATION_USER_SELECT = {
+  id: true,
+  firstName: true,
+  lastName: true,
+  photoUrl: true,
+  gender: true,
+  phone: true,
+  area: true,
+  isAlive: true,
+} as const;
 
 type GenderValue = 'MALE' | 'FEMALE' | null;
 
@@ -26,6 +58,7 @@ function normalizeVisualSide(side?: string | null): 'top' | 'bottom' | 'left' | 
 
 /**
  * Resolve display label for a relation type based on language.
+ * Kept for the few places that still hold a Prisma relationType object.
  */
 function resolveLabel(relationType: any, lang: string = 'mr') {
   if (!relationType || !relationType.translations) return relationType?.code || 'UNKNOWN';
@@ -35,37 +68,36 @@ function resolveLabel(relationType: any, lang: string = 'mr') {
 
 /**
  * Resolve which relation code and label should be shown to the given viewer.
+ *
+ * PERFORMANCE FIX: this used to be `async` and, on the incoming-side branch, ran
+ *
+ *     await prisma.relationType.findUnique({ where: { code: reciprocalCode },
+ *                                            include: { translations: true } })
+ *
+ * once per relation. Because every caller invoked it inside
+ * `Promise.all(raw.map(...))`, a user with N relations issued up to N extra
+ * queries per request — for rows from a small, near-static reference table. It is
+ * now a synchronous lookup against the cached registry, so those endpoints do a
+ * fixed number of queries regardless of tree size.
+ *
+ * Resolution order is unchanged.
  */
-async function resolveRelationForViewer(rel: any, viewerUserId: string, lang: string = 'mr') {
-  // If we already have the relationType included in rel (from findMany include)
+function resolveRelationForViewer(
+  registry: RelationTypeRegistry,
+  rel: any,
+  viewerUserId: string,
+  lang: string = 'mr'
+): { code: string; label: string } {
   if (rel.fromUserId === viewerUserId) {
-    return {
-      code: rel.relationTypeCode,
-      label: resolveLabel(rel.relationType, lang)
-    };
+    return { code: rel.relationTypeCode, label: registry.label(rel.relationTypeCode, lang) };
   }
 
-  // If viewing the incoming side, we need to show the reciprocal
   if (rel.toUserId === viewerUserId) {
-    const reciprocalCode = rel.relationType?.reciprocalCode || rel.relationTypeCode;
-    // For label of reciprocal, we might need another DB fetch or if we have all types cached?
-    // Let's assume we fetch the reciprocal type if needed, or if it's common we cache it.
-    // For now, simpler: resolve label if we can find it in a pre-fetched list.
-    const recType = await prisma.relationType.findUnique({
-      where: { code: reciprocalCode },
-      include: { translations: true }
-    });
-
-    return {
-      code: reciprocalCode,
-      label: resolveLabel(recType, lang)
-    };
+    const reciprocalCode = registry.reciprocalOf(rel.relationTypeCode);
+    return { code: reciprocalCode, label: registry.label(reciprocalCode, lang) };
   }
 
-  return {
-    code: rel.relationTypeCode,
-    label: resolveLabel(rel.relationType, lang)
-  };
+  return { code: rel.relationTypeCode, label: registry.label(rel.relationTypeCode, lang) };
 }
 
 async function createNotification(args: {
@@ -85,23 +117,33 @@ async function createNotification(args: {
         message,
         relationId: relationId ?? null,
       },
+      // Narrowed from `include: { relation: { include: { fromUser: true, toUser: true } } }`.
+      // That pushed every column of both users — email, address, dateOfBirth,
+      // bloodGroup — into a websocket payload delivered to the recipient.
       include: {
         relation: {
-          include: {
-            fromUser: true,
-            toUser: true
-          }
-        }
-      }
+          select: {
+            id: true,
+            fromUserId: true,
+            toUserId: true,
+            status: true,
+            relationTypeCode: true,
+            category: true,
+            createdById: true,
+            customName: true,
+            customPhotoUrl: true,
+            fromUser: { select: RELATION_USER_SELECT },
+            toUser: { select: RELATION_USER_SELECT },
+          },
+        },
+      },
     });
 
-    try {
-      getIO().to(userId).emit('notification', notification);
-    } catch (e) {
-      console.warn('Socket emit failed', e);
-    }
+    // emitToUser never throws, so the previous try/catch around getIO() is gone.
+    emitToUser(userId, 'notification', notification);
   } catch (err) {
-    console.error('Failed to create notification', err);
+    // Notification delivery must never fail the action that triggered it.
+    log.error({ err, userId, type }, 'failed to create notification');
   }
 }
 
@@ -124,14 +166,15 @@ function resolveNodeForViewer(nodeUser: any, relation: any, viewerUserId: string
 export const listRelations = async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;
   const lang = (req.query.lang as string) || 'mr';
-  if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
+  if (!userId) throw unauthenticated();
 
-  try {
-    // Fetch all relation rows relevant to this user:
-    // 1. Rows they created (their own outgoing adds, including now-REJECTED cross-node originals)
-    // 2. CONFIRMED rows where they are toUserId (reciprocal rows created by the other party pointing back to them)
-    // 3. REJECTED rows where they are toUserId (so they can see rejections)
-    const raw = await prisma.relation.findMany({
+  const registry = await getRelationTypeRegistry();
+
+  // Fetch all relation rows relevant to this user:
+  // 1. Rows they created (their own outgoing adds, including now-REJECTED cross-node originals)
+  // 2. CONFIRMED rows where they are toUserId (reciprocal rows created by the other party pointing back to them)
+  // 3. REJECTED rows where they are toUserId (so they can see rejections)
+  const raw = await prisma.relation.findMany({
       where: {
         OR: [
           { createdById: userId },
@@ -139,11 +182,22 @@ export const listRelations = async (req: AuthRequest, res: Response) => {
           { toUserId: userId, status: 'REJECTED', createdById: { not: userId } },
         ],
       },
-      include: {
-        fromUser: true,
-        toUser: true,
-        User_Relation_createdByIdToUser: true,
-        relationType: { include: { translations: true } }
+      // `relationType` is no longer joined: labels come from the cached registry,
+      // which removes a join and the nested translations rows from every request.
+      select: {
+        id: true,
+        fromUserId: true,
+        toUserId: true,
+        status: true,
+        relationTypeCode: true,
+        category: true,
+        customName: true,
+        customPhotoUrl: true,
+        createdById: true,
+        createdAt: true,
+        fromUser: { select: RELATION_USER_SELECT },
+        toUser: { select: RELATION_USER_SELECT },
+        User_Relation_createdByIdToUser: { select: RELATION_USER_SELECT },
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -159,8 +213,10 @@ export const listRelations = async (req: AuthRequest, res: Response) => {
       }
     }
 
-    const relations = await Promise.all(Array.from(deduped.values()).map(async rel => {
-      const view = await resolveRelationForViewer(rel, userId, lang);
+    // No longer `Promise.all(async ...)`: label resolution is synchronous now,
+    // so this is a plain map with zero database access.
+    const relations = Array.from(deduped.values()).map(rel => {
+      const view = resolveRelationForViewer(registry, rel, userId, lang);
       const isMyRelation = rel.createdById === userId;
 
       // Use createdById as the primary 'from' identifier for the relations list.
@@ -206,7 +262,7 @@ export const listRelations = async (req: AuthRequest, res: Response) => {
         } : null,
         relationType: { label: view.label, code: view.code }
       };
-    }));
+    });
 
     const filteredRelations = relations.filter(rel => {
       if (rel.status === 'PENDING') {
@@ -220,19 +276,39 @@ export const listRelations = async (req: AuthRequest, res: Response) => {
     });
 
     return res.json(filteredRelations);
-  } catch (error) {
-    console.error('list relations error', error);
-    return res.status(500).json({ message: 'Internal server error' });
-  }
 };
 
 export const getTree = async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;
   const lang = (req.query.lang as string) || 'mr';
-  if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
+  if (!userId) throw unauthenticated();
 
-  try {
-    const rootUser = await prisma.user.findUnique({ where: { id: userId } });
+  const registry = await getRelationTypeRegistry();
+
+  {
+    // `rootUser` previously used `findUnique` with no select, returning every
+    // column of the caller's own row. That is the caller's own data so it is not
+    // a leak, but it is needless bytes on the wire.
+    const rootUser = await prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        photoUrl: true,
+        gender: true,
+        phone: true,
+        area: true,
+        isAlive: true,
+        dateOfBirth: true,
+        bloodGroup: true,
+        education: true,
+        occupation: true,
+        maritalStatus: true,
+        pincode: true,
+        address: true,
+      },
+    });
     const raw = await prisma.relation.findMany({
       where: {
         OR: [
@@ -246,17 +322,28 @@ export const getTree = async (req: AuthRequest, res: Response) => {
           { fromUserId: userId, status: 'CONFIRMED' },
         ]
       },
-      include: {
-        fromUser: true,
-        toUser: true,
-        User_Relation_createdByIdToUser: true,
-        relationType: { include: { translations: true } }
+      select: {
+        id: true,
+        fromUserId: true,
+        toUserId: true,
+        status: true,
+        relationTypeCode: true,
+        category: true,
+        customName: true,
+        customPhotoUrl: true,
+        visualSide: true,
+        createdById: true,
+        createdAt: true,
+        updatedAt: true,
+        fromUser: { select: RELATION_USER_SELECT },
+        toUser: { select: RELATION_USER_SELECT },
+        User_Relation_createdByIdToUser: { select: RELATION_USER_SELECT },
       },
       orderBy: { createdAt: 'asc' },
     });
 
-    const relations = await Promise.all(raw.map(async rel => {
-      const view = await resolveRelationForViewer(rel, userId, lang);
+    const relations = raw.map(rel => {
+      const view = resolveRelationForViewer(registry, rel, userId, lang);
       const isMyRelation = rel.createdById === userId;
       let finalToUser = rel.toUser;
       if (rel.fromUserId === userId) {
@@ -269,34 +356,44 @@ export const getTree = async (req: AuthRequest, res: Response) => {
         toUser: finalToUser,
         relationType: { label: view.label, code: view.code }
       };
-    }));
+    });
 
     return res.json({ rootUser, relations });
-  } catch (error) {
-    console.error('tree error', error);
-    return res.status(500).json({ message: 'Internal server error' });
   }
 };
 
 export const getRequests = async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;
   const lang = (req.query.lang as string) || 'mr';
-  if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
+  if (!userId) throw unauthenticated();
 
-  try {
+  const registry = await getRelationTypeRegistry();
+
+  {
     const raw = await prisma.relation.findMany({
       where: { toUserId: userId, status: 'PENDING' },
-      include: {
-        fromUser: true,
-        toUser: true,
-        User_Relation_createdByIdToUser: true,
-        relationType: { include: { translations: true } }
+      select: {
+        id: true,
+        fromUserId: true,
+        toUserId: true,
+        status: true,
+        relationTypeCode: true,
+        category: true,
+        customName: true,
+        customPhotoUrl: true,
+        visualSide: true,
+        createdById: true,
+        createdAt: true,
+        updatedAt: true,
+        fromUser: { select: RELATION_USER_SELECT },
+        toUser: { select: RELATION_USER_SELECT },
+        User_Relation_createdByIdToUser: { select: RELATION_USER_SELECT },
       },
       orderBy: { createdAt: 'asc' },
     });
 
-    const pending = await Promise.all(raw.map(async rel => {
-      const view = await resolveRelationForViewer(rel, userId, lang);
+    const pending = raw.map(rel => {
+      const view = resolveRelationForViewer(registry, rel, userId, lang);
 
       // Normalize: show the actual root user who added the request as fromUserId/fromUser.
       const logicalFromUser = (rel as any).User_Relation_createdByIdToUser || rel.fromUser;
@@ -308,7 +405,7 @@ export const getRequests = async (req: AuthRequest, res: Response) => {
         fromUser: logicalFromUser,
         relationType: { label: view.label, code: view.code }
       };
-    }));
+    });
 
     const filteredPending = pending.filter(rel => {
       const sender = rel.fromUser;
@@ -319,9 +416,6 @@ export const getRequests = async (req: AuthRequest, res: Response) => {
     });
 
     return res.json(filteredPending);
-  } catch (error) {
-    console.error('requests error', error);
-    return res.status(500).json({ message: 'Internal server error' });
   }
 };
 
@@ -332,16 +426,59 @@ function normalizePhone(value: string): string {
   return digits;
 }
 
+/**
+ * Confirms the caller may anchor a new relation to `sourceUserId`.
+ *
+ * AUTHORIZATION FIX. `createRelation` did:
+ *
+ *     const fromUserId = sourceUserId || userId;
+ *
+ * with `sourceUserId` taken straight from the request body and never checked.
+ * The legitimate use is a cross-node add — "Root adds KAKA from VADIL's node" —
+ * where VADIL is a node in Root's own tree. But because nothing verified that,
+ * any authenticated user could pass an arbitrary user ID and create relation rows
+ * anchored to a stranger's node, injecting entries into someone else's tree and
+ * generating notifications that appear to come from them.
+ *
+ * A node counts as being in the caller's tree if the caller is a party to, or the
+ * creator of, any non-rejected relation touching it.
+ */
+export async function assertSourceNodeOwned(userId: string, sourceUserId: string): Promise<void> {
+  if (sourceUserId === userId) return;
+
+  const link = await prisma.relation.findFirst({
+    where: {
+      status: { not: 'REJECTED' },
+      OR: [
+        { createdById: userId, fromUserId: sourceUserId },
+        { createdById: userId, toUserId: sourceUserId },
+        { fromUserId: userId, toUserId: sourceUserId },
+        { fromUserId: sourceUserId, toUserId: userId },
+      ],
+    },
+    select: { id: true },
+  });
+
+  if (!link) {
+    log.warn({ userId, sourceUserId }, 'rejected relation anchored to a node outside the caller tree');
+    throw forbidden('You can only add relations from nodes in your own tree');
+  }
+}
+
 export const createRelation = async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;
   const lang = (req.query.lang as string) || 'mr';
-  if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
+  if (!userId) throw unauthenticated();
 
   const {
     phone, firstName, lastName, gender, relationTypeCode, sourceUserId, customName, customPhotoUrl, isAlive, dateOfBirth, bloodGroup,
     education, occupation, maritalStatus, pincode, address, area, visualSide
   } = req.body;
   const fromUserId = sourceUserId || userId;
+
+  if (sourceUserId) {
+    await assertSourceNodeOwned(userId, sourceUserId);
+  }
 
   const isPersonAlive = isAlive !== undefined ? (String(isAlive) === 'true') : true;
 
@@ -356,11 +493,11 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
   if (isPersonAlive && phone && String(phone).trim()) {
     cleanPhone = normalizePhone(phone);
     if (!cleanPhone || cleanPhone.length < 10) {
-      return res.status(400).json({ message: 'Invalid phone number' });
+      throw badRequest('Invalid phone number');
     }
   }
 
-  try {
+  {
     const existingRelation = await prisma.relation.findFirst({
       where: {
         toUserId: userId,
@@ -414,7 +551,7 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
     });
 
     if (!relType) {
-      return res.status(400).json({ message: `Invalid relation type: ${relationTypeCode}` });
+      throw badRequest(`Invalid relation type: ${relationTypeCode}`);
     }
 
     let relatedUser = null;
@@ -470,7 +607,7 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
     }
 
     if (relatedUser.id === fromUserId) {
-      return res.status(400).json({ message: 'Cannot create relation with yourself' });
+      throw badRequest('Cannot create relation with yourself');
     }
 
     const relation = await prisma.relation.upsert({
@@ -524,11 +661,13 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
     });
 
     // ── Award score to the creator ──
+    // Scoring is secondary to the relation itself, so a failure here is logged
+    // rather than allowed to fail the request.
     try {
       const scoreReason = isPersonAlive ? 'ADD_ALIVE' : 'ADD_DECEASED';
       await awardPoints(userId, scoreReason, relation.id);
     } catch (scoreErr) {
-      console.warn('[createRelation] Score award failed:', scoreErr);
+      log.warn({ err: scoreErr, userId, relationId: relation.id }, 'score award failed');
     }
 
     await TreeCacheService.invalidateUserTree(fromUserId, relatedUser.id, userId);
@@ -537,29 +676,30 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
       ...relation,
       relationType: { code: relationTypeCode, label: displayLabel }
     });
-  } catch (error) {
-    console.error('create relation error', error);
-    return res.status(500).json({ message: 'Internal server error' });
   }
 };
 
 export const approveRelation = async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;
   const { id } = req.params;
-  if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
+  if (!userId) throw unauthenticated();
 
-  try {
+  {
     const relation = await prisma.relation.findUnique({
       where: { id },
-      include: {
-        fromUser: true,
-        toUser: true,
-        relationType: true
+      select: {
+        id: true,
+        fromUserId: true,
+        toUserId: true,
+        createdById: true,
+        status: true,
+        relationTypeCode: true,
       },
     });
 
+    // Ownership check: only the recipient of the request may approve it.
     if (!relation || relation.toUserId !== userId) {
-      return res.status(404).json({ message: 'Relation not found or not authorized' });
+      throw notFound('Relation not found or not authorized');
     }
 
     // Step 2: Mark the original relation as CONFIRMED (standard approval)
@@ -587,30 +727,34 @@ export const approveRelation = async (req: AuthRequest, res: Response) => {
       const creatorId = relation.createdById ?? relation.fromUserId;
       await awardPoints(creatorId, 'RELATION_APPROVED', relation.id);
     } catch (scoreErr) {
-      console.warn('[approveRelation] Score award failed:', scoreErr);
+      log.warn({ err: scoreErr, relationId: relation.id }, 'score award failed');
     }
 
     await TreeCacheService.invalidateUserTree(relation.fromUserId, relation.toUserId, relation.createdById, userId);
 
     return res.json(updated);
-  } catch (error) {
-    console.error('approve relation error', error);
-    return res.status(500).json({ message: 'Internal server error' });
   }
 };
 
 export const rejectRelation = async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;
   const { id } = req.params;
-  if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
+  if (!userId) throw unauthenticated();
 
-  try {
+  {
     const relation = await prisma.relation.findUnique({
       where: { id },
-      include: { toUser: true },
+      select: {
+        id: true,
+        fromUserId: true,
+        toUserId: true,
+        createdById: true,
+        toUser: { select: { firstName: true } },
+      },
     });
+    // Ownership check: only the recipient may reject.
     if (!relation || relation.toUserId !== userId) {
-      return res.status(404).json({ message: 'Relation not found' });
+      throw notFound('Relation not found');
     }
 
     const updated = await prisma.relation.update({
@@ -629,9 +773,6 @@ export const rejectRelation = async (req: AuthRequest, res: Response) => {
     await TreeCacheService.invalidateUserTree(relation.fromUserId, relation.toUserId, relation.createdById, userId);
 
     return res.json(updated);
-  } catch (error) {
-    console.error('reject relation error', error);
-    return res.status(500).json({ message: 'Internal server error' });
   }
 };
 
@@ -644,23 +785,31 @@ export const updateRelation = async (req: AuthRequest, res: Response) => {
     education, occupation, maritalStatus, pincode, address, area
   } = req.body;
 
-  if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
+  if (!userId) throw unauthenticated();
 
-  try {
+  {
     const relation = await prisma.relation.findUnique({
       where: { id },
-      include: { relationType: true, toUser: true, fromUser: true }
+      select: {
+        id: true,
+        fromUserId: true,
+        toUserId: true,
+        createdById: true,
+        customName: true,
+        customPhotoUrl: true,
+        relationTypeCode: true,
+      },
     });
 
     if (!relation) {
-      return res.status(404).json({ message: 'Relation not found' });
+      throw notFound('Relation not found');
     }
 
     const isParticipant = relation.fromUserId === userId || relation.toUserId === userId;
     const isCreator = relation.createdById === userId;
 
     if (!isParticipant && !isCreator) {
-      return res.status(403).json({ message: 'Not authorized to edit this relation' });
+      throw forbidden('Not authorized to edit this relation');
     }
 
     const updateData: any = {
@@ -705,21 +854,45 @@ export const updateRelation = async (req: AuthRequest, res: Response) => {
     }
 
     if (Object.keys(targetUserData).length > 0) {
-      console.log('[updateRelation] targetUserData:', JSON.stringify(targetUserData));
-      console.log('[updateRelation] resolvedTargetUserId:', resolvedTargetUserId, '| userId:', userId);
-      console.log('[updateRelation] bodyTargetUserId received:', bodyTargetUserId);
+      /**
+       * The four `console.log` calls that were here ran on every single call and
+       * serialised `targetUserData` — which contains address, pincode, date of
+       * birth and blood group — straight into stdout. That is PII in plaintext
+       * logs on a hot write path. Replaced with a debug-level record of the field
+       * *names* only, which is level-gated off in production.
+       */
+      log.debug(
+        { fields: Object.keys(targetUserData), relationId: id },
+        'updating related user profile'
+      );
 
       if (resolvedTargetUserId) {
+        // AUTHORIZATION: only write to a user who is actually the counterparty of
+        // this relation. `targetUserId` arrives in the request body, and the
+        // original code passed it to `prisma.user.update` unchecked whenever it
+        // was present — so any participant of any relation could overwrite an
+        // arbitrary user's profile fields by supplying their ID.
+        const counterpartyIds = new Set(
+          [relation.fromUserId, relation.toUserId, relation.createdById].filter(
+            (value): value is string => typeof value === 'string'
+          )
+        );
+
+        if (!counterpartyIds.has(resolvedTargetUserId)) {
+          log.warn(
+            { userId, resolvedTargetUserId, relationId: id },
+            'rejected profile write to a user outside this relation'
+          );
+          throw forbidden('Cannot modify a user who is not part of this relation');
+        }
+
         await prisma.user.update({
           where: { id: resolvedTargetUserId },
           data: targetUserData
         });
-        console.log('[updateRelation] ✅ User updated successfully for:', resolvedTargetUserId);
       } else {
-        console.warn('[updateRelation] ⚠️ No resolvedTargetUserId — user profile NOT updated');
+        log.warn({ relationId: id }, 'no target user resolved; profile not updated');
       }
-    } else {
-      console.log('[updateRelation] No profile fields to update in targetUserData');
     }
 
     await TreeCacheService.invalidateUserTree(
@@ -732,26 +905,34 @@ export const updateRelation = async (req: AuthRequest, res: Response) => {
     );
 
     return res.json({ ...updated, isAlive });
-  } catch (error) {
-    console.error('update relation error', error);
-    return res.status(500).json({ message: 'Internal server error' });
   }
 };
 
 export const getFullTree = async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;
   const lang = (req.query.lang as string) || 'mr';
-  if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
+  if (!userId) throw unauthenticated();
 
+  // Validated and capped by getFullTreeSchema (1..25, default 10).
   const maxDepth = Number(req.query.depth) || 10;
   const category = req.query.category as string;
 
-  try {
-    const cachedTree = await TreeCacheService.getFullTreeCache(userId, maxDepth, lang, category);
-    if (cachedTree) {
-      return res.json(cachedTree);
-    }
-
+  /**
+   * Read-through cache with single-flight.
+   *
+   * Previously: `getFullTreeCache` then, on a miss, build and `setFullTreeCache`.
+   * That leaves a stampede window — when a popular key expires, every concurrent
+   * request for it runs the whole BFS against Postgres simultaneously. This is the
+   * most expensive query in the application, so that window is exactly where an
+   * outage starts. `readThroughFullTree` lets one request rebuild while the others
+   * wait briefly for the result.
+   */
+  const { value: responseData, hit } = await TreeCacheService.readThroughFullTree(
+    userId,
+    maxDepth,
+    lang,
+    category,
+    async () => {
     const rootUserDb = await prisma.user.findUnique({
       where: { id: userId },
       select: {
@@ -764,10 +945,8 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
         phone: true,
       }
     });
-    if (!rootUserDb) return res.status(404).json({ message: 'User not found' });
+    if (!rootUserDb) throw notFound('User not found');
     const rootUser = rootUserDb;
-
-    const { SPOUSE_PAIRS, RELATION_LEVEL_MAP } = require('../utils/relationMetadata');
 
     const visited = new Map<string, { gen: number, code: string }>();
     visited.set(userId, { gen: 0, code: 'ROOT' });
@@ -775,28 +954,35 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
     const processedRelations = new Set<string>();
     const allRelations: any[] = [];
 
-    // Cache all relation types to avoid N+1 queries during BFS traversal
-    const allRelTypes = await prisma.relationType.findMany({ include: { translations: true } });
-    const relTypeCache = new Map(allRelTypes.map(t => [t.code, t]));
+    /**
+     * Relation types come from the shared cached registry instead of
+     * `prisma.relationType.findMany({ include: { translations: true } })` on every
+     * call. That query fetched the entire reference table plus all translations
+     * per request; it is now loaded once per process and refreshed on a TTL.
+     *
+     * `require('../utils/relationMetadata')` mid-function has also been replaced
+     * with a static import at the top of the file — a synchronous `require` inside
+     * a request handler blocks the event loop on first call and defeats bundling.
+     */
+    const registry = await getRelationTypeRegistry();
 
     const resolveRelationWithCache = (rel: any, viewerUserId: string, lang: string = 'mr') => {
       if (rel.fromUserId === viewerUserId) {
         return {
           code: rel.relationTypeCode,
-          label: resolveLabel(relTypeCache.get(rel.relationTypeCode), lang)
+          label: registry.label(rel.relationTypeCode, lang)
         };
       }
       if (rel.toUserId === viewerUserId) {
-        const reciprocalCode = rel.relationType?.reciprocalCode || rel.relationTypeCode;
-        const recType = relTypeCache.get(reciprocalCode);
+        const reciprocalCode = registry.reciprocalOf(rel.relationTypeCode);
         return {
           code: reciprocalCode,
-          label: resolveLabel(recType, lang)
+          label: registry.label(reciprocalCode, lang)
         };
       }
       return {
         code: rel.relationTypeCode,
-        label: resolveLabel(relTypeCache.get(rel.relationTypeCode), lang)
+        label: registry.label(rel.relationTypeCode, lang)
       };
     };
 
@@ -807,19 +993,30 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
       relation: { id: `root-${userId}`, status: 'ROOT', relationType: { code: 'ROOT', label: 'You' } }
     }]);
 
+    /**
+     * Frontier batch size.
+     *
+     * The BFS builds `IN (...)` lists from the previous hop's node set. On a dense
+     * tree that list grows without bound, producing a single query with thousands
+     * of bind parameters — slow to plan and capable of exceeding the parameter
+     * limit outright. Batching keeps each query a predictable size without
+     * changing which relations are visited.
+     */
+    const FRONTIER_BATCH_SIZE = 500;
+
+    const chunk = <T,>(items: T[], size: number): T[][] => {
+      const out: T[][] = [];
+      for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+      return out;
+    };
+
     let hop = 0;
     while (queue.length > 0 && hop < maxDepth) {
       const nextQueue = new Set<string>();
+      // Position lookup for the current frontier, replacing a per-relation scan.
+      const queueIndex = new Map(queue.map((id, index) => [id, index]));
 
-      const rawRelations: any[] = await prisma.relation.findMany({
-        where: {
-          OR: [
-            { fromUserId: { in: queue } },
-            { toUserId: { in: queue } },
-            ...(hop === 0 ? [{ createdById: userId }] : [])
-          ],
-        },
-        select: {
+      const relationSelect = {
           id: true,
           fromUserId: true,
           toUserId: true,
@@ -838,9 +1035,29 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
           toUser: {
             select: { id: true, phone: true, firstName: true, lastName: true, photoUrl: true, gender: true, isAlive: true }
           },
-          relationType: true // translations are in cache
-        },
-      });
+          // `relationType: true` removed: treeSide/treeLevel/reciprocalCode now come
+          // from the cached registry, so this join no longer runs per hop.
+        } as const;
+
+      const batches = chunk(queue, FRONTIER_BATCH_SIZE);
+      const rawRelations: any[] = (
+        await Promise.all(
+          batches.map((batch, batchIndex) =>
+            prisma.relation.findMany({
+              where: {
+                OR: [
+                  { fromUserId: { in: batch } },
+                  { toUserId: { in: batch } },
+                  // Only attach the creator clause once, on the first batch of the
+                  // first hop, to preserve the original single-query semantics.
+                  ...(hop === 0 && batchIndex === 0 ? [{ createdById: userId }] : []),
+                ],
+              },
+              select: relationSelect,
+            })
+          )
+        )
+      ).flat();
 
       for (const rel of rawRelations) {
         if (processedRelations.has(rel.id)) continue;
@@ -856,7 +1073,23 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
         if (!isCreator && !isFromMe && !isToMe) continue;
         if (!isConfirmed && !isCreator) continue;
 
-        const sourceId = queue.find(id => id === rel.fromUserId || id === rel.toUserId);
+        /**
+         * Was `queue.find(id => id === rel.fromUserId || id === rel.toUserId)`,
+         * a linear scan of the frontier for every relation in the hop — O(frontier
+         * x relations), which is the quadratic term that made wide trees slow.
+         *
+         * `queueIndex` preserves the exact original semantics: `find` returns the
+         * earliest match in queue order, so when both endpoints are in the frontier
+         * the lower index wins.
+         */
+        const fromIndex = queueIndex.get(rel.fromUserId);
+        const toIndex = queueIndex.get(rel.toUserId);
+        const sourceId =
+          fromIndex !== undefined && (toIndex === undefined || fromIndex <= toIndex)
+            ? rel.fromUserId
+            : toIndex !== undefined
+              ? rel.toUserId
+              : undefined;
         if (!sourceId) continue;
 
         const neighborUser = (rel.fromUserId === sourceId) ? rel.toUser : rel.fromUser;
@@ -878,7 +1111,7 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
         // added Prathamesh as PUTANYA), the customName is what VINESH typed for PRATHAMESH
         // and must NOT be used as Vinesh's display name in Prathamesh's tree.
         const isViewerCreated = rel.createdById === userId;
-        const rootRelationType = relTypeCache.get(rootView.code);
+        const rootRelationType = registry.get(rootView.code);
         allRelations.push({
           id: rel.id,
           fromUserId: rel.fromUserId,
@@ -886,7 +1119,9 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
           relationType: {
             code: rootView.code,
             label: rootView.label,
-            treeSide: rootRelationType?.treeSide ?? rel.relationType?.treeSide,
+            // Second operand was `rel.relationType?.treeSide` from the dropped join;
+            // the registry lookup by the row's own code is equivalent.
+            treeSide: rootRelationType?.treeSide ?? registry.get(rel.relationTypeCode)?.treeSide,
           },
           direction: isOutgoing ? 'OUTGOING' : 'INCOMING',
           sourceUserId: visualSourceId,
@@ -903,14 +1138,29 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
         // Step 1: Resolve the relation code from the TARGET's perspective viewing the edge
         const targetViewFromSource = resolveRelationWithCache(rel, sourceId, lang);
         const targetRelCode = targetViewFromSource.code;
-        const targetRelationType = relTypeCache.get(targetRelCode);
+        const targetRelationType = registry.get(targetRelCode);
 
         let localNeighborGen: number;
         const canonicalLevel = RELATION_LEVEL_MAP[targetRelCode];
 
+        // Dynamic level for NATEVAIK generic relative based on visualSide placement
+        if (targetRelCode === 'NATEVAIK') {
+          if (rel.visualSide === 'top') {
+            let nextGen = sourceGen + 1;
+            // When adding on top, never place onto the root level (gen 0). It must be at least gen 1 (above root).
+            if (nextGen === 0) {
+              nextGen = 1;
+            }
+            localNeighborGen = nextGen;
+          } else if (rel.visualSide === 'bottom') {
+            localNeighborGen = sourceGen - 1;
+          } else {
+            localNeighborGen = sourceGen;
+          }
+        }
         // Step 2: Prefer canonical static generation from RELATION_LEVEL_MAP when available.
         // This protects against stale/mismatched DB treeLevel values for same-generation cousins.
-        if (canonicalLevel !== undefined) {
+        else if (canonicalLevel !== undefined) {
           localNeighborGen = canonicalLevel;
         } else if (targetRelationType?.treeLevel !== null && targetRelationType?.treeLevel !== undefined) {
           localNeighborGen = targetRelationType.treeLevel;
@@ -974,278 +1224,273 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
     for (const [gen, nodes] of nodesByGen.entries()) {
       levels.push({ level: gen, nodes });
     }
-    const responseData = { rootUser, levels, allRelations };
-    await TreeCacheService.setFullTreeCache(userId, maxDepth, lang, category, responseData);
-    return res.json(responseData);
-  } catch (error) {
-    console.error('getFullTree error', error);
-    return res.status(500).json({ message: 'Internal server error' });
-  }
+    return { rootUser, levels, allRelations };
+    }
+  );
+
+  // Lets clients and dashboards see cache effectiveness without extra tooling.
+  res.setHeader('X-Cache', hit ? 'HIT' : 'MISS');
+  return res.json(responseData);
 };
+
+/**
+ * Row cap for the spatial chunk query. Radius is already capped at 20,000 by
+ * getGraphChunkSchema; this additionally bounds the result set itself, since a
+ * dense cluster of users inside a large-but-valid radius could still return
+ * everyone plus every one of their relations in a single response.
+ */
+const GRAPH_CHUNK_NODE_LIMIT = 500;
 
 export const getGraphChunk = async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;
-  if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
+  if (!userId) throw unauthenticated();
 
-  const x = parseFloat(req.query.x as string) || 0;
-  const y = parseFloat(req.query.y as string) || 0;
-  const radius = parseFloat(req.query.radius as string) || 5000;
+  // Bounds already enforced by getGraphChunkSchema (radius capped at 20,000).
+  const x = Number(req.query.x) || 0;
+  const y = Number(req.query.y) || 0;
+  const radius = Number(req.query.radius) || 5000;
   const lang = (req.query.lang as string) || 'mr';
+  const registry = await getRelationTypeRegistry();
 
-  try {
-    // 1. Fetch users within the spatial bounds
-    // For simplicity, we use a square bounding box first (more efficient for DB index)
-    // then filter by circular radius if needed.
-    const nodes = await prisma.user.findMany({
-      where: {
-        worldX: { gte: x - radius, lte: x + radius },
-        worldY: { gte: y - radius, lte: y + radius },
-      },
-      select: {
-        id: true,
-        firstName: true,
-        lastName: true,
-        photoUrl: true,
-        gender: true,
-        isAlive: true,
-        worldX: true,
-        worldY: true,
-      }
-    });
+  // 1. Users within the bounding box. `take` caps the result regardless of how
+  // densely populated the box is; `World(X|Y)` composite index (see the schema
+  // migration) makes this a range scan instead of a sequential scan.
+  const nodes = await prisma.user.findMany({
+    where: {
+      worldX: { gte: x - radius, lte: x + radius },
+      worldY: { gte: y - radius, lte: y + radius },
+    },
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      photoUrl: true,
+      gender: true,
+      isAlive: true,
+      worldX: true,
+      worldY: true,
+    },
+    take: GRAPH_CHUNK_NODE_LIMIT,
+  });
 
-    const nodeIds = nodes.map(n => n.id);
+  const nodeIds = nodes.map(n => n.id);
 
-    // 2. Fetch relations between these nodes
-    const relations = await prisma.relation.findMany({
-      where: {
-        OR: [
-          { fromUserId: { in: nodeIds } },
-          { toUserId: { in: nodeIds } }
-        ],
-        status: 'CONFIRMED'
-      },
-      include: {
-        relationType: { include: { translations: true } }
-      }
-    });
+  // 2. Relations between the returned nodes only.
+  // Registry lookup replaces `include: { relationType: { include: { translations: true } } }`,
+  // removing a join across every relation in the chunk.
+  const relations = nodeIds.length === 0 ? [] : await prisma.relation.findMany({
+    where: {
+      OR: [{ fromUserId: { in: nodeIds } }, { toUserId: { in: nodeIds } }],
+      status: 'CONFIRMED',
+    },
+    select: { id: true, fromUserId: true, toUserId: true, relationTypeCode: true },
+  });
 
-    // 3. Return as a chunk
-    return res.json({
-      chunkId: `chunk-${Math.floor(x/radius)}-${Math.floor(y/radius)}`,
-      bounds: { x, y, radius },
-      nodes,
-      edges: relations.map(rel => ({
-        id: rel.id,
-        fromUserId: rel.fromUserId,
-        toUserId: rel.toUserId,
-        relationType: rel.relationType.code,
-        label: resolveLabel(rel.relationType, lang)
-      }))
-    });
-  } catch (error) {
-    console.error('getGraphChunk error', error);
-    return res.status(500).json({ message: 'Internal server error' });
-  }
+  return res.json({
+    chunkId: `chunk-${Math.floor(x / radius)}-${Math.floor(y / radius)}`,
+    bounds: { x, y, radius },
+    truncated: nodes.length === GRAPH_CHUNK_NODE_LIMIT,
+    nodes,
+    edges: relations.map(rel => ({
+      id: rel.id,
+      fromUserId: rel.fromUserId,
+      toUserId: rel.toUserId,
+      relationType: rel.relationTypeCode,
+      label: registry.label(rel.relationTypeCode, lang),
+    })),
+  });
 };
 
-export const initWorldCoords = async (req: AuthRequest, res: Response) => {
-  try {
-    const users = await prisma.user.findMany();
-    let updated = 0;
-    for (const user of users) {
-      if (user.worldX === null || user.worldY === null) {
-        await prisma.user.update({
-          where: { id: user.id },
-          data: {
-            worldX: (Math.random() - 0.5) * 20000,
-            worldY: (Math.random() - 0.5) * 20000,
-          }
-        });
-        updated++;
-      }
-    }
-    return res.json({ message: `Initialized coordinates for ${updated} users.` });
-  } catch (error) {
-    console.error('initWorldCoords error', error);
-    return res.status(500).json({ message: 'Internal server error' });
-  }
+/**
+ * Maintenance endpoint. Route-level `requireAdmin` already restricts this to
+ * ADMIN_USER_IDS (see relationRoutes.ts); the query itself is fixed here.
+ *
+ * The previous version loaded every user row into memory
+ * (`prisma.user.findMany()` with no select) and issued one UPDATE per row inside
+ * a JS loop. Rewritten as a single `UPDATE ... WHERE worldX IS NULL OR worldY IS
+ * NULL` — the database computes the random offsets and applies them in one
+ * statement rather than N round-trips.
+ */
+export const initWorldCoords = async (_req: AuthRequest, res: Response) => {
+  const result = await prisma.$executeRaw`
+    UPDATE "User"
+    SET "worldX" = (random() - 0.5) * 20000,
+        "worldY" = (random() - 0.5) * 20000
+    WHERE "worldX" IS NULL OR "worldY" IS NULL
+  `;
+  return res.json({ message: `Initialized coordinates for ${result} users.` });
 };
 
 export const getRelationCounts = async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;
-  if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
+  if (!userId) throw unauthenticated();
 
-  try {
-    const [pending, confirmed, rejected, accepted, badge] = await Promise.all([
-      prisma.relation.count({
-        where: {
-          createdById: userId,
-          status: 'PENDING',
-          toUser: {
-            isAlive: true,
-            AND: [
-              { phone: { not: null } },
-              { phone: { not: '' } }
-            ]
-          }
+  const [pending, confirmed, rejected, accepted, badge] = await Promise.all([
+    prisma.relation.count({
+      where: {
+        createdById: userId,
+        status: 'PENDING',
+        toUser: {
+          isAlive: true,
+          AND: [{ phone: { not: null } }, { phone: { not: '' } }],
         },
-      }),
-      prisma.relation.count({
-        where: { fromUserId: userId, status: 'CONFIRMED' },
-      }),
-      prisma.relation.count({
-        where: { createdById: userId, status: 'REJECTED' },
-      }),
-      prisma.relation.count({
-        where: { toUserId: userId, status: 'CONFIRMED' },
-      }),
-      getUserBadgeData(userId),
-    ]);
-    return res.json({ pending, confirmed, rejected, accepted, badge });
-  } catch (error) {
-    console.error('getRelationCounts error', error);
-    return res.status(500).json({ message: 'Internal server error' });
-  }
+      },
+    }),
+    prisma.relation.count({ where: { fromUserId: userId, status: 'CONFIRMED' } }),
+    prisma.relation.count({ where: { createdById: userId, status: 'REJECTED' } }),
+    prisma.relation.count({ where: { toUserId: userId, status: 'CONFIRMED' } }),
+    // Cached and versioned — see badgeService.getUserBadgeData.
+    getUserBadgeData(userId),
+  ]);
+  return res.json({ pending, confirmed, rejected, accepted, badge });
 };
 
 export const deleteRelation = async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;
   const { id } = req.params;
-  if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
+  if (!userId) throw unauthenticated();
 
-  try {
-    const relation = await prisma.relation.findUnique({
-      where: { id },
-      include: { fromUser: true, toUser: true }
-    });
-    if (!relation) return res.status(404).json({ message: 'Relation not found' });
+  const relation = await prisma.relation.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      fromUserId: true,
+      toUserId: true,
+      createdById: true,
+      status: true,
+      fromUser: { select: { firstName: true, isAlive: true } },
+      toUser: { select: { firstName: true, isAlive: true } },
+    },
+  });
+  if (!relation) throw notFound('Relation not found');
 
-    const isParticipant = relation.fromUserId === userId || relation.toUserId === userId;
-    const isCreator = relation.createdById === userId;
+  const isParticipant = relation.fromUserId === userId || relation.toUserId === userId;
+  const isCreator = relation.createdById === userId;
 
-    if (!isParticipant && !isCreator) {
-      return res.status(403).json({ message: 'Not authorized to delete this relation' });
-    }
-
-    // If CONFIRMED – mark the reciprocal as REJECTED so the other person sees it
-    if (relation.status === 'CONFIRMED') {
-      await prisma.relation.updateMany({
-        where: { fromUserId: relation.toUserId, toUserId: relation.fromUserId },
-        data: { status: 'REJECTED' }
-      });
-      const otherUserId = relation.fromUserId === userId ? relation.toUserId : relation.fromUserId;
-      const remover = relation.fromUserId === userId ? relation.fromUser : relation.toUser;
-      await createNotification({
-        userId: otherUserId,
-        type: 'RELATION_REJECTED',
-        title: 'Connection removed',
-        message: `${remover?.firstName || 'Someone'} has removed you from their family tree.`,
-      });
-    }
-
-    // 1. Unlink notifications referencing this relation to avoid foreign key failure
-    await prisma.notification.updateMany({
-      where: { relationId: id },
-      data: { relationId: null }
-    });
-
-    // 2. Delete the relation
-    await prisma.relation.delete({ where: { id } });
-
-    // 3. Deduct points from creator
-    try {
-      const creatorId = relation.createdById ?? relation.fromUserId;
-      const targetUser = relation.createdById === relation.fromUserId ? relation.toUser : relation.fromUser;
-      const isTargetAlive = targetUser?.isAlive !== false;
-
-      let pointsToDeduct = isTargetAlive ? 5 : 2;
-      let reason: 'REMOVE_ALIVE' | 'REMOVE_DECEASED' = isTargetAlive ? 'REMOVE_ALIVE' : 'REMOVE_DECEASED';
-
-      if (relation.status === 'CONFIRMED') {
-        pointsToDeduct += 20; // Reverse the +20 approval bonus as well
-      }
-
-      await deductPoints(creatorId, pointsToDeduct, reason, relation.id);
-    } catch (scoreErr) {
-      console.warn('[deleteRelation] Score deduction failed:', scoreErr);
-    }
-
-    await TreeCacheService.invalidateUserTree(relation.fromUserId, relation.toUserId, relation.createdById, userId);
-
-    return res.json({ message: 'Relation deleted' });
-  } catch (error) {
-    console.error('delete relation error', error);
-    return res.status(500).json({ message: 'Internal server error' });
+  if (!isParticipant && !isCreator) {
+    throw forbidden('Not authorized to delete this relation');
   }
+
+  // If CONFIRMED – mark the reciprocal as REJECTED so the other person sees it
+  if (relation.status === 'CONFIRMED') {
+    await prisma.relation.updateMany({
+      where: { fromUserId: relation.toUserId, toUserId: relation.fromUserId },
+      data: { status: 'REJECTED' }
+    });
+    const otherUserId = relation.fromUserId === userId ? relation.toUserId : relation.fromUserId;
+    const remover = relation.fromUserId === userId ? relation.fromUser : relation.toUser;
+    await createNotification({
+      userId: otherUserId,
+      type: 'RELATION_REJECTED',
+      title: 'Connection removed',
+      message: `${remover?.firstName || 'Someone'} has removed you from their family tree.`,
+    });
+  }
+
+  // 1. Unlink notifications referencing this relation to avoid foreign key failure
+  await prisma.notification.updateMany({
+    where: { relationId: id },
+    data: { relationId: null }
+  });
+
+  // 2. Delete the relation
+  await prisma.relation.delete({ where: { id } });
+
+  // 3. Deduct points from creator.
+  // `deletionPenalty` derives the exact same numbers the old inline logic did
+  // (isTargetAlive ? 5 : 2, +20 if it had been confirmed) from SCORE_POINTS, so a
+  // future change to those award amounts can no longer desync from the reversal.
+  try {
+    const creatorId = relation.createdById ?? relation.fromUserId;
+    const targetUser = relation.createdById === relation.fromUserId ? relation.toUser : relation.fromUser;
+    const isTargetAlive = targetUser?.isAlive !== false;
+
+    const { points, reason } = deletionPenalty(isTargetAlive, relation.status === 'CONFIRMED');
+    await deductPoints(creatorId, points, reason, relation.id);
+  } catch (scoreErr) {
+    log.warn({ err: scoreErr, relationId: relation.id }, 'score deduction failed');
+  }
+
+  await TreeCacheService.invalidateUserTree(relation.fromUserId, relation.toUserId, relation.createdById, userId);
+
+  return res.json({ message: 'Relation deleted' });
 };
 
 export const getAcceptedRequests = async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;
   const lang = (req.query.lang as string) || 'mr';
-  if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
+  if (!userId) throw unauthenticated();
 
-  try {
-    const raw = await prisma.relation.findMany({
+  const registry = await getRelationTypeRegistry();
+
+  const raw = await prisma.relation.findMany({
       where: { toUserId: userId, status: 'CONFIRMED' },
-      include: {
-        fromUser: true,
-        toUser: true,
-        relationType: { include: { translations: true } }
+      select: {
+        id: true,
+        fromUserId: true,
+        toUserId: true,
+        status: true,
+        relationTypeCode: true,
+        category: true,
+        customName: true,
+        customPhotoUrl: true,
+        createdById: true,
+        createdAt: true,
+        updatedAt: true,
+        fromUser: { select: RELATION_USER_SELECT },
+        toUser: { select: RELATION_USER_SELECT },
       },
       orderBy: { updatedAt: 'desc' },
+      // Previously unbounded. A long-lived account would return its entire
+      // confirmed-relation history on every call.
+      take: 200,
     });
 
-    const accepted = await Promise.all(raw.map(async rel => {
-      const view = await resolveRelationForViewer(rel, userId, lang);
+    const accepted = raw.map(rel => {
+      const view = resolveRelationForViewer(registry, rel, userId, lang);
       return {
         ...rel,
         relationType: { label: view.label, code: view.code }
       };
-    }));
+    });
 
     return res.json(accepted);
-  } catch (error) {
-    console.error('getAcceptedRequests error', error);
-    return res.status(500).json({ message: 'Internal server error' });
-  }
 };
 
 export const checkAcceptedByPhone = async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;
-  if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
+  if (!userId) throw unauthenticated();
 
-  const { phone } = req.query as { phone?: string };
+  // Presence/format already enforced by checkAcceptedByPhoneSchema.
+  const { phone } = req.query as { phone: string };
   const lang = (req.query.lang as string) || 'en';
-
-  if (!phone) return res.status(400).json({ message: 'Phone is required' });
   const cleanPhone = normalizePhone(phone);
-  if (!cleanPhone) return res.status(400).json({ message: 'Invalid phone' });
+  if (!cleanPhone) throw badRequest('Invalid phone');
 
-  try {
-    const existingRelation = await prisma.relation.findFirst({
-      where: {
-        toUserId: userId,
-        fromUser: { phone: cleanPhone },
-        status: 'CONFIRMED'
-      },
-      include: {
-        relationType: { include: { translations: true } },
-        fromUser: true
-      }
+  const registry = await getRelationTypeRegistry();
+
+  const existingRelation = await prisma.relation.findFirst({
+    where: {
+      toUserId: userId,
+      fromUser: { phone: cleanPhone },
+      status: 'CONFIRMED'
+    },
+    select: {
+      relationTypeCode: true,
+      // Narrowed from `fromUser: true`: only the fields this response actually
+      // exposes, rather than the caller's full profile (email, address, DOB...).
+      fromUser: { select: RELATION_USER_SELECT },
+    },
+  });
+
+  if (existingRelation) {
+    const label = registry.label(existingRelation.relationTypeCode, lang);
+    return res.json({
+      accepted: true,
+      message: `You have already accepted this person's request previously and this person was telling you ${label}.`,
+      user: existingRelation.fromUser
     });
-
-    if (existingRelation) {
-      const label = resolveLabel(existingRelation.relationType, lang);
-      return res.json({
-        accepted: true,
-        message: `You have already accepted this person's request previously and this person was telling you ${label}.`,
-        user: existingRelation.fromUser
-      });
-    }
-
-    return res.json({ accepted: false });
-  } catch (error) {
-    console.error('checkAcceptedByPhone error', error);
-    return res.status(500).json({ message: 'Internal server error' });
   }
+
+  return res.json({ accepted: false });
 };

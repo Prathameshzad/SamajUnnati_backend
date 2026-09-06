@@ -1,40 +1,68 @@
 // src/lib/mediaUpload.ts
-// Unified media upload: uses R2 if configured, falls back to local disk.
+// Unified media upload: R2 when configured, local disk only as a development fallback.
 import path from 'path';
-import fs from 'fs';
+import fs from 'fs/promises';
 import crypto from 'crypto';
+import { uploadToR2, r2Client, type UploadFolder } from './r2';
+import { validateUpload, type FileKind, type ValidatedFile } from './fileValidation';
+import { config } from '../config/env';
+import { serviceUnavailable } from './errors';
+import { createLogger } from './logger';
+
+const log = createLogger('media-upload');
+
+interface UploadMediaOptions {
+  folder?: UploadFolder;
+  allowedKinds?: readonly FileKind[];
+  validated?: ValidatedFile;
+}
 
 /**
- * Upload any multer file (image or video) and return a publicly accessible URL.
- * If Cloudflare R2 env vars are set, it uploads there.
- * Otherwise, it saves to /uploads/media/ and returns a local URL.
+ * Uploads a media file and returns a URL.
+ *
+ * Changes from the previous version:
+ *  - The local-disk fallback is now gated on ALLOW_LOCAL_UPLOAD_FALLBACK and is
+ *    force-disabled in production. Previously any R2 hiccup silently wrote to the
+ *    container filesystem: the data is lost on redeploy, disk usage is unbounded,
+ *    and it does not work at all across multiple instances (a file written by one
+ *    replica 404s when the next request hits another). Failing loudly is correct.
+ *  - The filename extension is derived from sniffed content rather than from the
+ *    client-supplied `file.originalname`.
+ *  - `fs.writeFileSync` / `existsSync` replaced with the promise API so a large
+ *    write no longer blocks the event loop.
  */
-export async function uploadMedia(file: Express.Multer.File): Promise<string> {
-  const { r2Client, uploadProfileImageToR2 } = await import('./r2');
+export async function uploadMedia(
+  file: Express.Multer.File,
+  options: UploadMediaOptions = {}
+): Promise<string> {
+  const validated =
+    options.validated ?? validateUpload(file, options.allowedKinds ?? ['image', 'video']);
 
   if (r2Client) {
     try {
-      const url = await uploadProfileImageToR2(file);
-      return url;
-    } catch (e) {
-      console.warn('R2 upload failed, falling back to local disk:', e);
+      return await uploadToR2(file, {
+        folder: options.folder ?? 'posts',
+        allowedKinds: options.allowedKinds,
+        validated,
+      });
+    } catch (err) {
+      if (!config.uploads.allowLocalFallback) {
+        log.error({ err }, 'R2 upload failed and local fallback is disabled');
+        throw serviceUnavailable('Media upload is temporarily unavailable, please try again');
+      }
+      log.warn({ err }, 'R2 upload failed, falling back to local disk (development only)');
     }
+  } else if (!config.uploads.allowLocalFallback) {
+    throw serviceUnavailable('Object storage is not configured');
   }
 
-  // Fallback: save to local uploads/media/
-  const ext = path.extname(file.originalname || 'file') || '.bin';
-  const safeExt = ext.startsWith('.') ? ext : `.${ext}`;
-  const randomName = crypto.randomBytes(16).toString('hex');
-  const fileName = `${Date.now()}-${randomName}${safeExt}`;
-
+  const random = crypto.randomBytes(16).toString('hex');
+  const fileName = `${Date.now()}-${random}${validated.extension}`;
   const uploadDir = path.join(process.cwd(), 'uploads', 'media');
-  if (!fs.existsSync(uploadDir)) {
-    fs.mkdirSync(uploadDir, { recursive: true });
-  }
 
-  const filePath = path.join(uploadDir, fileName);
-  fs.writeFileSync(filePath, file.buffer);
+  await fs.mkdir(uploadDir, { recursive: true });
+  await fs.writeFile(path.join(uploadDir, fileName), file.buffer);
 
-  // Return a relative URL so the frontend can prepend the correct API base URL
+  log.debug({ fileName, kind: validated.kind }, 'stored on local disk');
   return `/uploads/media/${fileName}`;
 }

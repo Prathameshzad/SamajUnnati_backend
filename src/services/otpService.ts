@@ -1,30 +1,55 @@
 // src/services/otpService.ts
+import { randomInt, timingSafeEqual } from 'crypto';
 import { RabbitMQService } from './rabbitmqService';
 import { RedisService } from './redisService';
+import { config } from '../config/env';
+import { createLogger, maskPhone } from '../lib/logger';
+
+const log = createLogger('otp');
 
 export interface SendOtpResult {
   success: boolean;
   rateLimited?: boolean;
   retryAfterSeconds?: number;
   message?: string;
+  /** Only ever populated when OTP_DEBUG_RESPONSE is on and we are not in production. */
   code?: string;
 }
 
-const OTP_TTL_SECONDS = 10 * 60; // 10 minutes
-const RATE_LIMIT_WINDOW_SECONDS = 15 * 60; // 15 minutes
-const MAX_OTPS_PER_WINDOW = 3;
+/** Wrong-guess budget per issued OTP, independent of the HTTP rate limiter. */
+const MAX_VERIFY_ATTEMPTS = config.otp.maxVerifyAttempts;
+const OTP_DIGITS = config.otp.digits;
+
+interface StoredOtp {
+  code: string;
+  phone: string;
+  createdAt: number;
+  attempts: number;
+}
+
+const otpKey = (phone: string) => `otp:${phone}`;
+const rateKey = (phone: string) => `otp:rate:${phone}`;
+
+/**
+ * Constant-time comparison so response timing cannot be used to learn how many
+ * leading digits of a guess were correct.
+ */
+function codesMatch(expected: string, provided: string): boolean {
+  const a = Buffer.from(expected, 'utf8');
+  const b = Buffer.from(provided, 'utf8');
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
 
 export class OtpService {
-  /**
-   * Check rate limit: Max 3 OTPs in 15 minutes per phone via Redis
-   */
+  /** Sliding-window check: max OTP sends per phone per window. */
   static async checkRateLimit(phone: string): Promise<{ rateLimited: boolean; retryAfterSeconds: number }> {
-    const rateKey = `otp:rate:${phone}`;
-    const rateCount = await RedisService.get<number>(rateKey) || 0;
+    const key = rateKey(phone);
+    const rateCount = (await RedisService.get<number>(key)) ?? 0;
 
-    if (rateCount >= MAX_OTPS_PER_WINDOW) {
-      const ttl = await RedisService.ttl(rateKey);
-      const retryAfterSeconds = Math.max(1, ttl > 0 ? ttl : RATE_LIMIT_WINDOW_SECONDS);
+    if (rateCount >= config.otp.maxPerWindow) {
+      const ttl = await RedisService.ttl(key);
+      const retryAfterSeconds = Math.max(1, ttl > 0 ? ttl : config.otp.rateWindowSeconds);
       return { rateLimited: true, retryAfterSeconds };
     }
 
@@ -32,13 +57,32 @@ export class OtpService {
   }
 
   /**
-   * Generate, persist in Redis with TTL, and publish OTP via RabbitMQ
+   * Generates, stores and dispatches an OTP.
+   *
+   * Two security changes here:
+   *  1. The code is generated with `crypto.randomInt`, not `Math.random`.
+   *     `Math.random` is a non-cryptographic PRNG (V8 uses xorshift128+); given a
+   *     few observed outputs its internal state is recoverable, which makes
+   *     subsequent OTPs predictable. It must never generate an auth credential.
+   *  2. Guessing is now bounded. A 4-digit code is only 10,000 combinations, so
+   *     length alone is not protection. The defence is the per-code attempt cap
+   *     in `verifyOtp` plus the verify rate limiter, which together allow a
+   *     handful of guesses per phone per window instead of unlimited ones.
+   *     Length stays at 4 by default because the OTP input screens are built for
+   *     4 boxes; raise OTP_CODE_DIGITS once those are updated.
+   *
+   * The plaintext code is no longer written to the application log.
    */
-  static async sendOtp(phone: string, type: 'LOGIN' | 'REGISTER' | 'RESEND' = 'LOGIN'): Promise<SendOtpResult> {
-    // 1. Rate Limit Check (3 OTPs / 15 mins)
+  static async sendOtp(
+    phone: string,
+    type: 'LOGIN' | 'REGISTER' | 'RESEND' = 'LOGIN'
+  ): Promise<SendOtpResult> {
     const rateCheck = await this.checkRateLimit(phone);
     if (rateCheck.rateLimited) {
-      console.warn(`[OTP SERVICE] Rate limit hit for ${phone}. Retry after ${rateCheck.retryAfterSeconds}s`);
+      log.warn(
+        { phone: maskPhone(phone), retryAfterSeconds: rateCheck.retryAfterSeconds },
+        'otp rate limit hit'
+      );
       return {
         success: false,
         rateLimited: true,
@@ -47,54 +91,85 @@ export class OtpService {
       };
     }
 
-    // 2. Generate OTP (Generate 4-digit code)
-    const code = Math.floor(1000 + Math.random() * 9000).toString();
+    const min = 10 ** (OTP_DIGITS - 1);
+    const code = String(randomInt(min, 10 ** OTP_DIGITS));
 
-    // 3. Store OTP in Redis with 10-min expiration
-    const otpKey = `otp:${phone}`;
-    await RedisService.set(otpKey, { code, phone, createdAt: Date.now() }, OTP_TTL_SECONDS);
+    const record: StoredOtp = { code, phone, createdAt: Date.now(), attempts: 0 };
+    await RedisService.set(otpKey(phone), record, config.otp.ttlSeconds);
 
-    // 4. Update Rate Limit Counter in Redis
-    const rateKey = `otp:rate:${phone}`;
-    const newCount = await RedisService.incr(rateKey);
+    const newCount = await RedisService.incr(rateKey(phone));
     if (newCount === 1) {
-      await RedisService.expire(rateKey, RATE_LIMIT_WINDOW_SECONDS);
+      await RedisService.expire(rateKey(phone), config.otp.rateWindowSeconds);
     }
 
-    console.log(`[OTP SERVICE] Generated OTP ${code} for ${phone} in Redis [TTL: ${OTP_TTL_SECONDS}s]`);
+    // Note: no `code` in this log line. It used to log the plaintext OTP, which
+    // put a live credential into log storage and anywhere logs were shipped.
+    log.info({ phone: maskPhone(phone), type, ttlSeconds: config.otp.ttlSeconds }, 'otp issued');
 
-    // 5. Publish OTP event to RabbitMQ
     await RabbitMQService.publishOtp(phone, code, type);
 
     return {
       success: true,
-      code,
+      ...(config.otp.debugResponse ? { code } : {}),
       message: 'OTP sent successfully',
     };
   }
 
   /**
-   * Verify the OTP code from Redis.
-   * Accepts latest generated OTP for phone or fallback "1111".
+   * Verifies a submitted code.
+   *
+   * The previous implementation began with:
+   *
+   *     if (code === '1111') { return true; }
+   *
+   * That is a universal authentication bypass for every account in the system,
+   * active in production. It is removed. For local development, set
+   * OTP_DEBUG_RESPONSE=true and the real code is returned by the auth endpoints
+   * instead — which cannot be exploited remotely because it is force-disabled
+   * when NODE_ENV=production.
+   *
+   * Also added: a per-code attempt counter. Without it, an attacker could keep
+   * guessing against the same OTP for its full 10-minute lifetime.
    */
   static async verifyOtp(phone: string, code: string): Promise<boolean> {
-    // Support test fallback "1111"
-    if (code === '1111') {
-      console.log(`[OTP SERVICE] Verified fallback OTP 1111 for ${phone}`);
+    if (typeof code !== 'string' || code.trim().length === 0) return false;
+    const submitted = code.trim();
+
+    const key = otpKey(phone);
+    const stored = await RedisService.get<StoredOtp>(key);
+
+    if (!stored) {
+      log.warn({ phone: maskPhone(phone) }, 'otp verify failed: no active code');
+      return false;
+    }
+
+    const attempts = stored.attempts ?? 0;
+    if (attempts >= MAX_VERIFY_ATTEMPTS) {
+      // Burn the code entirely rather than letting it be ground down.
+      await RedisService.del(key);
+      log.warn({ phone: maskPhone(phone), attempts }, 'otp discarded: too many failed attempts');
+      return false;
+    }
+
+    if (codesMatch(stored.code, submitted)) {
+      // Single-use: consume immediately so a captured code cannot be replayed.
+      await RedisService.del(key);
+      log.info({ phone: maskPhone(phone) }, 'otp verified');
       return true;
     }
 
-    const otpKey = `otp:${phone}`;
-    const stored = await RedisService.get<{ code: string; phone: string }>(otpKey);
+    // Preserve the remaining TTL so a wrong guess cannot extend the code's life.
+    const remainingTtl = await RedisService.ttl(key);
+    await RedisService.set(
+      key,
+      { ...stored, attempts: attempts + 1 },
+      remainingTtl > 0 ? remainingTtl : config.otp.ttlSeconds
+    );
 
-    if (stored && stored.code === code) {
-      // Invalidate used OTP from Redis
-      await RedisService.del(otpKey);
-      console.log(`[OTP SERVICE] Verified OTP ${code} for ${phone} via Redis`);
-      return true;
-    }
-
-    console.warn(`[OTP SERVICE] Failed to verify OTP ${code} for ${phone}`);
+    log.warn(
+      { phone: maskPhone(phone), attempts: attempts + 1, maxAttempts: MAX_VERIFY_ATTEMPTS },
+      'otp verify failed: incorrect code'
+    );
     return false;
   }
 }

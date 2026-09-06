@@ -1,12 +1,21 @@
 import { Response } from 'express';
 import prisma from '../lib/prisma';
 import { AuthRequest } from '../middleware/authMiddleware';
-import { getIO } from '../lib/socket';
+import { emitToUser } from '../lib/socket';
 import { TreeCacheService } from '../services/treeCacheService';
 import { awardPoints, deductPoints } from '../services/scoreService';
+import { getRelationTypeRegistry, type RelationTypeRegistry } from '../services/relationTypeRegistry';
+import { deletionPenalty } from '../config/gamification';
+import { badRequest, forbidden, notFound, unauthenticated } from '../lib/errors';
+import { createLogger } from '../lib/logger';
+import { RELATION_USER_SELECT, assertSourceNodeOwned } from './relationController';
+
+const log = createLogger('friends');
 
 /**
  * Resolve display label for a relation type based on language.
+ * Kept for the one place that still holds a Prisma relationType object
+ * (the single `relationType.findUnique` in `createFriend`).
  */
 function resolveLabel(relationType: any, lang: string = 'mr') {
   if (!relationType || !relationType.translations) return relationType?.code || 'UNKNOWN';
@@ -16,246 +25,259 @@ function resolveLabel(relationType: any, lang: string = 'mr') {
 
 /**
  * Resolve which relation code and label should be shown to the given viewer.
+ *
+ * PERFORMANCE FIX: this was `async` and, on the incoming-side branch, ran
+ *
+ *     const recType = await prisma.relationType.findUnique({ where: { code: reciprocalCode },
+ *                                                            include: { translations: true } })
+ *
+ * once per relation, inside `Promise.all(raw.map(...))` in `listFriends` and
+ * `getFriendRequests`, and inside a BFS loop in `getFriendTree`. A user with N
+ * friend relations issued up to N extra queries per request against a small,
+ * near-static reference table. This mirrors the identical fix already applied
+ * to relationController.ts: the lookup is now synchronous against the cached
+ * registry, so these endpoints run a fixed number of queries regardless of how
+ * many friends a user has.
  */
-async function resolveRelationForViewer(rel: any, viewerUserId: string, lang: string = 'mr') {
+function resolveRelationForViewer(
+  registry: RelationTypeRegistry,
+  rel: any,
+  viewerUserId: string,
+  lang: string = 'mr'
+): { code: string; label: string } {
   if (rel.fromUserId === viewerUserId) {
-    return {
-      code: rel.relationTypeCode,
-      label: resolveLabel(rel.relationType, lang)
-    };
+    return { code: rel.relationTypeCode, label: registry.label(rel.relationTypeCode, lang) };
   }
 
   if (rel.toUserId === viewerUserId) {
-    const reciprocalCode = rel.relationType?.reciprocalCode || rel.relationTypeCode;
-    const recType = await prisma.relationType.findUnique({
-      where: { code: reciprocalCode },
-      include: { translations: true }
-    });
-
-    return {
-      code: reciprocalCode,
-      label: resolveLabel(recType, lang)
-    };
+    const reciprocalCode = registry.reciprocalOf(rel.relationTypeCode);
+    return { code: reciprocalCode, label: registry.label(reciprocalCode, lang) };
   }
 
-  return {
-    code: rel.relationTypeCode,
-    label: resolveLabel(rel.relationType, lang)
-  };
+  return { code: rel.relationTypeCode, label: registry.label(rel.relationTypeCode, lang) };
 }
 
 export const getFriendTree = async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;
   const lang = (req.query.lang as string) || 'mr';
 
-  if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
+  if (!userId) throw unauthenticated();
 
   const maxDepth = Number(req.query.depth) || 20;
 
-  try {
-    const rootUser = await prisma.user.findUnique({
-      where: { id: userId },
-      select: {
+  const rootUser = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      photoUrl: true,
+      gender: true,
+      isAlive: true,
+      phone: true,
+    }
+  });
+
+  if (!rootUser) throw notFound('User not found');
+
+  const registry = await getRelationTypeRegistry();
+
+  // 1. Fetch all friend relations (category = FRIEND, status != REJECTED).
+  // `relationType: { include: { translations: true } }` dropped: labels now
+  // come from the cached registry via relationTypeCode, so this join no longer
+  // runs at all here.
+  const allRelations = await prisma.relation.findMany({
+    where: {
+      category: 'FRIEND',
+      status: { not: 'REJECTED' }
+    },
+    select: {
         id: true,
-        firstName: true,
-        lastName: true,
-        photoUrl: true,
-        gender: true,
-        isAlive: true,
-        phone: true,
+        fromUserId: true,
+        toUserId: true,
+        relationTypeCode: true,
+        category: true,
+        status: true,
+        customName: true,
+        customPhotoUrl: true,
+        visualSide: true,
+        createdById: true,
+        createdAt: true,
+        updatedAt: true,
+        fromUser: {
+          select: { id: true, phone: true, firstName: true, lastName: true, photoUrl: true, gender: true, isAlive: true }
+        },
+        toUser: {
+          select: { id: true, phone: true, firstName: true, lastName: true, photoUrl: true, gender: true, isAlive: true }
+        },
+    }
+  });
+
+  // 2. Build hierarchy using createdById
+  const visited = new Map<string, number>();
+  visited.set(userId, 0);
+
+  const nodesByLevel = new Map<number, any[]>();
+  nodesByLevel.set(0, [{ user: rootUser, relation: null }]);
+
+  let queue: string[] = [userId];
+  let currentLevel = 0;
+
+  while (queue.length > 0 && currentLevel < maxDepth) {
+    const nextQueue: string[] = [];
+    const currentLevelParents = new Set(queue);
+    // Find relations where one of the participants is in our current level's queue
+    const childRelations = allRelations.filter(rel =>
+      (currentLevelParents.has(rel.fromUserId)) || (currentLevelParents.has(rel.toUserId))
+    );
+
+    for (const rel of childRelations) {
+      let sourceUserId;
+      let targetUser;
+      let isOutgoing = false;
+
+      if (currentLevelParents.has(rel.fromUserId)) {
+        sourceUserId = rel.fromUserId;
+        targetUser = rel.toUser;
+        isOutgoing = true;
+      } else {
+        sourceUserId = rel.toUserId;
+        targetUser = rel.fromUser;
       }
-    });
 
-    if (!rootUser) return res.status(404).json({ message: 'User not found' });
+      // Avoid duplicates or cycles: If user already assigned a level -> skip
+      if (visited.has(targetUser.id)) continue;
 
-    // 1. Fetch all friend relations (category = FRIEND, status != REJECTED)
-    const allRelations = await prisma.relation.findMany({
-      where: {
-        category: 'FRIEND',
-        status: { not: 'REJECTED' }
-      },
-      select: {
-          id: true,
-          fromUserId: true,
-          toUserId: true,
-          relationTypeCode: true,
-          category: true,
-          status: true,
-          customName: true,
-          customPhotoUrl: true,
-          visualSide: true,
-          createdById: true,
-          createdAt: true,
-          updatedAt: true,
-          fromUser: {
-            select: { id: true, phone: true, firstName: true, lastName: true, photoUrl: true, gender: true, isAlive: true }
+      const nextLevel = currentLevel + 1;
+      visited.set(targetUser.id, nextLevel);
+      nextQueue.push(targetUser.id);
+
+      if (!nodesByLevel.has(nextLevel)) {
+        nodesByLevel.set(nextLevel, []);
+      }
+
+      const view = resolveRelationForViewer(registry, rel, sourceUserId, lang);
+
+      nodesByLevel.get(nextLevel)!.push({
+        user: targetUser,
+        relation: {
+          id: rel.id,
+          fromUserId: rel.fromUserId,
+          toUserId: rel.toUserId,
+          relationType: {
+            code: view.code,
+            label: view.label
           },
-          toUser: {
-            select: { id: true, phone: true, firstName: true, lastName: true, photoUrl: true, gender: true, isAlive: true }
-          },
-          relationType: { include: { translations: true } }
-      }
-    });
-
-    // 2. Build hierarchy using createdById
-    const visited = new Map<string, number>();
-    visited.set(userId, 0);
-
-    const nodesByLevel = new Map<number, any[]>();
-    nodesByLevel.set(0, [{ user: rootUser, relation: null }]);
-
-    let queue: string[] = [userId];
-    let currentLevel = 0;
-
-    while (queue.length > 0 && currentLevel < maxDepth) {
-      const nextQueue: string[] = [];
-      const currentLevelParents = new Set(queue);
-      // Find relations where one of the participants is in our current level's queue
-      const childRelations = allRelations.filter(rel => 
-        (currentLevelParents.has(rel.fromUserId)) || (currentLevelParents.has(rel.toUserId))
-      );
-
-      for (const rel of childRelations) {
-        let sourceUserId;
-        let targetUser;
-        let isOutgoing = false;
-
-        if (currentLevelParents.has(rel.fromUserId)) {
-          sourceUserId = rel.fromUserId;
-          targetUser = rel.toUser;
-          isOutgoing = true;
-        } else {
-          sourceUserId = rel.toUserId;
-          targetUser = rel.fromUser;
+          direction: isOutgoing ? 'OUTGOING' : 'INCOMING',
+          sourceUserId,
+          status: rel.status,
+          category: rel.category,
+          customName: rel.customName,
+          customPhotoUrl: rel.customPhotoUrl,
+          visualSide: rel.visualSide
         }
-
-        // Avoid duplicates or cycles: If user already assigned a level -> skip
-        if (visited.has(targetUser.id)) continue;
-
-        const nextLevel = currentLevel + 1;
-        visited.set(targetUser.id, nextLevel);
-        nextQueue.push(targetUser.id);
-
-        if (!nodesByLevel.has(nextLevel)) {
-          nodesByLevel.set(nextLevel, []);
-        }
-
-        const view = await resolveRelationForViewer(rel, sourceUserId, lang);
-
-        nodesByLevel.get(nextLevel)!.push({
-          user: targetUser,
-          relation: {
-            id: rel.id,
-            fromUserId: rel.fromUserId,
-            toUserId: rel.toUserId,
-            relationType: {
-              code: view.code,
-              label: view.label
-            },
-            direction: isOutgoing ? 'OUTGOING' : 'INCOMING',
-            sourceUserId,
-            status: rel.status,
-            category: rel.category,
-            customName: rel.customName,
-            customPhotoUrl: rel.customPhotoUrl,
-            visualSide: rel.visualSide
-          }
-        });
-      }
-
-      queue = nextQueue;
-      currentLevel++;
+      });
     }
 
-    const levels = Array.from(nodesByLevel.entries())
-      .map(([level, nodes]) => ({ level, nodes }))
-      .sort((a, b) => a.level - b.level);
-
-    return res.json({ rootUser, levels });
-
-  } catch (error) {
-    console.error('getFriendTree error', error);
-    return res.status(500).json({ message: 'Internal server error' });
+    queue = nextQueue;
+    currentLevel++;
   }
+
+  const levels = Array.from(nodesByLevel.entries())
+    .map(([level, nodes]) => ({ level, nodes }))
+    .sort((a, b) => a.level - b.level);
+
+  return res.json({ rootUser, levels });
 };
 
 export const listFriends = async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;
   const lang = (req.query.lang as string) || 'mr';
-  if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
+  if (!userId) throw unauthenticated();
 
-  try {
-    const raw = await prisma.relation.findMany({
-      where: {
-        category: 'FRIEND',
-        OR: [
-          { createdById: userId },
-          { fromUserId: userId },
-          { toUserId: userId }
-        ],
-      },
-      include: {
-        fromUser: true,
-        toUser: true,
-        relationType: { include: { translations: true } }
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+  const registry = await getRelationTypeRegistry();
 
-    const friends = await Promise.all(raw.map(async rel => {
-      const view = await resolveRelationForViewer(rel, userId, lang);
-      const isMyRelation = rel.createdById === userId;
-      return {
-        id: rel.id,
-        fromUserId: rel.fromUserId,
-        toUserId: rel.toUserId,
-        status: rel.status,
-        relationTypeCode: rel.relationTypeCode,
-        category: rel.category,
-        customName: isMyRelation ? rel.customName : null,
-        customPhotoUrl: isMyRelation ? rel.customPhotoUrl : null,
-        createdById: rel.createdById,
-        createdAt: rel.createdAt,
-        fromUser: rel.fromUser ? {
-          id: rel.fromUser.id,
-          firstName: rel.fromUser.firstName,
-          lastName: rel.fromUser.lastName,
-          photoUrl: rel.fromUser.photoUrl,
-          gender: rel.fromUser.gender,
-          phone: rel.fromUser.phone,
-          area: rel.fromUser.area,
-          isAlive: rel.fromUser.isAlive,
-        } : null,
-        toUser: rel.toUser ? {
-          id: rel.toUser.id,
-          firstName: rel.toUser.firstName,
-          lastName: rel.toUser.lastName,
-          photoUrl: rel.toUser.photoUrl,
-          gender: rel.toUser.gender,
-          phone: rel.toUser.phone,
-          area: rel.toUser.area,
-          isAlive: rel.toUser.isAlive,
-        } : null,
-        relationType: { label: view.label, code: view.code }
-      };
-    }));
+  // Narrowed from `include: { fromUser: true, toUser: true, relationType: {...} } }`,
+  // which returned every column (email, address, dateOfBirth, bloodGroup) of both
+  // users on every relation, plus a relationType+translations join now handled by
+  // the cached registry.
+  const raw = await prisma.relation.findMany({
+    where: {
+      category: 'FRIEND',
+      OR: [
+        { createdById: userId },
+        { fromUserId: userId },
+        { toUserId: userId }
+      ],
+    },
+    select: {
+      id: true,
+      fromUserId: true,
+      toUserId: true,
+      status: true,
+      relationTypeCode: true,
+      category: true,
+      customName: true,
+      customPhotoUrl: true,
+      createdById: true,
+      createdAt: true,
+      fromUser: { select: RELATION_USER_SELECT },
+      toUser: { select: RELATION_USER_SELECT },
+    },
+    orderBy: { createdAt: 'desc' },
+  });
 
-    const filteredFriends = friends.filter(rel => {
-      if (rel.status === 'PENDING') {
-        const isMyRelation = rel.fromUserId === userId || rel.createdById === userId;
-        const relativeUser = isMyRelation ? rel.toUser : rel.fromUser;
-        if (!relativeUser) return false;
-        if (relativeUser.isAlive === false) return false;
-        if (!relativeUser.phone || !String(relativeUser.phone).trim()) return false;
-      }
-      return true;
-    });
+  // No longer `Promise.all(async ...)`: label resolution is synchronous now.
+  const friends = raw.map(rel => {
+    const view = resolveRelationForViewer(registry, rel, userId, lang);
+    const isMyRelation = rel.createdById === userId;
+    return {
+      id: rel.id,
+      fromUserId: rel.fromUserId,
+      toUserId: rel.toUserId,
+      status: rel.status,
+      relationTypeCode: rel.relationTypeCode,
+      category: rel.category,
+      customName: isMyRelation ? rel.customName : null,
+      customPhotoUrl: isMyRelation ? rel.customPhotoUrl : null,
+      createdById: rel.createdById,
+      createdAt: rel.createdAt,
+      fromUser: rel.fromUser ? {
+        id: rel.fromUser.id,
+        firstName: rel.fromUser.firstName,
+        lastName: rel.fromUser.lastName,
+        photoUrl: rel.fromUser.photoUrl,
+        gender: rel.fromUser.gender,
+        phone: rel.fromUser.phone,
+        area: rel.fromUser.area,
+        isAlive: rel.fromUser.isAlive,
+      } : null,
+      toUser: rel.toUser ? {
+        id: rel.toUser.id,
+        firstName: rel.toUser.firstName,
+        lastName: rel.toUser.lastName,
+        photoUrl: rel.toUser.photoUrl,
+        gender: rel.toUser.gender,
+        phone: rel.toUser.phone,
+        area: rel.toUser.area,
+        isAlive: rel.toUser.isAlive,
+      } : null,
+      relationType: { label: view.label, code: view.code }
+    };
+  });
 
-    return res.json(filteredFriends);
-  } catch (error) {
-    console.error('list friends error', error);
-    return res.status(500).json({ message: 'Internal server error' });
-  }
+  const filteredFriends = friends.filter(rel => {
+    if (rel.status === 'PENDING') {
+      const isMyRelation = rel.fromUserId === userId || rel.createdById === userId;
+      const relativeUser = isMyRelation ? rel.toUser : rel.fromUser;
+      if (!relativeUser) return false;
+      if (relativeUser.isAlive === false) return false;
+      if (!relativeUser.phone || !String(relativeUser.phone).trim()) return false;
+    }
+    return true;
+  });
+
+  return res.json(filteredFriends);
 };
 
 function normalizePhone(value: string): string {
@@ -295,24 +317,32 @@ async function createNotification(args: {
         message,
         relationId: relationId ?? null,
       },
+      // Narrowed from `include: { relation: { include: { fromUser: true, toUser: true } } }`,
+      // which pushed every column of both users into a websocket payload.
       include: {
         relation: {
-          include: {
-            fromUser: true,
-            toUser: true,
+          select: {
+            id: true,
+            fromUserId: true,
+            toUserId: true,
+            status: true,
+            relationTypeCode: true,
+            category: true,
+            createdById: true,
+            customName: true,
+            customPhotoUrl: true,
+            fromUser: { select: RELATION_USER_SELECT },
+            toUser: { select: RELATION_USER_SELECT },
           },
         },
       },
     });
 
-    // Emit real-time notification via Socket.IO (matches family pattern)
-    try {
-      getIO().to(userId).emit('notification', notification);
-    } catch (e) {
-      console.warn('Socket emit failed', e);
-    }
+    // emitToUser never throws, so no try/catch is needed around the emit itself.
+    emitToUser(userId, 'notification', notification);
   } catch (err) {
-    console.error('Failed to create notification', err);
+    // Notification delivery must never fail the action that triggered it.
+    log.error({ err, userId, type }, 'failed to create notification');
   }
 }
 
@@ -324,53 +354,61 @@ async function createNotification(args: {
 export const getFriendRequests = async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;
   const lang = (req.query.lang as string) || 'mr';
-  if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
+  if (!userId) throw unauthenticated();
 
-  try {
-    const raw = await prisma.relation.findMany({
-      where: {
-        toUserId: userId,
-        status: 'PENDING',
-        category: 'FRIEND',
-      },
-      include: {
-        fromUser: true,
-        toUser: true,
-        User_Relation_createdByIdToUser: true,
-        relationType: { include: { translations: true } }
-      },
-      orderBy: { createdAt: 'asc' },
-    });
+  const registry = await getRelationTypeRegistry();
 
-    const pending = await Promise.all(raw.map(async rel => {
-      const view = await resolveRelationForViewer(rel, userId, lang);
+  const raw = await prisma.relation.findMany({
+    where: {
+      toUserId: userId,
+      status: 'PENDING',
+      category: 'FRIEND',
+    },
+    select: {
+      id: true,
+      fromUserId: true,
+      toUserId: true,
+      status: true,
+      relationTypeCode: true,
+      category: true,
+      customName: true,
+      customPhotoUrl: true,
+      visualSide: true,
+      createdById: true,
+      createdAt: true,
+      updatedAt: true,
+      fromUser: { select: RELATION_USER_SELECT },
+      toUser: { select: RELATION_USER_SELECT },
+      User_Relation_createdByIdToUser: { select: RELATION_USER_SELECT },
+    },
+    orderBy: { createdAt: 'asc' },
+  });
 
-      // Show the actual requester (createdById) as the logical sender
-      const logicalFromUser = (rel as any).User_Relation_createdByIdToUser || rel.fromUser;
-      const logicalFromUserId = rel.createdById || rel.fromUserId;
+  const pending = raw.map(rel => {
+    const view = resolveRelationForViewer(registry, rel, userId, lang);
 
-      return {
-        ...rel,
-        fromUserId: logicalFromUserId,
-        fromUser: logicalFromUser,
-        relationType: { label: view.label, code: view.code }
-      };
-    }));
+    // Show the actual requester (createdById) as the logical sender
+    const logicalFromUser = (rel as any).User_Relation_createdByIdToUser || rel.fromUser;
+    const logicalFromUserId = rel.createdById || rel.fromUserId;
 
-    // Filter out requests from deceased/phoneless users (same as family pattern)
-    const filteredPending = pending.filter(rel => {
-      const sender = rel.fromUser;
-      if (!sender) return false;
-      if (sender.isAlive === false) return false;
-      if (!sender.phone || !String(sender.phone).trim()) return false;
-      return true;
-    });
+    return {
+      ...rel,
+      fromUserId: logicalFromUserId,
+      fromUser: logicalFromUser,
+      relationType: { label: view.label, code: view.code }
+    };
+  });
 
-    return res.json(filteredPending);
-  } catch (error) {
-    console.error('getFriendRequests error', error);
-    return res.status(500).json({ message: 'Internal server error' });
-  }
+  // Filter out requests from deceased/phoneless users (same as family pattern)
+  const filteredPending = pending.filter(rel => {
+    const sender = rel.fromUser;
+    if (!sender) return false;
+    if (sender.isAlive === false) return false;
+    if (!sender.phone || !String(sender.phone).trim()) return false;
+    return true;
+  });
+
+  return res.json(filteredPending);
 };
 
 /**
@@ -381,65 +419,63 @@ export const getFriendRequests = async (req: AuthRequest, res: Response) => {
 export const approveFriend = async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;
   const { id } = req.params;
-  if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
+  if (!userId) throw unauthenticated();
 
-  try {
-    const relation = await prisma.relation.findUnique({
-      where: { id },
-      include: {
-        fromUser: true,
-        toUser: true,
-        relationType: { include: { translations: true } },
-      },
-    });
+  const relation = await prisma.relation.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      fromUserId: true,
+      toUserId: true,
+      createdById: true,
+      status: true,
+      category: true,
+    },
+  });
 
-    if (!relation || relation.toUserId !== userId) {
-      return res.status(404).json({ message: 'Friend request not found or not authorized' });
-    }
-
-    if (relation.category !== 'FRIEND') {
-      return res.status(400).json({ message: 'Not a friend request' });
-    }
-
-    if (relation.status !== 'PENDING') {
-      return res.status(400).json({ message: 'Request is no longer pending' });
-    }
-
-    // Mark the request as CONFIRMED
-    const updated = await prisma.relation.update({
-      where: { id },
-      data: { status: 'CONFIRMED' },
-    });
-
-    const approver = await prisma.user.findUnique({
-      where: { id: userId },
-      select: { firstName: true },
-    });
-
-    // Notify the original requester (createdById or fromUserId)
-    await createNotification({
-      userId: relation.createdById ?? relation.fromUserId,
-      type: 'RELATION_APPROVED',
-      title: 'Friend request approved',
-      message: `${approver?.firstName || 'Someone'} approved your friend request.`,
-      relationId: relation.id,
-    });
-
-    // Award +20 points to creator
-    try {
-      const creatorId = relation.createdById ?? relation.fromUserId;
-      await awardPoints(creatorId, 'RELATION_APPROVED', relation.id);
-    } catch (scoreErr) {
-      console.warn('[approveFriend] Score award failed:', scoreErr);
-    }
-
-    await TreeCacheService.invalidateUserTree(relation.fromUserId, relation.toUserId, relation.createdById, userId);
-
-    return res.json(updated);
-  } catch (error) {
-    console.error('approveFriend error', error);
-    return res.status(500).json({ message: 'Internal server error' });
+  if (!relation || relation.toUserId !== userId) {
+    throw notFound('Friend request not found or not authorized');
   }
+
+  if (relation.category !== 'FRIEND') {
+    throw badRequest('Not a friend request');
+  }
+
+  if (relation.status !== 'PENDING') {
+    throw badRequest('Request is no longer pending');
+  }
+
+  // Mark the request as CONFIRMED
+  const updated = await prisma.relation.update({
+    where: { id },
+    data: { status: 'CONFIRMED' },
+  });
+
+  const approver = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { firstName: true },
+  });
+
+  // Notify the original requester (createdById or fromUserId)
+  await createNotification({
+    userId: relation.createdById ?? relation.fromUserId,
+    type: 'RELATION_APPROVED',
+    title: 'Friend request approved',
+    message: `${approver?.firstName || 'Someone'} approved your friend request.`,
+    relationId: relation.id,
+  });
+
+  // Award +20 points to creator. Secondary to the approval itself.
+  try {
+    const creatorId = relation.createdById ?? relation.fromUserId;
+    await awardPoints(creatorId, 'RELATION_APPROVED', relation.id);
+  } catch (scoreErr) {
+    log.warn({ err: scoreErr, relationId: relation.id }, 'score award failed');
+  }
+
+  await TreeCacheService.invalidateUserTree(relation.fromUserId, relation.toUserId, relation.createdById, userId);
+
+  return res.json(updated);
 };
 
 /**
@@ -450,50 +486,50 @@ export const approveFriend = async (req: AuthRequest, res: Response) => {
 export const rejectFriend = async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;
   const { id } = req.params;
-  if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
+  if (!userId) throw unauthenticated();
 
-  try {
-    const relation = await prisma.relation.findUnique({
-      where: { id },
-      include: {
-        toUser: true,
-        fromUser: true,
-      },
-    });
+  const relation = await prisma.relation.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      fromUserId: true,
+      toUserId: true,
+      createdById: true,
+      status: true,
+      category: true,
+      toUser: { select: { firstName: true } },
+    },
+  });
 
-    if (!relation || relation.toUserId !== userId) {
-      return res.status(404).json({ message: 'Friend request not found or not authorized' });
-    }
-
-    if (relation.category !== 'FRIEND') {
-      return res.status(400).json({ message: 'Not a friend request' });
-    }
-
-    if (relation.status !== 'PENDING') {
-      return res.status(400).json({ message: 'Request is no longer pending' });
-    }
-
-    const updated = await prisma.relation.update({
-      where: { id },
-      data: { status: 'REJECTED' },
-    });
-
-    // Notify the original requester
-    await createNotification({
-      userId: relation.createdById ?? relation.fromUserId,
-      type: 'RELATION_REJECTED',
-      title: 'Friend request rejected',
-      message: `${relation.toUser?.firstName || 'Someone'} rejected your friend request.`,
-      relationId: relation.id,
-    });
-
-    await TreeCacheService.invalidateUserTree(relation.fromUserId, relation.toUserId, relation.createdById, userId);
-
-    return res.json(updated);
-  } catch (error) {
-    console.error('rejectFriend error', error);
-    return res.status(500).json({ message: 'Internal server error' });
+  if (!relation || relation.toUserId !== userId) {
+    throw notFound('Friend request not found or not authorized');
   }
+
+  if (relation.category !== 'FRIEND') {
+    throw badRequest('Not a friend request');
+  }
+
+  if (relation.status !== 'PENDING') {
+    throw badRequest('Request is no longer pending');
+  }
+
+  const updated = await prisma.relation.update({
+    where: { id },
+    data: { status: 'REJECTED' },
+  });
+
+  // Notify the original requester
+  await createNotification({
+    userId: relation.createdById ?? relation.fromUserId,
+    type: 'RELATION_REJECTED',
+    title: 'Friend request rejected',
+    message: `${relation.toUser?.firstName || 'Someone'} rejected your friend request.`,
+    relationId: relation.id,
+  });
+
+  await TreeCacheService.invalidateUserTree(relation.fromUserId, relation.toUserId, relation.createdById, userId);
+
+  return res.json(updated);
 };
 
 /**
@@ -504,92 +540,102 @@ export const rejectFriend = async (req: AuthRequest, res: Response) => {
 export const deleteFriend = async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;
   const { id } = req.params;
-  if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
+  if (!userId) throw unauthenticated();
 
-  try {
-    const relation = await prisma.relation.findUnique({
-      where: { id },
-      include: { fromUser: true, toUser: true }
-    });
+  const relation = await prisma.relation.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      fromUserId: true,
+      toUserId: true,
+      createdById: true,
+      status: true,
+      category: true,
+      fromUser: { select: { firstName: true, isAlive: true } },
+      toUser: { select: { firstName: true, isAlive: true } },
+    },
+  });
 
-    if (!relation) return res.status(404).json({ message: 'Friend not found' });
+  if (!relation) throw notFound('Friend not found');
 
-    // Must be a participant or the creator
-    const isParticipant = relation.fromUserId === userId || relation.toUserId === userId;
-    const isCreator = relation.createdById === userId;
+  // Must be a participant or the creator
+  const isParticipant = relation.fromUserId === userId || relation.toUserId === userId;
+  const isCreator = relation.createdById === userId;
 
-    if (!isParticipant && !isCreator) {
-      return res.status(403).json({ message: 'Not authorized to remove this friend' });
-    }
-
-    if (relation.category !== 'FRIEND') {
-      return res.status(400).json({ message: 'Not a friend relation' });
-    }
-
-    // If already confirmed, mark the reciprocal side as REJECTED so the other party is aware
-    if (relation.status === 'CONFIRMED') {
-      await prisma.relation.updateMany({
-        where: { fromUserId: relation.toUserId, toUserId: relation.fromUserId },
-        data: { status: 'REJECTED' }
-      });
-      // Notify the other party
-      const otherUserId = relation.fromUserId === userId ? relation.toUserId : relation.fromUserId;
-      const remover = relation.fromUserId === userId ? relation.fromUser : relation.toUser;
-      await createNotification({
-        userId: otherUserId,
-        type: 'RELATION_REJECTED',
-        title: 'Friend removed',
-        message: `${remover?.firstName || 'Someone'} has removed you from their friend list.`,
-        relationId: relation.id,
-      });
-    }
-
-    // 1. Unlink notifications referencing this relation to avoid foreign key failure
-    await prisma.notification.updateMany({
-      where: { relationId: id },
-      data: { relationId: null }
-    });
-
-    // 2. Delete the relation
-    await prisma.relation.delete({ where: { id } });
-
-    // 3. Deduct points from creator
-    try {
-      const creatorId = relation.createdById ?? relation.fromUserId;
-      const targetUser = relation.createdById === relation.fromUserId ? relation.toUser : relation.fromUser;
-      const isTargetAlive = targetUser?.isAlive !== false;
-
-      let pointsToDeduct = isTargetAlive ? 5 : 2;
-      let reason: 'REMOVE_ALIVE' | 'REMOVE_DECEASED' = isTargetAlive ? 'REMOVE_ALIVE' : 'REMOVE_DECEASED';
-
-      if (relation.status === 'CONFIRMED') {
-        pointsToDeduct += 20; // Reverse the +20 approval bonus as well
-      }
-
-      await deductPoints(creatorId, pointsToDeduct, reason, relation.id);
-    } catch (scoreErr) {
-      console.warn('[deleteFriend] Score deduction failed:', scoreErr);
-    }
-
-    await TreeCacheService.invalidateUserTree(relation.fromUserId, relation.toUserId, relation.createdById, userId);
-
-    return res.json({ message: 'Friend removed' });
-  } catch (error) {
-    console.error('deleteFriend error', error);
-    return res.status(500).json({ message: 'Internal server error' });
+  if (!isParticipant && !isCreator) {
+    throw forbidden('Not authorized to remove this friend');
   }
+
+  if (relation.category !== 'FRIEND') {
+    throw badRequest('Not a friend relation');
+  }
+
+  // If already confirmed, mark the reciprocal side as REJECTED so the other party is aware
+  if (relation.status === 'CONFIRMED') {
+    await prisma.relation.updateMany({
+      where: { fromUserId: relation.toUserId, toUserId: relation.fromUserId },
+      data: { status: 'REJECTED' }
+    });
+    // Notify the other party
+    const otherUserId = relation.fromUserId === userId ? relation.toUserId : relation.fromUserId;
+    const remover = relation.fromUserId === userId ? relation.fromUser : relation.toUser;
+    await createNotification({
+      userId: otherUserId,
+      type: 'RELATION_REJECTED',
+      title: 'Friend removed',
+      message: `${remover?.firstName || 'Someone'} has removed you from their friend list.`,
+      relationId: relation.id,
+    });
+  }
+
+  // 1. Unlink notifications referencing this relation to avoid foreign key failure
+  await prisma.notification.updateMany({
+    where: { relationId: id },
+    data: { relationId: null }
+  });
+
+  // 2. Delete the relation
+  await prisma.relation.delete({ where: { id } });
+
+  // 3. Deduct points from creator.
+  // `deletionPenalty` derives the exact same numbers the old inline logic did
+  // (isTargetAlive ? 5 : 2, +20 if it had been confirmed) from SCORE_POINTS, so a
+  // future change to those award amounts can no longer desync from the reversal.
+  try {
+    const creatorId = relation.createdById ?? relation.fromUserId;
+    const targetUser = relation.createdById === relation.fromUserId ? relation.toUser : relation.fromUser;
+    const isTargetAlive = targetUser?.isAlive !== false;
+
+    const { points, reason } = deletionPenalty(isTargetAlive, relation.status === 'CONFIRMED');
+    await deductPoints(creatorId, points, reason, relation.id);
+  } catch (scoreErr) {
+    log.warn({ err: scoreErr, relationId: relation.id }, 'score deduction failed');
+  }
+
+  await TreeCacheService.invalidateUserTree(relation.fromUserId, relation.toUserId, relation.createdById, userId);
+
+  return res.json({ message: 'Friend removed' });
 };
 
 export const createFriend = async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;
   const lang = (req.query.lang as string) || 'mr';
-  if (!userId) return res.status(401).json({ message: 'Unauthenticated' });
+  if (!userId) throw unauthenticated();
 
   const {
     phone, firstName, lastName, gender, relationTypeCode, sourceUserId, customName, customPhotoUrl, isAlive, visualSide, dateOfBirth, bloodGroup,
     education, occupation, maritalStatus, pincode, address, area
   } = req.body;
-  console.log('DEBUG: createFriend. sourceUserId:', sourceUserId, 'userId:', userId);
+
+  const fromUserId = sourceUserId || userId;
+
+  // AUTHORIZATION FIX (mirrors relationController.createRelation): `sourceUserId`
+  // arrives in the request body and, until now, was used unchecked as the
+  // relation's anchor. Verify it is actually a node in the caller's own tree
+  // before creating anything against it.
+  if (sourceUserId) {
+    await assertSourceNodeOwned(userId, sourceUserId);
+  }
 
   const isPersonAlive = isAlive !== undefined ? (String(isAlive) === 'true') : true;
 
@@ -602,123 +648,116 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
 
   let cleanPhone = null;
   if (isPersonAlive && phone && String(phone).trim()) {
-      cleanPhone = normalizePhone(phone);
-      if (!cleanPhone || cleanPhone.length < 10) {
-        return res.status(400).json({ message: 'Invalid phone number' });
-      }
+    cleanPhone = normalizePhone(phone);
+    if (!cleanPhone || cleanPhone.length < 10) {
+      throw badRequest('Invalid phone number');
+    }
   }
 
-  try {
-    const relType = await prisma.relationType.findUnique({
-      where: { code: relationTypeCode },
-      include: { translations: true }
+  const relType = await prisma.relationType.findUnique({
+    where: { code: relationTypeCode },
+    include: { translations: true }
+  });
+
+  if (!relType || relType.category !== 'FRIEND') {
+    throw badRequest('Invalid friend relation type');
+  }
+
+  let relatedUser = null;
+  if (cleanPhone) {
+    relatedUser = await prisma.user.findUnique({ where: { phone: cleanPhone } });
+  }
+
+  if (!relatedUser) {
+    relatedUser = await prisma.user.create({
+      data: {
+        phone: cleanPhone,
+        whatsapp: cleanPhone,
+        firstName,
+        lastName: lastName || null,
+        gender: normalizeGender(gender),
+        dateOfBirth: parsedDob,
+        bloodGroup: cleanBloodGroup,
+        education: education ? String(education).trim() : null,
+        occupation: occupation ? String(occupation).trim() : null,
+        maritalStatus: maritalStatus ? String(maritalStatus).trim() : null,
+        pincode: pincode ? String(pincode).trim() : null,
+        address: address ? String(address).trim() : null,
+        area: area ? String(area).trim() : null,
+        profileCompleted: false,
+        isAlive: isPersonAlive,
+      },
     });
+  }
 
-    if (!relType || relType.category !== 'FRIEND') {
-      return res.status(400).json({ message: 'Invalid friend relation type' });
-    }
+  if (relatedUser.id === fromUserId) {
+    throw badRequest('Cannot add yourself or the source as a friend');
+  }
 
-    let relatedUser = null;
-    if (cleanPhone) {
-        relatedUser = await prisma.user.findUnique({ where: { phone: cleanPhone } });
-    }
-
-    if (!relatedUser) {
-      relatedUser = await prisma.user.create({
-        data: {
-          phone: cleanPhone,
-          whatsapp: cleanPhone,
-          firstName,
-          lastName: lastName || null,
-          gender: normalizeGender(gender),
-          dateOfBirth: parsedDob,
-          bloodGroup: cleanBloodGroup,
-          education: education ? String(education).trim() : null,
-          occupation: occupation ? String(occupation).trim() : null,
-          maritalStatus: maritalStatus ? String(maritalStatus).trim() : null,
-          pincode: pincode ? String(pincode).trim() : null,
-          address: address ? String(address).trim() : null,
-          area: area ? String(area).trim() : null,
-          profileCompleted: false,
-          isAlive: isPersonAlive,
-        },
-      });
-    }
-
-    if (relatedUser.id === userId || (sourceUserId && relatedUser.id === sourceUserId)) {
-      return res.status(400).json({ message: 'Cannot add yourself or the source as a friend' });
-    }
-
-    const fromUserId = sourceUserId || userId;
-
-    const relation = await prisma.relation.upsert({
-      where: {
-        fromUserId_toUserId_relationTypeCode: {
-          fromUserId,
-          toUserId: relatedUser.id,
-          relationTypeCode,
-        },
-      },
-      update: {
-        status: 'PENDING',
-        ...(customName ? { customName } : {}),
-        ...(customPhotoUrl ? { customPhotoUrl } : {}),
-        visualSide: normalizeVisualSide(visualSide),
-        createdById: userId,
-      },
-      create: {
+  const relation = await prisma.relation.upsert({
+    where: {
+      fromUserId_toUserId_relationTypeCode: {
         fromUserId,
         toUserId: relatedUser.id,
         relationTypeCode,
-        category: 'FRIEND',
-        status: 'PENDING',
-        customName: customName || null,
-        customPhotoUrl: customPhotoUrl || null,
-        visualSide: normalizeVisualSide(visualSide),
-        createdById: userId,
       },
-      include: { toUser: true, fromUser: true },
-    });
+    },
+    update: {
+      status: 'PENDING',
+      ...(customName ? { customName } : {}),
+      ...(customPhotoUrl ? { customPhotoUrl } : {}),
+      visualSide: normalizeVisualSide(visualSide),
+      createdById: userId,
+    },
+    create: {
+      fromUserId,
+      toUserId: relatedUser.id,
+      relationTypeCode,
+      category: 'FRIEND',
+      status: 'PENDING',
+      customName: customName || null,
+      customPhotoUrl: customPhotoUrl || null,
+      visualSide: normalizeVisualSide(visualSide),
+      createdById: userId,
+    },
+    include: { toUser: true, fromUser: true },
+  });
 
-    const displayLabel = resolveLabel(relType, lang);
-    const authUser = await prisma.user.findUnique({ where: { id: userId } });
+  const displayLabel = resolveLabel(relType, lang);
+  const authUser = await prisma.user.findUnique({ where: { id: userId } });
 
-    // Notify the recipient of the friend request (if they have a phone = real registered user)
-    if (relatedUser.phone) {
-      await createNotification({
-        userId: relatedUser.id,
-        type: 'RELATION_REQUEST',
-        title: 'New friend request',
-        message: `${authUser?.firstName || 'Someone'} has sent you a friend request as "${displayLabel}".`,
-        relationId: relation.id,
-      });
-    }
-
-    // Notify the sender that the request was sent (mirrors family pattern)
+  // Notify the recipient of the friend request (if they have a phone = real registered user)
+  if (relatedUser.phone) {
     await createNotification({
-      userId: userId,
+      userId: relatedUser.id,
       type: 'RELATION_REQUEST',
-      title: 'Friend request sent',
-      message: `You added ${firstName} as "${displayLabel}". Waiting for approval.`,
+      title: 'New friend request',
+      message: `${authUser?.firstName || 'Someone'} has sent you a friend request as "${displayLabel}".`,
       relationId: relation.id,
     });
-
-    // Award score to the creator
-    try {
-      const scoreReason = isPersonAlive ? 'ADD_ALIVE' : 'ADD_DECEASED';
-      await awardPoints(userId, scoreReason, relation.id);
-    } catch (scoreErr) {
-      console.warn('[createFriend] Score award failed:', scoreErr);
-    }
-
-    await TreeCacheService.invalidateUserTree(fromUserId, relatedUser.id, userId);
-
-    return res.status(201).json({
-      ...relation,
-      relationType: { code: relationTypeCode, label: displayLabel }
-    });
-  } catch (error) {
-    console.error('create friend error', error);
-    return res.status(500).json({ message: 'Internal server error' });
   }
+
+  // Notify the sender that the request was sent (mirrors family pattern)
+  await createNotification({
+    userId: userId,
+    type: 'RELATION_REQUEST',
+    title: 'Friend request sent',
+    message: `You added ${firstName} as "${displayLabel}". Waiting for approval.`,
+    relationId: relation.id,
+  });
+
+  // Award score to the creator. Secondary to the relation itself.
+  try {
+    const scoreReason = isPersonAlive ? 'ADD_ALIVE' : 'ADD_DECEASED';
+    await awardPoints(userId, scoreReason, relation.id);
+  } catch (scoreErr) {
+    log.warn({ err: scoreErr, userId, relationId: relation.id }, 'score award failed');
+  }
+
+  await TreeCacheService.invalidateUserTree(fromUserId, relatedUser.id, userId);
+
+  return res.status(201).json({
+    ...relation,
+    relationType: { code: relationTypeCode, label: displayLabel }
+  });
 };
