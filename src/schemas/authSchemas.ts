@@ -39,6 +39,8 @@ export const registerSchema = {
       email: z.string().trim().toLowerCase().email('must be a valid email').max(255).optional(),
       religion: boundedText(TEXT_LIMITS.shortField),
       community: boundedText(TEXT_LIMITS.shortField),
+      caste: boundedText(TEXT_LIMITS.shortField),
+      subcaste: boundedText(TEXT_LIMITS.shortField),
       dateOfBirth: dateStringField,
       gender: z.enum(['MALE', 'FEMALE', 'male', 'female']).optional(),
       appLanguage: z.string().trim().max(10).optional(),

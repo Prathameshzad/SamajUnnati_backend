@@ -1,0 +1,7 @@
+-- AlterTable
+ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "caste" TEXT,
+ADD COLUMN IF NOT EXISTS "subcaste" TEXT;
+
+-- AlterTable
+ALTER TABLE "MatrimonyProfile" ADD COLUMN IF NOT EXISTS "caste" TEXT,
+ADD COLUMN IF NOT EXISTS "subcaste" TEXT;

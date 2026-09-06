@@ -21,6 +21,8 @@ model User {
   area                                String?
   bloodGroup                          String?
   community                           String?
+  caste                               String?
+  subcaste                            String?
   education                           String?
   firstName                           String?
   lastName                            String?
@@ -363,6 +365,8 @@ model MatrimonyProfile {
   languages            String[]
   religion             String?
   community            String?
+  caste                String?
+  subcaste             String?
   bio                  String?
   hobbies              String[]
   interests            String[]

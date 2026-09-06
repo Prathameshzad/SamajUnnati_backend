@@ -124,6 +124,8 @@ export const registerUser = async (
     lastName,
     religion,
     community,
+    caste,
+    subcaste,
     dateOfBirth,
     gender,
     appLanguage,
@@ -136,6 +138,8 @@ export const registerUser = async (
     lastName?: string;
     religion?: string;
     community?: string;
+    caste?: string;
+    subcaste?: string;
     dateOfBirth?: string;
     gender?: string;
     appLanguage?: string;
@@ -166,7 +170,9 @@ export const registerUser = async (
       middleName: middleName?.trim() ?? null,
       lastName: lastName?.trim() ?? null,
       religion: religion ?? null,
-      community: community ?? null,
+      community: community ?? caste ?? null,
+      caste: caste ?? null,
+      subcaste: subcaste ?? null,
       dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : null,
       gender: normalizeGender(gender),
       appLanguage: appLanguage ?? 'en',

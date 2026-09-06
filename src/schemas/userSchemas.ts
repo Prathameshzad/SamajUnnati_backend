@@ -47,6 +47,8 @@ export const updateMeSchema = {
 
       religion: boundedText(TEXT_LIMITS.shortField),
       community: boundedText(TEXT_LIMITS.shortField),
+      caste: boundedText(TEXT_LIMITS.shortField),
+      subcaste: boundedText(TEXT_LIMITS.shortField),
       dateOfBirth: dateStringField,
       bloodGroup: boundedText(16),
       gender: z.enum(['MALE', 'FEMALE', 'male', 'female']).optional(),

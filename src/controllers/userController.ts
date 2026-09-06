@@ -87,6 +87,8 @@ export const updateMe = async (
     // personal
     religion,
     community,
+    caste,
+    subcaste,
     dateOfBirth,
     bloodGroup,
     gender,
@@ -121,6 +123,8 @@ export const updateMe = async (
 
     religion?: string;
     community?: string;
+    caste?: string;
+    subcaste?: string;
     dateOfBirth?: string;
     bloodGroup?: string;
     gender?: string;
@@ -191,7 +195,9 @@ export const updateMe = async (
 
       // personal
       religion,
-      community,
+      community: community ?? (caste ? caste : undefined),
+      caste,
+      subcaste,
       dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : undefined,
       bloodGroup,
       gender:
