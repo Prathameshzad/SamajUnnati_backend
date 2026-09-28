@@ -36,6 +36,7 @@ export const registerSchema = {
       firstName: requiredText(TEXT_LIMITS.name),
       middleName: boundedText(TEXT_LIMITS.name),
       lastName: boundedText(TEXT_LIMITS.name),
+      fullName: boundedText(TEXT_LIMITS.name),
       email: z.string().trim().toLowerCase().email('must be a valid email').max(255).optional(),
       religion: boundedText(TEXT_LIMITS.shortField),
       community: boundedText(TEXT_LIMITS.shortField),
@@ -43,8 +44,16 @@ export const registerSchema = {
       subcaste: boundedText(TEXT_LIMITS.shortField),
       dateOfBirth: dateStringField,
       gender: z.enum(['MALE', 'FEMALE', 'male', 'female']).optional(),
+      bloodGroup: boundedText(TEXT_LIMITS.shortField),
+      occupation: boundedText(TEXT_LIMITS.shortField),
       appLanguage: z.string().trim().max(10).optional(),
       relationLanguage: z.string().trim().max(10).optional(),
+      // Location fields
+      pincode: z.string().trim().max(20).optional(),
+      area: boundedText(TEXT_LIMITS.shortField),
+      latitude: z.string().trim().optional(),
+      longitude: z.string().trim().optional(),
     })
     .strip(),
 };
+

@@ -619,7 +619,7 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
         },
       },
       update: {
-        status: 'PENDING',
+        status: isPersonAlive ? 'PENDING' : 'CONFIRMED',
         ...(customName ? { customName } : {}),
         ...(customPhotoUrl ? { customPhotoUrl } : {}),
         visualSide: normalizeVisualSide(visualSide),
@@ -630,7 +630,7 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
         toUserId: relatedUser.id,
         relationTypeCode,
         category: relType.category,
-        status: 'PENDING',
+        status: isPersonAlive ? 'PENDING' : 'CONFIRMED',
         customName: customName || null,
         customPhotoUrl: customPhotoUrl || null,
         visualSide: normalizeVisualSide(visualSide),
@@ -642,23 +642,27 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
     const displayLabel = resolveLabel(relType, lang);
     const authUser = await prisma.user.findUnique({ where: { id: userId } });
 
-    if (relatedUser.phone) {
+    // Deceased relatives do not receive request notifications, and no "waiting for approval"
+    // notification is generated for the creator since deceased ancestors cannot approve requests.
+    if (isPersonAlive) {
+      if (relatedUser.phone) {
+        await createNotification({
+          userId: relatedUser.id,
+          type: 'RELATION_REQUEST',
+          title: 'New relation request',
+          message: `${authUser?.firstName || 'Someone'} has added you to their family tree.`,
+          relationId: relation.id,
+        });
+      }
+
       await createNotification({
-        userId: relatedUser.id,
+        userId: userId,
         type: 'RELATION_REQUEST',
-        title: 'New relation request',
-        message: `${authUser?.firstName || 'Someone'} has added you as "${displayLabel}".`,
+        title: 'Request Sent',
+        message: `You added ${firstName}. Waiting for approval.`,
         relationId: relation.id,
       });
     }
-
-    await createNotification({
-      userId: userId,
-      type: 'RELATION_REQUEST',
-      title: 'Request Sent',
-      message: `You added ${firstName} as "${displayLabel}". Waiting for approval.`,
-      relationId: relation.id,
-    });
 
     // ── Award score to the creator ──
     // Scoring is secondary to the relation itself, so a failure here is logged
@@ -1062,16 +1066,26 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
       for (const rel of rawRelations) {
         if (processedRelations.has(rel.id)) continue;
         if (category && rel.category !== category) continue;
-        if (rel.status === 'REJECTED') continue;
+        if (rel.status === 'REJECTED') {
+          // If the user created this relation, keep it visible in their tree as REJECTED so they know the request was declined
+          if (rel.createdById !== userId) continue;
+        }
 
         const isCreator = rel.createdById === userId;
         const isFromMe = rel.fromUserId === userId;
         const isToMe = rel.toUserId === userId;
         const isConfirmed = rel.status === 'CONFIRMED';
         
-        // Include relations the user created, sent, or received (if confirmed).
-        if (!isCreator && !isFromMe && !isToMe) continue;
-        if (!isConfirmed && !isCreator) continue;
+        // For FAMILY category: Only show relations the user explicitly added/created themselves.
+        // Incoming requests accepted by the user belong in their accepted/approval list,
+        // and must NOT be auto-injected onto the visual Family Tree canvas unless explicitly added by the user.
+        // For FRIENDS and other categories: reciprocal confirmed relations can be traversed.
+        if (rel.category === 'FAMILY') {
+          if (!isCreator) continue;
+        } else {
+          if (!isCreator && !isFromMe && !isToMe) continue;
+          if (!isConfirmed && !isCreator) continue;
+        }
 
         /**
          * Was `queue.find(id => id === rel.fromUserId || id === rel.toUserId)`,
@@ -1201,7 +1215,9 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
         // ────────────────────────────────────────────────────────────────
 
         visited.set(targetId, { gen: localNeighborGen, code: targetRelCode });
-        nextQueue.add(targetId);
+        if (rel.status !== 'REJECTED') {
+          nextQueue.add(targetId);
+        }
 
         if (!nodesByGen.has(localNeighborGen)) nodesByGen.set(localNeighborGen, []);
 
@@ -1325,7 +1341,7 @@ export const getRelationCounts = async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;
   if (!userId) throw unauthenticated();
 
-  const [pending, confirmed, rejected, accepted, badge] = await Promise.all([
+  const [pending, confirmed, rejected, accepted, userCreatedRelations, confirmedRelations, badge] = await Promise.all([
     prisma.relation.count({
       where: {
         createdById: userId,
@@ -1339,10 +1355,38 @@ export const getRelationCounts = async (req: AuthRequest, res: Response) => {
     prisma.relation.count({ where: { fromUserId: userId, status: 'CONFIRMED' } }),
     prisma.relation.count({ where: { createdById: userId, status: 'REJECTED' } }),
     prisma.relation.count({ where: { toUserId: userId, status: 'CONFIRMED' } }),
+    prisma.relation.findMany({
+      where: { createdById: userId },
+      select: { fromUserId: true, toUserId: true },
+    }),
+    prisma.relation.findMany({
+      where: {
+        OR: [
+          { fromUserId: userId, status: 'CONFIRMED' },
+          { toUserId: userId, status: 'CONFIRMED' },
+        ],
+      },
+      select: { fromUserId: true, toUserId: true },
+    }),
     // Cached and versioned — see badgeService.getUserBadgeData.
     getUserBadgeData(userId),
   ]);
-  return res.json({ pending, confirmed, rejected, accepted, badge });
+
+  const nodeSet = new Set<string>();
+  for (const r of userCreatedRelations) {
+    if (r.fromUserId && r.fromUserId !== userId) nodeSet.add(r.fromUserId);
+    if (r.toUserId && r.toUserId !== userId) nodeSet.add(r.toUserId);
+  }
+  const network = nodeSet.size;
+
+  const approvedSet = new Set<string>();
+  for (const r of confirmedRelations) {
+    const partnerId = r.fromUserId === userId ? r.toUserId : r.fromUserId;
+    if (partnerId) approvedSet.add(partnerId);
+  }
+  const approved = approvedSet.size;
+
+  return res.json({ pending, confirmed, rejected, accepted, network, approved, badge });
 };
 
 export const deleteRelation = async (req: AuthRequest, res: Response) => {
@@ -1371,20 +1415,29 @@ export const deleteRelation = async (req: AuthRequest, res: Response) => {
     throw forbidden('Not authorized to delete this relation');
   }
 
-  // If CONFIRMED – mark the reciprocal as REJECTED so the other person sees it
+  // If CONFIRMED – mark the reciprocal as REJECTED so the other person sees it (best effort)
   if (relation.status === 'CONFIRMED') {
-    await prisma.relation.updateMany({
-      where: { fromUserId: relation.toUserId, toUserId: relation.fromUserId },
-      data: { status: 'REJECTED' }
-    });
-    const otherUserId = relation.fromUserId === userId ? relation.toUserId : relation.fromUserId;
-    const remover = relation.fromUserId === userId ? relation.fromUser : relation.toUser;
-    await createNotification({
-      userId: otherUserId,
-      type: 'RELATION_REJECTED',
-      title: 'Connection removed',
-      message: `${remover?.firstName || 'Someone'} has removed you from their family tree.`,
-    });
+    try {
+      await prisma.relation.updateMany({
+        where: { fromUserId: relation.toUserId, toUserId: relation.fromUserId },
+        data: { status: 'REJECTED' }
+      });
+      const otherUserId = relation.fromUserId === userId ? relation.toUserId : relation.fromUserId;
+      const remover = relation.fromUserId === userId ? relation.fromUser : relation.toUser;
+      const targetUser = relation.fromUserId === userId ? relation.toUser : relation.fromUser;
+
+      // Only notify if target user is alive and not the remover themselves
+      if (otherUserId && otherUserId !== userId && targetUser?.isAlive !== false) {
+        await createNotification({
+          userId: otherUserId,
+          type: 'RELATION_REJECTED',
+          title: 'Connection removed',
+          message: `${remover?.firstName || 'Someone'} has removed you from their family tree.`,
+        });
+      }
+    } catch (notifErr) {
+      log.warn({ err: notifErr, relationId: id }, 'Failed to process reciprocal removal notification');
+    }
   }
 
   // 1. Unlink notifications referencing this relation to avoid foreign key failure

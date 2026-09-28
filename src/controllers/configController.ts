@@ -1,6 +1,15 @@
 // src/controllers/configController.ts
 import type { Request, Response } from 'express';
 import { gamificationConfig } from '../config/gamification';
+import { COUNTRY_NAMES, COUNTRY_PHONE_LENGTHS } from '../constants/countryData';
+import {
+  RELIGION_TAXONOMY,
+  RELIGION_ALIASES,
+  POPULAR_RELIGIONS,
+  RELIGIONS,
+  getCastesForReligion,
+} from '../constants/religionCasteData';
+import { COMMON_HOBBIES, COMMON_INTERESTS } from '../constants/matrimonyData';
 
 /**
  * GET /api/config/gamification
@@ -23,3 +32,61 @@ export const getGamificationConfig = (_req: Request, res: Response): void => {
   res.set('Cache-Control', 'public, max-age=300, stale-while-revalidate=600');
   res.json(payload);
 };
+
+/**
+ * GET /api/config/countries
+ *
+ * Serves country names and mobile phone length validation rules.
+ */
+export const getCountriesConfig = (_req: Request, res: Response): void => {
+  res.set('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
+  res.json({
+    names: COUNTRY_NAMES,
+    phoneLengths: COUNTRY_PHONE_LENGTHS,
+  });
+};
+
+/**
+ * GET /api/config/religion-caste
+ *
+ * Serves the master religion and caste taxonomy, aliases, popular religions list,
+ * and religion dropdown options.
+ */
+export const getReligionCasteConfig = (_req: Request, res: Response): void => {
+  res.set('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
+  res.json({
+    taxonomy: RELIGION_TAXONOMY,
+    aliases: RELIGION_ALIASES,
+    popularReligions: POPULAR_RELIGIONS,
+    religions: RELIGIONS,
+  });
+};
+
+/**
+ * GET /api/config/castes?religion=Hindu
+ *
+ * Query-based helper to fetch castes for a specific religion.
+ */
+export const getCastesByReligion = (req: Request, res: Response): void => {
+  const religion = req.query.religion as string | undefined;
+  const castes = getCastesForReligion(religion);
+  res.set('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
+  res.json({
+    religion: religion || '',
+    castes,
+  });
+};
+
+/**
+ * GET /api/config/matrimony
+ *
+ * Serves matrimony profile onboarding constants (hobbies and interests).
+ */
+export const getMatrimonyConfig = (_req: Request, res: Response): void => {
+  res.set('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
+  res.json({
+    hobbies: COMMON_HOBBIES,
+    interests: COMMON_INTERESTS,
+  });
+};
+

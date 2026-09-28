@@ -6,6 +6,7 @@ import { asyncHandler } from '../lib/asyncHandler';
 import { readLimiter, writeLimiter } from '../middleware/rateLimit';
 import {
   listNotifications,
+  getNotificationSummary,
   markNotificationRead,
   markAllNotificationsRead,
 } from '../controllers/notificationController';
@@ -16,6 +17,7 @@ const router = Router();
 router.use(authMiddleware);
 
 router.get('/', readLimiter, validate(listNotificationsSchema), asyncHandler(listNotifications));
+router.get('/summary', readLimiter, asyncHandler(getNotificationSummary));
 
 // Literal path registered before the parameterised one.
 router.patch('/read-all', writeLimiter, asyncHandler(markAllNotificationsRead));

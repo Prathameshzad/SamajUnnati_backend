@@ -82,14 +82,17 @@ export const getFriendTree = async (req: AuthRequest, res: Response) => {
 
   const registry = await getRelationTypeRegistry();
 
-  // 1. Fetch all friend relations (category = FRIEND, status != REJECTED).
+  // 1. Fetch all friend relations (category = FRIEND, status != REJECTED OR created by user with status = REJECTED).
   // `relationType: { include: { translations: true } }` dropped: labels now
   // come from the cached registry via relationTypeCode, so this join no longer
   // runs at all here.
   const allRelations = await prisma.relation.findMany({
     where: {
       category: 'FRIEND',
-      status: { not: 'REJECTED' }
+      OR: [
+        { status: { not: 'REJECTED' } },
+        { createdById: userId, status: 'REJECTED' },
+      ],
     },
     select: {
         id: true,
@@ -150,7 +153,9 @@ export const getFriendTree = async (req: AuthRequest, res: Response) => {
 
       const nextLevel = currentLevel + 1;
       visited.set(targetUser.id, nextLevel);
-      nextQueue.push(targetUser.id);
+      if (rel.status !== 'REJECTED') {
+        nextQueue.push(targetUser.id);
+      }
 
       if (!nodesByLevel.has(nextLevel)) {
         nodesByLevel.set(nextLevel, []);
@@ -566,26 +571,28 @@ export const deleteFriend = async (req: AuthRequest, res: Response) => {
     throw forbidden('Not authorized to remove this friend');
   }
 
-  if (relation.category !== 'FRIEND') {
-    throw badRequest('Not a friend relation');
-  }
-
-  // If already confirmed, mark the reciprocal side as REJECTED so the other party is aware
+  // If already confirmed, mark the reciprocal side as REJECTED so the other party is aware (best effort)
   if (relation.status === 'CONFIRMED') {
-    await prisma.relation.updateMany({
-      where: { fromUserId: relation.toUserId, toUserId: relation.fromUserId },
-      data: { status: 'REJECTED' }
-    });
-    // Notify the other party
-    const otherUserId = relation.fromUserId === userId ? relation.toUserId : relation.fromUserId;
-    const remover = relation.fromUserId === userId ? relation.fromUser : relation.toUser;
-    await createNotification({
-      userId: otherUserId,
-      type: 'RELATION_REJECTED',
-      title: 'Friend removed',
-      message: `${remover?.firstName || 'Someone'} has removed you from their friend list.`,
-      relationId: relation.id,
-    });
+    try {
+      await prisma.relation.updateMany({
+        where: { fromUserId: relation.toUserId, toUserId: relation.fromUserId },
+        data: { status: 'REJECTED' }
+      });
+      // Notify the other party if alive and not self
+      const otherUserId = relation.fromUserId === userId ? relation.toUserId : relation.fromUserId;
+      const remover = relation.fromUserId === userId ? relation.fromUser : relation.toUser;
+      const targetUser = relation.fromUserId === userId ? relation.toUser : relation.fromUser;
+      if (otherUserId && otherUserId !== userId && targetUser?.isAlive !== false) {
+        await createNotification({
+          userId: otherUserId,
+          type: 'RELATION_REJECTED',
+          title: 'Friend removed',
+          message: `${remover?.firstName || 'Someone'} has removed you from their friend list.`,
+        });
+      }
+    } catch (notifErr) {
+      log.warn({ err: notifErr, relationId: id }, 'Failed to process friend removal notification');
+    }
   }
 
   // 1. Unlink notifications referencing this relation to avoid foreign key failure
@@ -714,7 +721,7 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
       toUserId: relatedUser.id,
       relationTypeCode,
       category: 'FRIEND',
-      status: 'PENDING',
+      status: isPersonAlive ? 'PENDING' : 'CONFIRMED',
       customName: customName || null,
       customPhotoUrl: customPhotoUrl || null,
       visualSide: normalizeVisualSide(visualSide),
@@ -726,25 +733,27 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
   const displayLabel = resolveLabel(relType, lang);
   const authUser = await prisma.user.findUnique({ where: { id: userId } });
 
-  // Notify the recipient of the friend request (if they have a phone = real registered user)
-  if (relatedUser.phone) {
+  if (isPersonAlive) {
+    // Notify the recipient of the friend request (if they have a phone = real registered user)
+    if (relatedUser.phone) {
+      await createNotification({
+        userId: relatedUser.id,
+        type: 'RELATION_REQUEST',
+        title: 'New friend request',
+        message: `${authUser?.firstName || 'Someone'} has sent you a friend request.`,
+        relationId: relation.id,
+      });
+    }
+
+    // Notify the sender that the request was sent (mirrors family pattern)
     await createNotification({
-      userId: relatedUser.id,
+      userId: userId,
       type: 'RELATION_REQUEST',
-      title: 'New friend request',
-      message: `${authUser?.firstName || 'Someone'} has sent you a friend request as "${displayLabel}".`,
+      title: 'Friend request sent',
+      message: `You added ${firstName}. Waiting for approval.`,
       relationId: relation.id,
     });
   }
-
-  // Notify the sender that the request was sent (mirrors family pattern)
-  await createNotification({
-    userId: userId,
-    type: 'RELATION_REQUEST',
-    title: 'Friend request sent',
-    message: `You added ${firstName} as "${displayLabel}". Waiting for approval.`,
-    relationId: relation.id,
-  });
 
   // Award score to the creator. Secondary to the relation itself.
   try {

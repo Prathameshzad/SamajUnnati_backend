@@ -18,6 +18,9 @@ const NOTIFICATION_USER_SELECT = {
   photoUrl: true,
   gender: true,
   isAlive: true,
+  area: true,
+  community: true,
+  occupation: true,
 } as const;
 
 export const listNotifications = async (req: AuthRequest, res: Response) => {
@@ -29,12 +32,19 @@ export const listNotifications = async (req: AuthRequest, res: Response) => {
   const stateQuery = (req.query.state as string | undefined)?.toUpperCase();
   const state =
     stateQuery === 'READ' || stateQuery === 'UNREAD' ? stateQuery : undefined;
-  const limit = Number(req.query.limit) || 50;
+  const limit = Math.min(Number(req.query.limit) || 30, 30);
 
   const notificationsRaw = await prisma.notification.findMany({
     where: {
       userId,
       ...(state ? { state } : {}),
+      NOT: {
+        relation: {
+          toUser: {
+            isAlive: false,
+          },
+        },
+      },
     },
     include: {
       relation: {
@@ -42,9 +52,25 @@ export const listNotifications = async (req: AuthRequest, res: Response) => {
           fromUser: { select: NOTIFICATION_USER_SELECT },
           toUser: { select: NOTIFICATION_USER_SELECT },
           User_Relation_createdByIdToUser: { select: NOTIFICATION_USER_SELECT },
-          // Single join per notification (not per-relation N+1); resolution
-          // logic below is unchanged.
           relationType: { include: { translations: true } },
+        },
+      },
+      post: {
+        select: {
+          id: true,
+          caption: true,
+          location: true,
+          media: {
+            select: {
+              id: true,
+              url: true,
+              type: true,
+              order: true,
+            },
+            take: 1,
+            orderBy: { order: 'asc' },
+          },
+          user: { select: NOTIFICATION_USER_SELECT },
         },
       },
     },
@@ -63,19 +89,21 @@ export const listNotifications = async (req: AuthRequest, res: Response) => {
       // For incoming requests (someone else added the recipient), the customName was
       // typed BY the other person FOR the recipient — it must not affect display names.
       const recipientCreated = n.relation.createdById === userId;
-      const toUserResolved = n.relation.toUser && recipientCreated
+      const toUserResolved = n.relation.toUser
         ? {
             ...n.relation.toUser,
-            firstName: n.relation.customName || n.relation.toUser.firstName,
-            photoUrl: n.relation.customPhotoUrl || n.relation.toUser.photoUrl,
+            firstName: (recipientCreated && n.relation.customName) ? n.relation.customName : n.relation.toUser.firstName,
+            photoUrl: (recipientCreated && n.relation.customPhotoUrl) ? n.relation.customPhotoUrl : n.relation.toUser.photoUrl,
           }
         : n.relation.toUser;
 
       // When the relation was added from another tree node (fromUserId !== createdById),
+      // and this is an incoming notification for the recipient (!recipientCreated),
       // expose the actual root user who sent the request (createdByUser) as fromUser.
       // This ensures B sees A's name in the notification, not C (the source node).
       const createdByUser = (n.relation as any).User_Relation_createdByIdToUser;
       const effectiveFromUser =
+        !recipientCreated &&
         n.relation.createdById &&
         n.relation.createdById !== n.relation.fromUserId &&
         createdByUser
@@ -86,6 +114,7 @@ export const listNotifications = async (req: AuthRequest, res: Response) => {
         ...n,
         relation: {
           ...n.relation,
+          createdByUser: createdByUser || null,
           fromUser: effectiveFromUser,
           toUser: toUserResolved,
           relationType: {
@@ -99,6 +128,127 @@ export const listNotifications = async (req: AuthRequest, res: Response) => {
   });
 
   return res.json(notifications);
+};
+
+export const getNotificationSummary = async (req: AuthRequest, res: Response) => {
+  const userId = req.user?.id;
+  if (!userId) throw unauthenticated();
+
+  // 1. Total unread count (excluding deceased notifications)
+  const unreadCount = await prisma.notification.count({
+    where: {
+      userId,
+      state: 'UNREAD',
+      NOT: {
+        relation: {
+          toUser: {
+            isAlive: false,
+          },
+        },
+      },
+    },
+  });
+
+  // 2. Pending Kinship / Relation Requests
+  const pendingRelations = await prisma.relation.findMany({
+    where: {
+      toUserId: userId,
+      status: 'PENDING',
+      deletedAt: null,
+    },
+    include: {
+      fromUser: { select: NOTIFICATION_USER_SELECT },
+      User_Relation_createdByIdToUser: { select: NOTIFICATION_USER_SELECT },
+      relationType: { include: { translations: true } },
+    },
+    orderBy: { createdAt: 'desc' },
+    take: 5,
+  });
+
+  const requestsCount = await prisma.relation.count({
+    where: { toUserId: userId, status: 'PENDING', deletedAt: null },
+  });
+
+  const requestSenders = pendingRelations.map((r) => {
+    const creator = (r as any).User_Relation_createdByIdToUser;
+    const effective = (r.createdById && r.createdById !== r.fromUserId && creator) ? creator : r.fromUser;
+    return [effective?.firstName, effective?.lastName].filter(Boolean).join(' ') || 'Relative';
+  });
+
+  // 3. Social Unread Count (likes, comments)
+  const socialCount = await prisma.notification.count({
+    where: {
+      userId,
+      state: 'UNREAD',
+      type: { in: ['POST_LIKE', 'POST_COMMENT', 'POST_SHARE'] },
+    },
+  });
+
+  // 4. Today's Milestones (Birthdays of user's connected family members)
+  const confirmedRelations = await prisma.relation.findMany({
+    where: {
+      OR: [
+        { fromUserId: userId, status: 'CONFIRMED' },
+        { toUserId: userId, status: 'CONFIRMED' },
+      ],
+      deletedAt: null,
+    },
+    select: {
+      fromUserId: true,
+      toUserId: true,
+      fromUser: { select: { id: true, firstName: true, lastName: true, photoUrl: true, dateOfBirth: true, area: true } },
+      toUser: { select: { id: true, firstName: true, lastName: true, photoUrl: true, dateOfBirth: true, area: true } },
+    },
+    take: 100,
+  });
+
+  const today = new Date();
+  const currentMonth = today.getMonth();
+  const currentDate = today.getDate();
+
+  const seenUsers = new Set<string>();
+  const todayMilestones: {
+    userId: string;
+    name: string;
+    photoUrl?: string | null;
+    turningAge?: number;
+    area?: string | null;
+  }[] = [];
+
+  for (const rel of confirmedRelations) {
+    const relative = (rel.fromUserId === userId ? rel.toUser : rel.fromUser) as {
+      id: string;
+      firstName: string | null;
+      lastName: string | null;
+      photoUrl: string | null;
+      dateOfBirth: Date | null;
+      area: string | null;
+    } | null;
+    if (!relative || seenUsers.has(relative.id) || relative.id === userId) continue;
+    seenUsers.add(relative.id);
+
+    if (relative.dateOfBirth) {
+      const dob = new Date(relative.dateOfBirth);
+      if (dob.getMonth() === currentMonth && dob.getDate() === currentDate) {
+        const age = today.getFullYear() - dob.getFullYear();
+        todayMilestones.push({
+          userId: relative.id,
+          name: [relative.firstName, relative.lastName].filter(Boolean).join(' ') || 'Family Member',
+          photoUrl: relative.photoUrl,
+          turningAge: age > 0 ? age : undefined,
+          area: relative.area,
+        });
+      }
+    }
+  }
+
+  return res.json({
+    unreadCount,
+    requestsCount,
+    requestSenders,
+    socialCount,
+    todayMilestones,
+  });
 };
 
 export const markNotificationRead = async (req: AuthRequest, res: Response) => {

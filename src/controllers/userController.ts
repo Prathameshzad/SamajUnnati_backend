@@ -2,11 +2,14 @@
 import { Response } from 'express';
 import type { Express } from 'express';
 import prisma from '../lib/prisma';
-import { AuthRequest } from '../middleware/authMiddleware';
+import { AuthRequest, invalidateAccountStatus } from '../middleware/authMiddleware';
 import { uploadProfileImageToR2 } from '../lib/r2';
 import { TreeCacheService } from '../services/treeCacheService';
 import { getUserBadgeData } from '../services/badgeService';
-import { notFound, unauthenticated } from '../lib/errors';
+import { notFound, unauthenticated, badRequest } from '../lib/errors';
+import { OtpService } from '../services/otpService';
+import { signAuthToken } from '../lib/jwt';
+import { config } from '../config/env';
 import { createLogger } from '../lib/logger';
 
 const log = createLogger('users');
@@ -31,6 +34,7 @@ const PUBLIC_SAFE_SELECT = {
   middleName: true,
   lastName: true,
   photoUrl: true,
+  bannerUrl: true,
   gender: true,
   isAlive: true,
   bio: true,
@@ -111,6 +115,9 @@ export const updateMe = async (
     pincode,
     area,
 
+    // bio
+    bio,
+
     // legacy
     designation,
   } = req.body as {
@@ -143,6 +150,7 @@ export const updateMe = async (
     pincode?: string;
     area?: string;
 
+    bio?: string;
     designation?: string;
   };
 
@@ -174,16 +182,22 @@ export const updateMe = async (
   let finalPhotoUrl: string | null | undefined;
   if (uploadedPhotoUrl) {
     finalPhotoUrl = uploadedPhotoUrl;
-  } else if ((req.body as any).photoUrl) {
+  } else if ((req.body as any).photoUrl !== undefined) {
     finalPhotoUrl = (req.body as any).photoUrl;
   } else {
     finalPhotoUrl = undefined;
+  }
+
+  let finalBannerUrl: string | null | undefined;
+  if ((req.body as any).bannerUrl !== undefined) {
+    finalBannerUrl = (req.body as any).bannerUrl;
   }
 
   const user = await prisma.user.update({
     where: { id: req.user.id },
     data: {
       photoUrl: finalPhotoUrl,
+      bannerUrl: finalBannerUrl !== undefined ? finalBannerUrl : undefined,
       // contact
       whatsapp,
       email,
@@ -220,6 +234,9 @@ export const updateMe = async (
       address,
       pincode,
       area,
+
+      // bio
+      bio,
 
       // legacy
       designation,
@@ -273,4 +290,101 @@ export const getUserById = async (
   if (!user) throw notFound('User not found');
 
   return res.json({ ...user, badge });
+};
+
+function normalizeDigitsPhone(value?: string | null): string | null {
+  if (!value) return null;
+  const digits = value.replace(/\D/g, '');
+  return digits.length > 0 ? digits : null;
+}
+
+export const requestChangePhoneOtp = async (
+  req: AuthRequest,
+  res: Response
+): Promise<Response | void> => {
+  if (!req.user?.id) throw unauthenticated();
+  const { newPhone } = req.body as { newPhone?: string };
+  if (!newPhone) throw badRequest('New phone number is required');
+
+  const normalized = normalizeDigitsPhone(newPhone);
+  if (!normalized || normalized.length < 8 || normalized.length > 15) {
+    throw badRequest('Invalid phone number format');
+  }
+
+  const currentUser = await prisma.user.findUnique({
+    where: { id: req.user.id },
+    select: { phone: true },
+  });
+
+  if (currentUser?.phone === normalized) {
+    throw badRequest('New phone number cannot be the same as your current phone number');
+  }
+
+  const existing = await prisma.user.findUnique({
+    where: { phone: normalized },
+  });
+  if (existing) {
+    throw badRequest('This phone number is already registered with another account');
+  }
+
+  const otpResult = await OtpService.sendOtp(normalized, 'CHANGE_PHONE');
+  if (otpResult.rateLimited) {
+    return res.status(429).json({
+      message: otpResult.message,
+      rateLimited: true,
+      retryAfterSeconds: otpResult.retryAfterSeconds,
+    });
+  }
+
+  const isDev = !config.isProduction && (config.isDevelopment || config.otp.debugResponse);
+  const debugCode = isDev && otpResult.code ? otpResult.code : undefined;
+
+  return res.json({
+    message: 'OTP sent to new phone number',
+    ...(debugCode ? { code: debugCode, otp: debugCode } : {}),
+  });
+};
+
+export const verifyChangePhoneOtp = async (
+  req: AuthRequest,
+  res: Response
+): Promise<Response | void> => {
+  if (!req.user?.id) throw unauthenticated();
+  const { newPhone, code } = req.body as { newPhone?: string; code?: string };
+  if (!newPhone || !code) throw badRequest('Phone number and OTP code are required');
+
+  const normalized = normalizeDigitsPhone(newPhone);
+  if (!normalized) throw badRequest('Invalid phone number format');
+
+  const isVerified = await OtpService.verifyOtp(normalized, code.trim());
+  if (!isVerified) {
+    return res.status(400).json({ message: 'Invalid or expired OTP' });
+  }
+
+  // Conflict re-check
+  const existing = await prisma.user.findUnique({
+    where: { phone: normalized },
+  });
+  if (existing && existing.id !== req.user.id) {
+    throw badRequest('This phone number is already registered with another account');
+  }
+
+  const updatedUser = await prisma.user.update({
+    where: { id: req.user.id },
+    data: { phone: normalized },
+    select: OWNER_SAFE_SELECT,
+  });
+
+  await invalidateAccountStatus(req.user.id);
+
+  const token = signAuthToken({
+    userId: updatedUser.id,
+    phone: updatedUser.phone!,
+  });
+
+  return res.json({
+    message: 'Phone number updated successfully',
+    token,
+    user: updatedUser,
+  });
 };

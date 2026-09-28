@@ -116,18 +116,14 @@ const schema = z.object({
   RATE_LIMIT_ENABLED: boolFromString(true),
   BODY_LIMIT: z.string().default('256kb'),
 
-  MAX_IMAGE_UPLOAD_BYTES: intFromString(5 * 1024 * 1024, 1024, 100 * 1024 * 1024),
-  MAX_VIDEO_UPLOAD_BYTES: intFromString(50 * 1024 * 1024, 1024, 500 * 1024 * 1024),
-  MAX_DOCUMENT_UPLOAD_BYTES: intFromString(10 * 1024 * 1024, 1024, 100 * 1024 * 1024),
-
-  /** Fallback to local disk when R2 is unavailable. Unbounded disk growth, so off in prod. */
-  ALLOW_LOCAL_UPLOAD_FALLBACK: boolFromString(true),
-
   CACHE_TREE_TTL_SECONDS: intFromString(1800, 10, 86_400),
   CACHE_CONFIG_TTL_SECONDS: intFromString(3600, 10, 86_400),
 
   /** Requests slower than this are logged at warn level so latency regressions are visible. */
   SLOW_REQUEST_MS: intFromString(1000, 1, 60_000),
+
+  /** Google Maps Platform API key — used for pincode / GPS geocoding during registration. */
+  GOOGLE_MAPS_API_KEY: z.string().optional(),
 });
 
 const parsed = schema.safeParse(process.env);
@@ -143,6 +139,33 @@ if (!parsed.success) {
 
 const raw = parsed.data;
 const isProduction = raw.NODE_ENV === 'production';
+
+/**
+ * Upload size ceilings, in bytes.
+ *
+ * These were previously read from `MAX_IMAGE_UPLOAD_BYTES`,
+ * `MAX_VIDEO_UPLOAD_BYTES` and `MAX_DOCUMENT_UPLOAD_BYTES`. They are fixed in
+ * code now: they are part of the API contract that the mobile client and the
+ * validation layer both assume, so letting each deployment vary them silently
+ * changed what the API accepts and made "why was my upload rejected here but not
+ * there" impossible to reason about. Changing a limit is now a reviewed code
+ * change.
+ *
+ * Enforced in two places, deliberately:
+ *  - `uploadMiddleware` passes these to multer's `fileSize`, which aborts while
+ *    the request is still streaming, before 50MB is buffered into memory.
+ *  - `fileValidation.maxBytesFor` re-checks after the content type is sniffed, so
+ *    the ceiling applied matches the file's *real* type rather than the
+ *    client-declared one.
+ *
+ * Keep them non-zero. `multer.memoryStorage()` buffers the whole file, so an
+ * absent cap is a straightforward memory-exhaustion vector.
+ */
+const UPLOAD_LIMITS = {
+  image: 50 * 1024 * 1024,
+  video: 50 * 1024 * 1024,
+  document: 10 * 1024 * 1024,
+} as const;
 
 /** Production-only invariants that a schema alone cannot express. */
 const fatal: string[] = [];
@@ -241,15 +264,33 @@ export const config = {
   },
 
   uploads: {
-    maxImageBytes: raw.MAX_IMAGE_UPLOAD_BYTES,
-    maxVideoBytes: raw.MAX_VIDEO_UPLOAD_BYTES,
-    maxDocumentBytes: raw.MAX_DOCUMENT_UPLOAD_BYTES,
-    allowLocalFallback: raw.ALLOW_LOCAL_UPLOAD_FALLBACK && !isProduction,
+    maxImageBytes: UPLOAD_LIMITS.image,
+    maxVideoBytes: UPLOAD_LIMITS.video,
+    maxDocumentBytes: UPLOAD_LIMITS.document,
+
+    /**
+     * Write to local disk when R2 is unavailable.
+     *
+     * Was `ALLOW_LOCAL_UPLOAD_FALLBACK && !isProduction`. With the env var gone
+     * the production guard is the entire rule — which is exactly what the old
+     * default (`true`) already evaluated to, so behaviour is unchanged: on in
+     * development, never on in production.
+     *
+     * It stays off in production on purpose: those files are lost on the next
+     * redeploy and the directory grows without bound. `mediaUpload` raises a 503
+     * instead, and `index.ts` only mounts the static `/uploads` route when this
+     * is enabled.
+     */
+    allowLocalFallback: !isProduction,
   },
 
   cache: {
     treeTtlSeconds: raw.CACHE_TREE_TTL_SECONDS,
     configTtlSeconds: raw.CACHE_CONFIG_TTL_SECONDS,
+  },
+
+  google: {
+    mapsApiKey: raw.GOOGLE_MAPS_API_KEY,
   },
 } as const;
 

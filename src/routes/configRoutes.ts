@@ -1,15 +1,27 @@
 // src/routes/configRoutes.ts
 import { Router } from 'express';
 import { readLimiter } from '../middleware/rateLimit';
-import { getGamificationConfig } from '../controllers/configController';
+import {
+  getGamificationConfig,
+  getCountriesConfig,
+  getReligionCasteConfig,
+  getCastesByReligion,
+  getMatrimonyConfig,
+} from '../controllers/configController';
 
 const router = Router();
 
 /**
  * Public on purpose: these are presentation constants (tier names, colours, point
- * values) that the login and signup screens may need before a session exists.
- * It contains no user data.
+ * values, country phone lengths, religion & caste taxonomy, matrimony options)
+ * that the login, signup, and onboarding screens may need before a session exists.
+ * They contain no user data.
  */
 router.get('/gamification', readLimiter, getGamificationConfig);
+router.get('/countries', readLimiter, getCountriesConfig);
+router.get('/religion-caste', readLimiter, getReligionCasteConfig);
+router.get('/castes', readLimiter, getCastesByReligion);
+router.get('/matrimony', readLimiter, getMatrimonyConfig);
 
 export default router;
+

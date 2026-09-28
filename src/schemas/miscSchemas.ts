@@ -23,7 +23,7 @@ export const listNotificationsSchema = {
         .pipe(z.enum(['READ', 'UNREAD']))
         .optional()
         .catch(undefined),
-      limit: limitQuery(50, 100),
+      limit: limitQuery(30, 30),
     })
     .strip(),
 };

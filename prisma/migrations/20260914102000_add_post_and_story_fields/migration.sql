@@ -1,0 +1,13 @@
+-- AlterEnum
+ALTER TYPE "ScoreReason" ADD VALUE 'POST_CREATE';
+ALTER TYPE "ScoreReason" ADD VALUE 'STORY_CREATE';
+
+-- AlterTable
+ALTER TABLE "Post" ADD COLUMN     "privacy" TEXT NOT NULL DEFAULT 'BOTH',
+ADD COLUMN     "taggedUserIds" TEXT[] DEFAULT ARRAY[]::TEXT[];
+
+-- AlterTable
+ALTER TABLE "Story" ADD COLUMN     "audience" TEXT NOT NULL DEFAULT 'BOTH',
+ADD COLUMN     "mentions" TEXT[] DEFAULT ARRAY[]::TEXT[],
+ADD COLUMN     "metadata" JSONB,
+ADD COLUMN     "treePin" BOOLEAN NOT NULL DEFAULT false;

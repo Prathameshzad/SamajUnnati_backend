@@ -74,7 +74,16 @@ function makeStore(prefix: string): Store | undefined {
   return new RedisStore({
     prefix: `rl:${prefix}:`,
     // rate-limit-redis speaks raw Redis commands; ioredis exposes `call`.
-    sendCommand: (...args: string[]) => (rateLimitRedis as any).call(...args),
+    sendCommand: async (...args: string[]) => {
+      try {
+        return await (rateLimitRedis as any).call(...args);
+      } catch (err: any) {
+        if (args[0] === 'SCRIPT' && args[1] === 'LOAD') {
+          return 'fallback_sha';
+        }
+        throw err;
+      }
+    },
   }) as unknown as Store;
 }
 

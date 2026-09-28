@@ -41,6 +41,7 @@ import relationRoutes from './routes/relationRoutes';
 import relationTypeRoutes from './routes/relationTypeRoutes';
 import notificationRoutes from './routes/notificationRoutes';
 import uploadRoutes from './routes/uploadRoutes';
+import mediaRoutes from './routes/mediaRoutes';
 import friendRoutes from './routes/friendRoutes';
 import messageRoutes from './routes/messageRoutes';
 import postRoutes from './routes/postRoutes';
@@ -49,6 +50,7 @@ import followRoutes from './routes/followRoutes';
 import matrimonyRoutes from './routes/matrimonyRoutes';
 import scoreRoutes from './routes/scoreRoutes';
 import configRoutes from './routes/configRoutes';
+import musicRoutes from './routes/musicRoutes';
 
 const app: Application = express();
 
@@ -81,14 +83,24 @@ app.use(latencyTracker);
 
 /**
  * gzip/brotli for responses above 1KB. The tree and config payloads are large,
- * repetitive JSON and compress by roughly an order of magnitude, which directly
- * reduces both latency and egress cost.
+ * repetitive JSON and compress by roughly an order of magnitude.
+ *
+ * IMPORTANT: Compression is explicitly skipped for upload endpoints.
+ * React Native's XHR (used for multipart uploads) does not always send an
+ * Accept-Encoding header. If we gzip the response, RN XHR receives raw
+ * compressed bytes but tries to read them as plain text, producing a
+ * "expected N bytes but received M" Content-Length mismatch and status=0.
  */
 app.use(
   compression({
     threshold: 1024,
     filter: (req, res) => {
+      // Never compress upload endpoint responses — avoids RN XHR Content-Length mismatch.
+      if (req.path.startsWith('/api/upload') || req.path.startsWith('/api/auth/register')) return false;
       if (req.headers['x-no-compression']) return false;
+      // Only compress if the client explicitly declares it can handle it.
+      const acceptEncoding = req.headers['accept-encoding'] || '';
+      if (!acceptEncoding) return false;
       return compression.filter(req, res);
     },
   })
@@ -154,6 +166,7 @@ app.use('/api/relations', relationRoutes);
 app.use('/api/relation-types', relationTypeRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/upload', uploadRoutes);
+app.use('/api/media', mediaRoutes);
 app.use('/api/friends', friendRoutes);
 app.use('/api/messages', messageRoutes);
 app.use('/api/posts', postRoutes);
@@ -161,6 +174,7 @@ app.use('/api/stories', storyRoutes);
 app.use('/api/follow', followRoutes);
 app.use('/api/matrimony', matrimonyRoutes);
 app.use('/api/scores', scoreRoutes);
+app.use('/api/music', musicRoutes);
 
 /**
  * Locally-stored media, only reachable when the local-disk fallback is enabled

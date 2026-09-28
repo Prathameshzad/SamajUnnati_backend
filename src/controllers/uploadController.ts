@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { uploadProfileImageToR2 } from '../lib/r2';
+import { uploadMedia } from '../lib/mediaUpload';
 
 export const uploadImage = async (req: Request, res: Response): Promise<Response | void> => {
     let file = (req as any).file as Express.Multer.File | undefined;
@@ -17,10 +17,12 @@ export const uploadImage = async (req: Request, res: Response): Promise<Response
     }
 
     try {
-        const url = await uploadProfileImageToR2(file);
+        const url = await uploadMedia(file, { folder: 'profile', allowedKinds: ['image'] });
         return res.json({ url });
-    } catch (error) {
+    } catch (error: any) {
         console.error('Upload error', error);
-        return res.status(500).json({ message: 'Failed to upload image' });
+        return res.status(error?.status || 500).json({ 
+            message: error?.message || 'Failed to upload image' 
+        });
     }
 };

@@ -851,8 +851,8 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
         { label: "पणजी", code: "PANAAJI", direction: "UP" },
       ],
       bottom: [
-        { label: "चुलतभाऊ", code: "CHULAT_BHAU", direction: "DOWN" },
-        { label: "चुलतबहीण", code: "CHULAT_BAHIN", direction: "DOWN" },
+        { label: "चुलतकाका", code: "CHULAT_KAKA", direction: "DOWN" },
+        { label: "चुलत आत्या", code: "CHULAT_AATYA", direction: "DOWN" },
       ],
     },
   },
@@ -873,8 +873,74 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
         { label: "पणजी", code: "PANAAJI", direction: "UP" },
       ],
       bottom: [
+        { label: "चुलतकाका", code: "CHULAT_KAKA", direction: "DOWN" },
+        { label: "चुलत आत्या", code: "CHULAT_AATYA", direction: "DOWN" },
+      ],
+    },
+  },
+  CHULAT_KAKA: {
+    xAxis: {
+      left: [
+        { label: "चुलतकाका", code: "CHULAT_KAKA", direction: "SAME" },
+        { label: "चुलत आत्या", code: "CHULAT_AATYA", direction: "SAME" },
+        { label: "काका", code: "KAKA", direction: "SAME" },
+      ],
+      right: [{ label: "चुलत काकी", code: "CHULAT_KAKI", direction: "SAME" }],
+    },
+    yAxis: {
+      top: [
+        { label: "चुलत आजोबा", code: "CHULAT_AJOBA", direction: "UP" },
+        { label: "चुलत आजी", code: "CHULAT_AAJI", direction: "UP" },
+      ],
+      bottom: [
         { label: "चुलतभाऊ", code: "CHULAT_BHAU", direction: "DOWN" },
         { label: "चुलतबहीण", code: "CHULAT_BAHIN", direction: "DOWN" },
+      ],
+    },
+  },
+  CHULAT_KAKI: {
+    xAxis: {
+      left: [{ label: "चुलतकाका", code: "CHULAT_KAKA", direction: "SAME" }],
+      right: [{ label: "नातेवाईक", code: "NATEVAIK", direction: "SAME" }],
+    },
+    yAxis: {
+      top: [{ label: "नातेवाईक", code: "NATEVAIK", direction: "UP" }],
+      bottom: [
+        { label: "चुलतभाऊ", code: "CHULAT_BHAU", direction: "DOWN" },
+        { label: "चुलतबहीण", code: "CHULAT_BAHIN", direction: "DOWN" },
+      ],
+    },
+  },
+  CHULAT_AATYA: {
+    xAxis: {
+      left: [{ label: "चुलत फूफा", code: "CHULAT_FUA", direction: "SAME" }],
+      right: [
+        { label: "चुलतकाका", code: "CHULAT_KAKA", direction: "SAME" },
+        { label: "चुलत आत्या", code: "CHULAT_AATYA", direction: "SAME" },
+        { label: "आत्या", code: "AATYA", direction: "SAME" },
+      ],
+    },
+    yAxis: {
+      top: [
+        { label: "चुलत आजोबा", code: "CHULAT_AJOBA", direction: "UP" },
+        { label: "चुलत आजी", code: "CHULAT_AAJI", direction: "UP" },
+      ],
+      bottom: [
+        { label: "चुलत आत्येभाऊ", code: "CHULAT_AATYA_BHAU", direction: "DOWN" },
+        { label: "चुलत आत्येबहीण", code: "CHULAT_AATYA_BAHIN", direction: "DOWN" },
+      ],
+    },
+  },
+  CHULAT_FUA: {
+    xAxis: {
+      left: [{ label: "नातेवाईक", code: "NATEVAIK", direction: "SAME" }],
+      right: [{ label: "चुलत आत्या", code: "CHULAT_AATYA", direction: "SAME" }],
+    },
+    yAxis: {
+      top: [{ label: "नातेवाईक", code: "NATEVAIK", direction: "UP" }],
+      bottom: [
+        { label: "चुलत आत्येभाऊ", code: "CHULAT_AATYA_BHAU", direction: "DOWN" },
+        { label: "चुलत आत्येबहीण", code: "CHULAT_AATYA_BAHIN", direction: "DOWN" },
       ],
     },
   },
@@ -2241,6 +2307,8 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
       top: [
         { label: "काका", code: "KAKA", direction: "UP" },
         { label: "काकी", code: "KAKI", direction: "UP" },
+        { label: "चुलतकाका", code: "CHULAT_KAKA", direction: "UP" },
+        { label: "चुलत काकी", code: "CHULAT_KAKI", direction: "UP" },
       ],
       bottom: [
         { label: "चुलत पुतण्या", code: "CHULAT_PUTANYA", direction: "DOWN" },
@@ -2268,10 +2336,12 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
       top: [
         { label: "काका", code: "KAKA", direction: "UP" },
         { label: "काकी", code: "KAKI", direction: "UP" },
+        { label: "चुलतकाका", code: "CHULAT_KAKA", direction: "UP" },
+        { label: "चुलत काकी", code: "CHULAT_KAKI", direction: "UP" },
       ],
       bottom: [
-        { label: "भाचा", code: "BHACHA", direction: "DOWN" },
-        { label: "भाची", code: "BHACHI", direction: "DOWN" },
+        { label: "चुलत भाचा", code: "CHULAT_BHACHA", direction: "DOWN" },
+        { label: "चुलत भाची", code: "CHULAT_BHACHI", direction: "DOWN" },
       ],
     },
   },
@@ -2289,6 +2359,8 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
       top: [
         { label: "आत्या आजी", code: "AATYA_AAJI", direction: "UP" },
         { label: "फुआ आजोबा", code: "FUA_AJOBA", direction: "UP" },
+        { label: "चुलत आत्या", code: "CHULAT_AATYA", direction: "UP" },
+        { label: "चुलत फूफा", code: "CHULAT_FUA", direction: "UP" },
       ],
       bottom: [
         { label: "चुलत भाचा", code: "CHULAT_BHACHA", direction: "DOWN" },
@@ -2310,6 +2382,8 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
       top: [
         { label: "आत्या आजी", code: "AATYA_AAJI", direction: "UP" },
         { label: "फुआ आजोबा", code: "FUA_AJOBA", direction: "UP" },
+        { label: "चुलत आत्या", code: "CHULAT_AATYA", direction: "UP" },
+        { label: "चुलत फूफा", code: "CHULAT_FUA", direction: "UP" },
       ],
       bottom: [
         { label: "चुलत भाचा", code: "CHULAT_BHACHA", direction: "DOWN" },
@@ -2949,6 +3023,8 @@ export const SPOUSE_PAIRS: [string, string][] = [
   ["FUA_AJOBA", "AATYA_AAJI"],
   ["FAU_AJOBA", "AATYA_AAJI"],
   ["CHULAT_AJOBA", "CHULAT_AAJI"],
+  ["CHULAT_KAKA", "CHULAT_KAKI"],
+  ["CHULAT_FUA", "CHULAT_AATYA"],
   ["CHULAT_AATYA_BHAU", "CHULAT_VAHINI"],
   ["CHULAT_DAJI", "CHULAT_AATYA_BAHIN"],
   ["CHULAT_MEVHANA", "CHULAT_MEVHANI"],
@@ -3010,15 +3086,19 @@ export const COUSIN_PARENT_MAP: Record<string, string[]> = {
     "KAKI",
     "CHULAT_AJOBA",
     "CHULAT_AAJI",
+    "CHULAT_KAKA",
+    "CHULAT_KAKI",
   ],
   CHULAT_BAHIN: [
     "KAKA",
     "KAKI",
     "CHULAT_AJOBA",
     "CHULAT_AAJI",
+    "CHULAT_KAKA",
+    "CHULAT_KAKI",
   ],
-  CHULAT_AATYA_BHAU: ["AATYA_AAJI", "FUA_AJOBA", "FAU_AJOBA", "CHULAT_AATYA_AAJOBA", "CHULAT_AATYA_AAJI"],
-  CHULAT_AATYA_BAHIN: ["AATYA_AAJI", "FUA_AJOBA", "FAU_AJOBA", "CHULAT_AATYA_AAJOBA", "CHULAT_AATYA_AAJI"],
+  CHULAT_AATYA_BHAU: ["AATYA_AAJI", "FUA_AJOBA", "FAU_AJOBA", "CHULAT_AATYA_AAJOBA", "CHULAT_AATYA_AAJI", "CHULAT_AATYA", "CHULAT_FUA"],
+  CHULAT_AATYA_BAHIN: ["AATYA_AAJI", "FUA_AJOBA", "FAU_AJOBA", "CHULAT_AATYA_AAJOBA", "CHULAT_AATYA_AAJI", "CHULAT_AATYA", "CHULAT_FUA"],
   ATYE_BHAU: ["AATYA", "FUA"],
   ATYE_BAHIN: ["AATYA", "FUA"],
 };
@@ -3048,6 +3128,7 @@ export const RELATION_LEVEL_MAP: Record<string, number> = {
   AJI_SASRA: 3, AJI_SASU: 3, AJOBA_SASRA: 3, AJOBA_SASU: 3,
   VADIL: 2, AAI: 2, SAVATR_VADIL: 2, SAVATR_AAI: 2,
   KAKA: 2, KAKI: 2, MAMA: 2, MAMI: 2, AATYA: 2, FUA: 2,
+  CHULAT_KAKA: 2, CHULAT_KAKI: 2, CHULAT_FUA: 2, CHULAT_AATYA: 2,
   MAVSHI: 2, MAVSA: 2, CHULTA: 2, CHULTI: 2,
   CHULAT_MAMA: 2, CHULAT_MAMI: 2, CHULAT_MAVSHA: 2, CHULAT_MAVSHI: 2, VYAHI: 2, VIHIN: 2,
   SASRA: 2, SASU: 2, MAMA_SASRA: 2, MAMI_SASU: 2, MAMI_SASRA: 2,
@@ -3097,27 +3178,23 @@ export const RELATION_X_ORDER: Record<string, number> = {
   // Gen 0 (root row) - SELF + SPOUSE (Husband/Male on Left, Wife/Female on Right)
   NAVRA: -10, BAYKO: 10,
 
-  // Gen +1 (sibling row) - Root blood family (Negative = Left of Center)
-  // Tier 1: Direct siblings & their spouses (Husband/Male on Left, Wife/Female on Right)
-  BHAU: -10, VAHINI: -9, DAJI_CHA_BHAU: -7.5, DAJI_CHI_BAHIN: -7, DAJI: -6, BAHIN: -5,
-  SAVATR_BHAU: -12, SAVATR_BAHIN: -8,
-
-  // Tier 2: Paternal cousins (Male on Left, Female on Right)
+  // Gen +1 (sibling row)
+  // Tier 1: Paternal cousins (Kaka & Aatya side - Left of Center, aligning with Kaka at -30 / Aatya at -35)
+  CHULAT_AATYA_BHAU: -45, CHULAT_AATYA_BAHIN: -42,
+  ATYE_BHAU: -38, ATYE_BAHIN: -35,
   CHULAT_BHAU: -30, CHULAT_VAHINI: -29, CHULAT_DAJI: -26, CHULAT_BAHIN: -25,
-  CHULAT_AATYA_BHAU: -38, CHULAT_AATYA_BAHIN: -36,
-  ATYE_BHAU: -35, ATYE_BAHIN: -32,
 
-  // Tier 3: Maternal cousins (Male on Left, Female on Right)
-  MAMI_BHAU: -50, MAMI_VAHINI: -49, MAMI_DAJI: -46, MAMI_BAHIN: -45,
-  CHULAT_MAME_BHAU: -48, CHULAT_MAME_BAHIN: -47,
-  MAV_BHAU: -55, MAV_VAHINI: -54, MAV_DAJI: -53, MAV_BAHIN: -52,
-  CHULAT_MAV_BHAU: -54, CHULAT_MAV_BAHIN: -53,
+  // Tier 2: Direct siblings & their spouses (Center, aligning with Vadil at -10 / Aai at +10)
+  SAVATR_BHAU: -15, SAVATR_BAHIN: -12,
+  BHAU: -10, VAHINI: -9, DAJI_CHA_BHAU: -7.5, DAJI_CHI_BAHIN: -7, DAJI: -6, BAHIN: -5,
 
-  // Gen +1 (sibling row) - Spouse family (Positive = Right of Center)
-  // Tier 1: Spouse direct siblings & spouses (Male on Left, Female on Right)
-  DIR_MOTHE: 10, DIR_CHOTE: 15, NANANDOI: 20, NANAND: 21, MEVHANA: 25, MEVHANI: 26,
-  // Tier 2: Spouse cousins & Sadu (Outward to the right)
-  SADU: 40, CHULTA_DIR: 45, CHULTA_NANAND: 50,
+  // Tier 3: Maternal cousins (Mama & Mavshi side - Right of Center, aligning with Mama at +30 / Mavshi at +40)
+  MAMI_BHAU: 30, MAMI_VAHINI: 31, CHULAT_MAME_BHAU: 32, CHULAT_MAME_BAHIN: 33, MAMI_DAJI: 34, MAMI_BAHIN: 35,
+  MAV_BHAU: 40, MAV_VAHINI: 41, CHULAT_MAV_BHAU: 42, CHULAT_MAV_BAHIN: 43, MAV_DAJI: 44, MAV_BAHIN: 45,
+
+  // Tier 4: Spouse family (Right of Center, aligning with Sasra at +60 / Sasu at +65)
+  DIR_MOTHE: 60, DIR_CHOTE: 61, NANANDOI: 62, NANAND: 63, MEVHANA: 64, MEVHANI: 65,
+  SADU: 66, SUNRI: 67, CHULTA_DIR: 68, CHULTA_NANAND: 69,
 
   // Tier 4: Friends (Furthest outer flanks)
   MITRA: -90, MAITRIN: 90,
@@ -3128,6 +3205,7 @@ export const RELATION_X_ORDER: Record<string, number> = {
   // Gen +2 (parent row) - LEFT = VADIL's side, RIGHT = AAI's side (Male on Left, Female on Right)
   VADIL: -10, AAI: 10, SAVATR_VADIL: -15, SAVATR_AAI: 15,
   KAKA: -30, KAKI: -25, FUA: -40, AATYA: -35, CHULTA: -45, CHULTI: -42,
+  CHULAT_KAKA: -48, CHULAT_KAKI: -47, CHULAT_FUA: -46.5, CHULAT_AATYA: -46,
   CHULAT_MAMA: 32, CHULAT_MAMI: 33,
   MAMA: 30, MAMI: 35, MAVSA: 40, MAVSHI: 45,
   CHULAT_MAVSHA: 42, CHULAT_MAVSHI: 43,

@@ -7,6 +7,8 @@ import { uploadMedia } from '../lib/mediaUpload';
 import type { ValidatedFile } from '../lib/fileValidation';
 import { badRequest, forbidden, notFound, unauthenticated } from '../lib/errors';
 import { createLogger } from '../lib/logger';
+import { awardPoints } from '../services/scoreService';
+import { getUserBadgeData } from '../services/badgeService';
 
 const log = createLogger('posts');
 
@@ -60,6 +62,7 @@ async function notifyPostLike(postOwnerId: string, likerId: string, postId: stri
     },
   });
   emitToUser(postOwnerId, 'notification:new', notif);
+  emitToUser(postOwnerId, 'notification', notif);
 }
 
 /** Best-effort "someone commented on your post" notification. See notifyPostLike. */
@@ -80,6 +83,7 @@ async function notifyPostComment(
     },
   });
   emitToUser(postOwnerId, 'notification:new', notif);
+  emitToUser(postOwnerId, 'notification', notif);
   emitToRoom(postId, 'post:comment', comment);
 }
 
@@ -88,7 +92,18 @@ export const createPost = async (req: AuthRequest, res: Response): Promise<Respo
   const userId = req.user?.id;
   if (!userId) throw unauthenticated();
 
-  const { caption, location } = req.body;
+  const {
+    caption,
+    location,
+    privacy,
+    taggedUserIds,
+    musicVideoId,
+    musicTitle,
+    musicArtist,
+    musicThumbnail,
+    musicHookStart,
+    musicHookDuration,
+  } = req.body;
   const files = (req.files as Express.Multer.File[]) || [];
 
   if (files.length === 0) {
@@ -108,11 +123,43 @@ export const createPost = async (req: AuthRequest, res: Response): Promise<Respo
     files.map((f) => uploadMedia(f, { validated: validatedMap?.get(f) }))
   );
 
+  let parsedTaggedIds: string[] = [];
+  if (Array.isArray(taggedUserIds)) {
+    parsedTaggedIds = taggedUserIds;
+  } else if (typeof taggedUserIds === 'string') {
+    try {
+      const parsed = JSON.parse(taggedUserIds);
+      parsedTaggedIds = Array.isArray(parsed) ? parsed : [];
+    } catch {
+      parsedTaggedIds = taggedUserIds ? taggedUserIds.split(',').map((s) => s.trim()).filter(Boolean) : [];
+    }
+  }
+
+  /**
+   * Defensive re-check even though `createPostSchema` already validates these
+   * as finite numbers: `toSafeSeconds` guarantees a NaN/Infinity value can
+   * never reach Prisma (it would fail as an invalid Postgres Int and surface
+   * as an opaque 500) regardless of how this field is called.
+   */
+  const toSafeSeconds = (value: unknown): number | null => {
+    if (value === undefined || value === null || value === '') return null;
+    const num = Number(value);
+    return Number.isFinite(num) ? num : null;
+  };
+
   const post = await prisma.post.create({
     data: {
       userId,
       caption: caption || null,
       location: location || null,
+      privacy: privacy || 'BOTH',
+      taggedUserIds: parsedTaggedIds,
+      musicVideoId: musicVideoId || null,
+      musicTitle: musicTitle || null,
+      musicArtist: musicArtist || null,
+      musicThumbnail: musicThumbnail || null,
+      musicHookStart: toSafeSeconds(musicHookStart),
+      musicHookDuration: toSafeSeconds(musicHookDuration),
       media: {
         create: uploadedUrls.map((url, index) => ({
           url,
@@ -127,6 +174,9 @@ export const createPost = async (req: AuthRequest, res: Response): Promise<Respo
       _count: { select: { likes: true, comments: true, shares: true } },
     },
   });
+
+  // Award XP for creating post (+15 XP)
+  awardPoints(userId, 'POST_CREATE').catch(() => {});
 
   return res.status(201).json({ ...post, isLiked: false, likeCount: 0, commentCount: 0, shareCount: 0 });
 };
@@ -215,11 +265,45 @@ export const getUserPosts = async (req: AuthRequest, res: Response): Promise<Res
 
   const canView = await canViewUserPosts(viewerId, userId);
 
-  const [postCount, followerCount, followingCount] = await Promise.all([
+  const [
+    postCount,
+    followerCount,
+    followingCount,
+    userCreatedRelations,
+    confirmedRelations,
+    badgeData,
+  ] = await Promise.all([
     prisma.post.count({ where: { userId, deletedAt: null } }),
     prisma.follow.count({ where: { followingId: userId, status: 'ACCEPTED' } }),
     prisma.follow.count({ where: { followerId: userId, status: 'ACCEPTED' } }),
+    prisma.relation.findMany({
+      where: { createdById: userId, deletedAt: null },
+      select: { fromUserId: true, toUserId: true },
+    }),
+    prisma.relation.findMany({
+      where: {
+        deletedAt: null,
+        status: 'CONFIRMED',
+        OR: [{ fromUserId: userId }, { toUserId: userId }],
+      },
+      select: { fromUserId: true, toUserId: true },
+    }),
+    getUserBadgeData(userId),
   ]);
+
+  const nodeSet = new Set<string>();
+  for (const r of userCreatedRelations) {
+    if (r.fromUserId && r.fromUserId !== userId) nodeSet.add(r.fromUserId);
+    if (r.toUserId && r.toUserId !== userId) nodeSet.add(r.toUserId);
+  }
+  const networkCount = Math.max(nodeSet.size, followerCount);
+
+  const approvedSet = new Set<string>();
+  for (const r of confirmedRelations) {
+    const partnerId = r.fromUserId === userId ? r.toUserId : r.fromUserId;
+    if (partnerId) approvedSet.add(partnerId);
+  }
+  const approvedCount = approvedSet.size || badgeData.approvedCount;
 
   // Check follow status for this viewer
   const followRecord = await prisma.follow.findUnique({
@@ -228,15 +312,34 @@ export const getUserPosts = async (req: AuthRequest, res: Response): Promise<Res
 
   const targetUser = await prisma.user.findUnique({
     where: { id: userId },
-    select: { id: true, firstName: true, lastName: true, photoUrl: true, isPrivate: true, bio: true, dateOfBirth: true, bloodGroup: true, education: true, occupation: true, maritalStatus: true, pincode: true, address: true, area: true },
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      photoUrl: true,
+      bannerUrl: true,
+      isPrivate: true,
+      bio: true,
+      dateOfBirth: true,
+      bloodGroup: true,
+      education: true,
+      occupation: true,
+      maritalStatus: true,
+      pincode: true,
+      address: true,
+      area: true,
+      community: true,
+      caste: true,
+      subcaste: true,
+      religion: true,
+    },
   });
 
   /**
    * PII fix: a private account's extended profile (bio, dateOfBirth,
-   * bloodGroup, education, occupation, maritalStatus, pincode, address, area)
+   * bloodGroup, education, occupation, maritalStatus, pincode, address)
    * was previously returned to *any* viewer regardless of `canView`. Narrow to
-   * the same public fields used elsewhere in this file (id, firstName,
-   * lastName, photoUrl, isPrivate) whenever the viewer is not allowed in.
+   * the public fields whenever the viewer is not allowed in.
    */
   const publicUser = !targetUser || canView
     ? targetUser
@@ -245,7 +348,13 @@ export const getUserPosts = async (req: AuthRequest, res: Response): Promise<Res
         firstName: targetUser.firstName,
         lastName: targetUser.lastName,
         photoUrl: targetUser.photoUrl,
+        bannerUrl: targetUser.bannerUrl,
         isPrivate: targetUser.isPrivate,
+        community: targetUser.community,
+        caste: targetUser.caste,
+        subcaste: targetUser.subcaste,
+        religion: targetUser.religion,
+        area: targetUser.area,
       };
 
   if (!canView) {
@@ -256,6 +365,9 @@ export const getUserPosts = async (req: AuthRequest, res: Response): Promise<Res
       postCount,
       followerCount,
       followingCount,
+      networkCount,
+      approvedCount,
+      badge: badgeData,
       user: publicUser,
       followStatus: followRecord?.status ?? 'NONE',
     });
@@ -297,6 +409,9 @@ export const getUserPosts = async (req: AuthRequest, res: Response): Promise<Res
     postCount,
     followerCount,
     followingCount,
+    networkCount,
+    approvedCount,
+    badge: badgeData,
     user: publicUser,
     followStatus: followRecord?.status ?? 'NONE',
   });

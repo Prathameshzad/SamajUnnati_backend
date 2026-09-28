@@ -1,6 +1,6 @@
 // src/routes/authRoutes.ts
 import { Router } from 'express';
-import { checkPhone, registerUser, requestOtp, verifyOtp } from '../controllers/authController';
+import { checkPhone, registerUser, requestOtp, verifyOtp, geocodeLocation } from '../controllers/authController';
 import { uploadProfileImage } from '../middleware/uploadMiddleware';
 import { validate } from '../middleware/validate';
 import { asyncHandler } from '../lib/asyncHandler';
@@ -62,4 +62,18 @@ router.post(
   asyncHandler(registerUser)
 );
 
+/**
+ * GET /api/auth/geocode?pincode=411001
+ * GET /api/auth/geocode?lat=18.5204&lng=73.8567
+ *
+ * Public (no token required) — called before the user has registered.
+ * The per-IP rate-limit is sufficient protection here.
+ */
+router.get(
+  '/geocode',
+  authIpLimiter,
+  asyncHandler(geocodeLocation)
+);
+
 export default router;
+

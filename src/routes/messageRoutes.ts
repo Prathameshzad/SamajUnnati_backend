@@ -19,19 +19,34 @@ import {
   blockUser,
   unblockUser,
   getBlockedUsers,
+  updateGroupSettings,
+  updateMemberRole,
+  removeGroupMember,
+  leaveGroup,
+  createInviteLink,
+  revokeInviteLink,
+  previewInvite,
+  joinViaInvite,
+  listJoinRequests,
+  resolveJoinRequest,
 } from '../controllers/messageController';
 import {
   addGroupMemberSchema,
   blockUserSchema,
   contactsSchema,
   conversationIdSchema,
+  conversationMemberParamSchema,
   createGroupSchema,
   directConversationSchema,
   getMessagesSchema,
+  inviteCodeParamSchema,
   listConversationsSchema,
   messageIdSchema,
+  resolveJoinRequestSchema,
   sendMessageSchema,
   updateGroupSchema,
+  updateGroupSettingsSchema,
+  updateMemberRoleSchema,
 } from '../schemas/messageSchemas';
 
 const router = Router();
@@ -83,6 +98,74 @@ router.post(
   writeLimiter,
   validate(addGroupMemberSchema),
   asyncHandler(addGroupMember)
+);
+
+// Group permissions ("Member capabilities" screen)
+router.patch(
+  '/conversations/:conversationId/settings',
+  writeLimiter,
+  validate(updateGroupSettingsSchema),
+  asyncHandler(updateGroupSettings)
+);
+
+// Member management: promote/demote, remove, leave
+router.patch(
+  '/conversations/:conversationId/members/:memberUserId/role',
+  writeLimiter,
+  validate(updateMemberRoleSchema),
+  asyncHandler(updateMemberRole)
+);
+router.delete(
+  '/conversations/:conversationId/members/:memberUserId',
+  writeLimiter,
+  validate(conversationMemberParamSchema),
+  asyncHandler(removeGroupMember)
+);
+router.post(
+  '/conversations/:conversationId/leave',
+  writeLimiter,
+  validate(conversationIdSchema),
+  asyncHandler(leaveGroup)
+);
+
+// Invite links
+router.post(
+  '/conversations/:conversationId/invite',
+  writeLimiter,
+  validate(conversationIdSchema),
+  asyncHandler(createInviteLink)
+);
+router.delete(
+  '/conversations/:conversationId/invite',
+  writeLimiter,
+  validate(conversationIdSchema),
+  asyncHandler(revokeInviteLink)
+);
+router.get(
+  '/invite/:code',
+  readLimiter,
+  validate(inviteCodeParamSchema),
+  asyncHandler(previewInvite)
+);
+router.post(
+  '/invite/:code/join',
+  writeLimiter,
+  validate(inviteCodeParamSchema),
+  asyncHandler(joinViaInvite)
+);
+
+// Join-request approval queue ("Approve new members")
+router.get(
+  '/conversations/:conversationId/join-requests',
+  readLimiter,
+  validate(conversationIdSchema),
+  asyncHandler(listJoinRequests)
+);
+router.patch(
+  '/conversations/:conversationId/join-requests/:requestId',
+  writeLimiter,
+  validate(resolveJoinRequestSchema),
+  asyncHandler(resolveJoinRequest)
 );
 
 // Messages within a conversation

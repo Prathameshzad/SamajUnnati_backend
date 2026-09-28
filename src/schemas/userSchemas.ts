@@ -3,11 +3,17 @@ import { z } from 'zod';
 import { boundedText, dateStringField, uuidString, TEXT_LIMITS } from './common';
 
 const photoUrlField = z
-  .string()
-  .trim()
-  .max(TEXT_LIMITS.url)
-  .url('must be a valid URL')
-  .refine((value) => /^https?:\/\//i.test(value), { message: 'must be an http(s) URL' })
+  .union([
+    z
+      .string()
+      .trim()
+      .max(TEXT_LIMITS.url)
+      .url('must be a valid URL')
+      .refine((value) => /^https?:\/\//i.test(value), { message: 'must be an http(s) URL' }),
+    z.literal(''),
+    z.null(),
+  ])
+  .transform((value) => (value === '' ? null : value))
   .optional();
 
 /**
@@ -51,7 +57,7 @@ export const updateMeSchema = {
       subcaste: boundedText(TEXT_LIMITS.shortField),
       dateOfBirth: dateStringField,
       bloodGroup: boundedText(16),
-      gender: z.enum(['MALE', 'FEMALE', 'male', 'female']).optional(),
+      gender: z.enum(['MALE', 'FEMALE', 'OTHER', 'male', 'female', 'other']).optional(),
 
       appLanguage: z.string().trim().max(10).optional(),
       relationLanguage: z.string().trim().max(10).optional(),
@@ -71,6 +77,7 @@ export const updateMeSchema = {
       designation: boundedText(TEXT_LIMITS.shortField),
 
       photoUrl: photoUrlField,
+      bannerUrl: photoUrlField,
     })
     .strip(),
 };

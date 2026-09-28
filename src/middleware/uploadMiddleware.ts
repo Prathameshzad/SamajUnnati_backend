@@ -49,7 +49,9 @@ function declaredTypeFilter(allowed: readonly FileKind[]) {
       (allowed.includes('document') && declared === 'application/pdf') ||
       // Some clients send a generic type; content sniffing will settle it.
       declared === '' ||
-      declared === 'application/octet-stream';
+      declared === 'application/octet-stream' ||
+      declared === 'binary/octet-stream' ||
+      declared === 'application/binary';
 
     if (!permitted) {
       cb(badRequest('Unsupported file type'));

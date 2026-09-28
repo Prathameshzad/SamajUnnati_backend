@@ -75,7 +75,7 @@ export class OtpService {
    */
   static async sendOtp(
     phone: string,
-    type: 'LOGIN' | 'REGISTER' | 'RESEND' = 'LOGIN'
+    type: 'LOGIN' | 'REGISTER' | 'RESEND' | 'CHANGE_PHONE' = 'LOGIN'
   ): Promise<SendOtpResult> {
     const rateCheck = await this.checkRateLimit(phone);
     if (rateCheck.rateLimited) {
@@ -106,7 +106,7 @@ export class OtpService {
     // put a live credential into log storage and anywhere logs were shipped.
     log.info({ phone: maskPhone(phone), type, ttlSeconds: config.otp.ttlSeconds }, 'otp issued');
 
-    await RabbitMQService.publishOtp(phone, code, type);
+    await RabbitMQService.publishOtp(phone, code, type === 'CHANGE_PHONE' ? 'RESEND' : type);
 
     return {
       success: true,

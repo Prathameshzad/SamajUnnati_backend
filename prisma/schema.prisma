@@ -11,6 +11,7 @@ model User {
   phone                               String?              @unique
   email                               String?              @unique
   photoUrl                            String?
+  bannerUrl                           String?
   address                             String?
   pincode                             String?
   designation                         String?
@@ -46,6 +47,8 @@ model User {
   conversationMembers                 ConversationMember[]
   following                           Follow[]             @relation("Follower")
   followers                           Follow[]             @relation("Following")
+  groupJoinRequests                   GroupJoinRequest[]   @relation("GroupJoinRequestUser")
+  resolvedGroupJoinRequests           GroupJoinRequest[]   @relation("GroupJoinRequestResolver")
   managedMatrimonyProfiles            MatrimonyProfile[]   @relation("ManagedMatrimonyProfiles")
   matrimonyProfile                    MatrimonyProfile?
   sentMessages                        Message[]            @relation("MessageSender")
@@ -163,22 +166,32 @@ model Notification {
 }
 
 model Post {
-  id            String         @id @default(uuid())
-  userId        String
-  caption       String?
-  location      String?
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
-  deletedAt     DateTime?
-  notifications Notification[]
-  user          User           @relation(fields: [userId], references: [id])
-  comments      PostComment[]
-  likes         PostLike[]
-  media         PostMedia[]
-  shares        PostShare[]
+  id              String         @id @default(uuid())
+  userId          String
+  caption         String?
+  location        String?
+  privacy         String         @default("BOTH")
+  taggedUserIds   String[]       @default([])
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  deletedAt       DateTime?
+  // Music attachment (YouTube-backed)
+  musicVideoId    String?        // YouTube videoId e.g. "dQw4w9WgXcW"
+  musicTitle      String?        // Song title
+  musicArtist     String?        // Artist / channel name
+  musicThumbnail  String?        // Artwork URL (YouTube thumbnail)
+  musicHookStart  Int?           // Hook start offset in seconds
+  musicHookDuration Int?         // Clip length in seconds (15 or 30)
+  notifications   Notification[]
+  user            User           @relation(fields: [userId], references: [id])
+  comments        PostComment[]
+  likes           PostLike[]
+  media           PostMedia[]
+  shares          PostShare[]
 
   @@index([userId, createdAt])
   @@index([createdAt])
+  @@index([musicVideoId])
 }
 
 model PostMedia {
@@ -234,19 +247,31 @@ model PostShare {
 }
 
 model Story {
-  id        String      @id @default(uuid())
-  userId    String
-  mediaUrl  String
-  mediaType MediaType
-  caption   String?
-  expiresAt DateTime
-  createdAt DateTime    @default(now())
-  deletedAt DateTime?
-  user      User        @relation(fields: [userId], references: [id])
-  views     StoryView[]
+  id              String      @id @default(uuid())
+  userId          String
+  mediaUrl        String
+  mediaType       MediaType
+  caption         String?
+  audience        String      @default("BOTH")
+  treePin         Boolean     @default(false)
+  mentions        String[]    @default([])
+  metadata        Json?
+  expiresAt       DateTime
+  createdAt       DateTime    @default(now())
+  deletedAt       DateTime?
+  // Music attachment (YouTube-backed)
+  musicVideoId    String?     // YouTube videoId
+  musicTitle      String?     // Song title
+  musicArtist     String?     // Artist / channel name
+  musicThumbnail  String?     // Artwork URL
+  musicHookStart  Int?        // Hook start offset in seconds
+  musicHookDuration Int?      // Clip length in seconds (15 or 30)
+  user            User        @relation(fields: [userId], references: [id])
+  views           StoryView[]
 
   @@index([userId, expiresAt])
   @@index([expiresAt])
+  @@index([musicVideoId])
 }
 
 model StoryView {
@@ -289,6 +314,32 @@ model Conversation {
   members     ConversationMember[]
   messages    Message[]
 
+  /**
+   * Group permission flags ("Member capabilities" screen). All default to the
+   * pre-existing behaviour: `updateGroupInfo`/`addGroupMember` were hard admin-only
+   * gates, so the settings default matches that (members cannot edit info or add
+   * members out of the box) except messaging, which every member could already do.
+   */
+  allowMembersEditInfo     Boolean @default(false)
+  allowMembersSendMessages Boolean @default(true)
+  allowMembersAddMembers   Boolean @default(false)
+  /**
+   * When true, member-added joins still land ACTIVE; only invite-link joins need approval.
+   */
+  approveNewMembers        Boolean @default(false)
+
+  /**
+   * Seconds after which a message is treated as expired; null = disappearing messages off.
+   */
+  disappearingMessagesSeconds Int?
+
+  /**
+   * Shareable join code. Null = no active invite link (never generated, or revoked).
+   */
+  inviteCode String? @unique
+
+  joinRequests GroupJoinRequest[]
+
   @@index([createdById])
   @@index([category])
 }
@@ -305,6 +356,28 @@ model ConversationMember {
 
   @@unique([conversationId, userId])
   @@index([userId])
+}
+
+/**
+ * A request to join a group via invite link, when the group has
+ * `approveNewMembers` on. Re-requesting after a rejection resets the same row
+ * back to PENDING rather than accumulating history — there is exactly one
+ * live decision to make per (conversation, user) pair at any time.
+ */
+model GroupJoinRequest {
+  id             String                 @id @default(uuid())
+  conversationId String
+  userId         String
+  status         GroupJoinRequestStatus @default(PENDING)
+  createdAt      DateTime               @default(now())
+  resolvedAt     DateTime?
+  resolvedById   String?
+  conversation   Conversation           @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user           User                   @relation("GroupJoinRequestUser", fields: [userId], references: [id], onDelete: Cascade)
+  resolvedBy     User?                  @relation("GroupJoinRequestResolver", fields: [resolvedById], references: [id])
+
+  @@unique([conversationId, userId])
+  @@index([conversationId, status])
 }
 
 model Message {
@@ -547,6 +620,8 @@ enum ScoreReason {
   REMOVE_ALIVE
   REMOVE_DECEASED
   REMOVE_RELATION
+  POST_CREATE
+  STORY_CREATE
 }
 
 enum Gender {
@@ -593,6 +668,12 @@ enum MemberRole {
   MEMBER
 }
 
+enum GroupJoinRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
 enum MessageType {
   TEXT
   MEDIA
@@ -610,3 +691,4 @@ enum InterestStatus {
   SUPER_INTERESTED
   REJECTED
 }
+

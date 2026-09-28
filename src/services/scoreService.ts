@@ -72,7 +72,7 @@ export async function awardPoints(
       data: {
         userId: upserted.id,
         points: delta,
-        reason,
+        reason: reason as any,
         relationId: relationId ?? null,
       },
     });
@@ -118,7 +118,7 @@ export async function deductPoints(
       data: {
         userId: existing.id,
         points: -pointsToDeduct,
-        reason,
+        reason: reason as any,
         relationId: relationId ?? null,
       },
     });
@@ -159,7 +159,7 @@ export interface UserScoreData {
 }
 
 export async function getUserScore(userId: string): Promise<UserScoreData> {
-  const score = await prisma.userScore.findUnique({
+  let score = await prisma.userScore.findUnique({
     where: { userId },
     select: {
       total: true,
@@ -171,6 +171,76 @@ export async function getUserScore(userId: string): Promise<UserScoreData> {
       },
     },
   });
+
+  if (!score) {
+    // Self-healing: compute score from existing relations, posts, and stories
+    const [relations, postCount, storyCount] = await Promise.all([
+      prisma.relation.findMany({
+        where: { OR: [{ createdById: userId }, { fromUserId: userId }], deletedAt: null },
+        select: { id: true, status: true, toUser: { select: { isAlive: true } } },
+      }),
+      prisma.post.count({ where: { userId, deletedAt: null } }),
+      prisma.story.count({ where: { userId, deletedAt: null } }),
+    ]);
+
+    if (relations.length > 0 || postCount > 0 || storyCount > 0) {
+      let initialTotal = postCount * SCORE_POINTS.POST_CREATE + storyCount * SCORE_POINTS.STORY_CREATE;
+      const initialEvents: { points: number; reason: ScoreReason; relationId?: string }[] = [];
+
+      for (const rel of relations) {
+        const isAlive = rel.toUser ? rel.toUser.isAlive !== false : true;
+        const addReason: ScoreReason = isAlive ? 'ADD_ALIVE' : 'ADD_DECEASED';
+        initialTotal += SCORE_POINTS[addReason];
+        initialEvents.push({ points: SCORE_POINTS[addReason], reason: addReason, relationId: rel.id });
+
+        if (rel.status === 'CONFIRMED') {
+          initialTotal += SCORE_POINTS.RELATION_APPROVED;
+          initialEvents.push({ points: SCORE_POINTS.RELATION_APPROVED, reason: 'RELATION_APPROVED', relationId: rel.id });
+        }
+      }
+
+      if (postCount > 0) {
+        initialEvents.push({ points: postCount * SCORE_POINTS.POST_CREATE, reason: 'POST_CREATE' });
+      }
+      if (storyCount > 0) {
+        initialEvents.push({ points: storyCount * SCORE_POINTS.STORY_CREATE, reason: 'STORY_CREATE' });
+      }
+
+      const initialLevel = calculateLevel(initialTotal);
+
+      score = await prisma.$transaction(async (tx) => {
+        const created = await tx.userScore.upsert({
+          where: { userId },
+          create: { userId, total: initialTotal, level: initialLevel },
+          update: { total: initialTotal, level: initialLevel },
+        });
+
+        if (initialEvents.length > 0) {
+          await tx.scoreEvent.createMany({
+            data: initialEvents.map((ev) => ({
+              userId: created.id,
+              points: ev.points,
+              reason: ev.reason as any,
+              relationId: ev.relationId ?? null,
+            })),
+          });
+        }
+
+        return tx.userScore.findUnique({
+          where: { userId },
+          select: {
+            total: true,
+            level: true,
+            events: {
+              select: { id: true, points: true, reason: true, relationId: true, createdAt: true },
+              orderBy: { createdAt: 'desc' },
+              take: 20,
+            },
+          },
+        });
+      });
+    }
+  }
 
   if (!score) {
     return { total: 0, level: 1, nextLevelAt: LEVEL_THRESHOLDS[1], recentEvents: [] };

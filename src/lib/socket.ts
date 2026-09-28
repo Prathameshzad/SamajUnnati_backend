@@ -34,6 +34,38 @@ interface SocketUser {
   phone: string;
 }
 
+/**
+ * Online presence.
+ *
+ * Tracked as a ref-count per user rather than a boolean, because one user can
+ * have multiple sockets open at once (a phone and a tablet, or two app
+ * instances). The user only becomes "offline" once every one of their sockets
+ * has disconnected — using a plain Set of userIds and deleting on any single
+ * disconnect would flicker a still-connected user to offline whenever their
+ * *other* device dropped.
+ */
+const onlineUserRefCounts = new Map<string, number>();
+
+const isOnline = (userId: string): boolean => (onlineUserRefCounts.get(userId) ?? 0) > 0;
+
+function markOnline(userId: string): void {
+  onlineUserRefCounts.set(userId, (onlineUserRefCounts.get(userId) ?? 0) + 1);
+}
+
+/** Returns true if this was the transition from online to offline (last socket closed). */
+function markOffline(userId: string): boolean {
+  const next = (onlineUserRefCounts.get(userId) ?? 1) - 1;
+  if (next <= 0) {
+    onlineUserRefCounts.delete(userId);
+    return true;
+  }
+  onlineUserRefCounts.set(userId, next);
+  return false;
+}
+
+/** Current online user IDs, for a freshly-connecting client to seed its UI without waiting for individual events. */
+export const getOnlineUserIds = (): string[] => Array.from(onlineUserRefCounts.keys());
+
 /** Typed accessor for the authenticated user attached during the handshake. */
 const socketUser = (socket: Socket): SocketUser | undefined => (socket.data as any).user;
 
@@ -107,7 +139,11 @@ export const initSocket = (server: HttpServer): Server => {
     socket.join(user.id);
     log.debug({ socketId: socket.id, userId: user.id }, 'socket connected');
 
-    // Join every conversation this user is genuinely a member of.
+    // Join every conversation this user is genuinely a member of. Tracked in a
+    // mutable set (not just `socket.rooms`) because Socket.IO has already
+    // removed a socket from its rooms by the time the `disconnect` event fires,
+    // so this is the only record left of which rooms to announce presence into.
+    const joinedConversationIds = new Set<string>();
     try {
       const memberships = await prisma.conversationMember.findMany({
         where: { userId: user.id },
@@ -115,10 +151,35 @@ export const initSocket = (server: HttpServer): Server => {
       });
       for (const membership of memberships) {
         socket.join(membership.conversationId);
+        joinedConversationIds.add(membership.conversationId);
       }
     } catch (err) {
       log.error({ err, userId: user.id }, 'failed to join conversation rooms');
     }
+
+    /**
+     * Presence ("Active now" in the chat header). The transition is only
+     * announced on the first socket for this user (see `markOnline`/`markOffline`
+     * ref-counting above) — a second tab/device connecting must not re-announce
+     * "online" to everyone, since the user never went offline in the first place.
+     */
+    const wasAlreadyOnline = isOnline(user.id);
+    markOnline(user.id);
+    if (!wasAlreadyOnline) {
+      for (const conversationId of joinedConversationIds) {
+        socket.to(conversationId).emit('presence:online', { userId: user.id });
+      }
+    }
+
+    /** Lets a freshly-opened chat screen ask "is the other person online right now" without waiting for an event. */
+    socket.on('presence:query', (userIds: unknown) => {
+      if (!Array.isArray(userIds)) return;
+      const result: Record<string, boolean> = {};
+      for (const id of userIds) {
+        if (typeof id === 'string') result[id] = isOnline(id);
+      }
+      socket.emit('presence:snapshot', result);
+    });
 
     /**
      * Retained for backward compatibility with shipped app builds that still
@@ -144,6 +205,7 @@ export const initSocket = (server: HttpServer): Server => {
           return;
         }
         socket.join(conversationId);
+        joinedConversationIds.add(conversationId);
       } catch (err) {
         log.error({ err, userId: user.id }, 'conversation join failed');
       }
@@ -166,6 +228,13 @@ export const initSocket = (server: HttpServer): Server => {
 
     socket.on('disconnect', (reason) => {
       log.debug({ socketId: socket.id, userId: user.id, reason }, 'socket disconnected');
+
+      const becameOffline = markOffline(user.id);
+      if (becameOffline) {
+        for (const conversationId of joinedConversationIds) {
+          socket.to(conversationId).emit('presence:offline', { userId: user.id });
+        }
+      }
     });
   });
 

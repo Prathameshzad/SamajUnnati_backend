@@ -53,6 +53,7 @@ export const followUser = async (req: AuthRequest, res: Response) => {
       },
     });
     emitToUser(followingId, 'notification:new', notif);
+    emitToUser(followingId, 'notification', notif);
   } catch (err) {
     log.error({ err, followerId, followingId }, 'follow notification failed');
   }
@@ -101,6 +102,7 @@ export const acceptFollowRequest = async (req: AuthRequest, res: Response) => {
       },
     });
     emitToUser(follow.followerId, 'notification:new', notif);
+    emitToUser(follow.followerId, 'notification', notif);
   } catch (err) {
     log.error({ err, userId, followerId: follow.followerId }, 'accept follow notification failed');
   }

@@ -8,6 +8,12 @@
 -- before applying this migration, then this migration becomes a no-op
 -- (CREATE INDEX IF NOT EXISTS skips already-created indexes).
 
+-- Ensure columns exist before indexing
+ALTER TABLE "Relation" ADD COLUMN IF NOT EXISTS "createdById" TEXT;
+ALTER TABLE "Relation" ADD COLUMN IF NOT EXISTS "deletedAt" TIMESTAMP(3);
+ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "worldX" DOUBLE PRECISION;
+ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "worldY" DOUBLE PRECISION;
+
 -- Relation.createdById had no index at all, despite being filtered on directly
 -- in listRelations / getRequests / getRelationCounts / badgeService
 -- (`createdById: userId`). Every one of those was a sequential scan.

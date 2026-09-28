@@ -1,11 +1,16 @@
-// src/routes/userRoutes.ts
 import { Router } from 'express';
-import { getMe, updateMe, getUserById } from '../controllers/userController';
+import {
+  getMe,
+  updateMe,
+  getUserById,
+  requestChangePhoneOtp,
+  verifyChangePhoneOtp,
+} from '../controllers/userController';
 import { authMiddleware } from '../middleware/authMiddleware';
 import { uploadProfileImage } from '../middleware/uploadMiddleware';
 import { validate } from '../middleware/validate';
 import { asyncHandler } from '../lib/asyncHandler';
-import { readLimiter, writeLimiter } from '../middleware/rateLimit';
+import { readLimiter, writeLimiter, otpVerifyLimiter } from '../middleware/rateLimit';
 import { updateMeSchema, userIdParamSchema } from '../schemas/userSchemas';
 
 const router = Router();
@@ -19,6 +24,20 @@ router.put(
   ...uploadProfileImage,
   validate(updateMeSchema),
   asyncHandler(updateMe)
+);
+
+router.post(
+  '/change-phone/request-otp',
+  authMiddleware,
+  writeLimiter,
+  asyncHandler(requestChangePhoneOtp)
+);
+
+router.post(
+  '/change-phone/verify-otp',
+  authMiddleware,
+  otpVerifyLimiter,
+  asyncHandler(verifyChangePhoneOtp)
 );
 
 /**

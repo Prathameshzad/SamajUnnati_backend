@@ -21,8 +21,8 @@ interface UploadMediaOptions {
  * Uploads a media file and returns a URL.
  *
  * Changes from the previous version:
- *  - The local-disk fallback is now gated on ALLOW_LOCAL_UPLOAD_FALLBACK and is
- *    force-disabled in production. Previously any R2 hiccup silently wrote to the
+ *  - The local-disk fallback is gated on `config.uploads.allowLocalFallback`,
+ *    which is on only outside production. Previously any R2 hiccup silently wrote to the
  *    container filesystem: the data is lost on redeploy, disk usage is unbounded,
  *    and it does not work at all across multiple instances (a file written by one
  *    replica 404s when the next request hits another). Failing loudly is correct.
