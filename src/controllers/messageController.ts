@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import prisma from '../lib/prisma';
 import { AuthRequest } from '../middleware/authMiddleware';
 import { emitToUser, emitToRoom } from '../lib/socket';
+import { PUSH_CHANNELS, sendToUsers } from '../services/pushService';
 import { uploadMedia } from '../lib/mediaUpload';
 import { badRequest, conflict, forbidden, notFound, unauthenticated } from '../lib/errors';
 import { createLogger } from '../lib/logger';
@@ -449,7 +450,10 @@ export const sendMessage = async (req: AuthRequest, res: Response) => {
 
   const membership = await prisma.conversationMember.findUnique({
     where: { conversationId_userId: { conversationId, userId } },
-    include: { conversation: { select: { isGroup: true, allowMembersSendMessages: true } } },
+    // `name` is needed for the push notification title on group chats.
+    include: {
+      conversation: { select: { isGroup: true, name: true, allowMembersSendMessages: true } },
+    },
   });
   if (!membership) throw forbidden('Not a member of this conversation');
 
@@ -505,20 +509,138 @@ export const sendMessage = async (req: AuthRequest, res: Response) => {
 
   emitToRoom(conversationId, 'message:new', message);
 
-  // Also emit to members' individual user rooms so clients not yet joined to this conversation room receive it immediately
-  prisma.conversationMember.findMany({
-    where: { conversationId, userId: { not: userId } },
-    select: { userId: true },
-  }).then((members) => {
-    for (const m of members) {
-      emitToUser(m.userId, 'message:new', message);
-    }
-  }).catch((err) => {
-    log.error({ err, conversationId }, 'failed to emit message:new to members');
-  });
+  /**
+   * Fan the message out to the other members over both transports.
+   *
+   * Socket: so clients not yet joined to this conversation room still update
+   * their chat list immediately.
+   *
+   * Push: so the message reaches a phone whose app is closed — the case the
+   * socket cannot cover at all.
+   *
+   * Deliberately not awaited. The message is already committed and returned to
+   * the sender; making them wait on a recipient lookup plus an FCM round-trip
+   * would put roughly 100-300ms of someone else's notification latency into every
+   * "send" tap.
+   */
+  prisma.conversationMember
+    .findMany({
+      where: { conversationId, userId: { not: userId } },
+      select: { userId: true },
+    })
+    .then(async (members) => {
+      const recipientIds = members.map((m) => m.userId);
+
+      for (const recipientId of recipientIds) {
+        emitToUser(recipientId, 'message:new', message);
+      }
+
+      await notifyNewMessage({
+        recipientIds,
+        conversationId,
+        isGroup: membership.conversation.isGroup,
+        groupName: membership.conversation.name,
+        senderName:
+          [message.sender?.firstName, message.sender?.lastName].filter(Boolean).join(' ') ||
+          'Someone',
+        senderPhotoUrl: message.sender?.photoUrl ?? null,
+        preview: messagePreview(message.content, mediaType),
+      });
+    })
+    .catch((err) => {
+      log.error({ err, conversationId }, 'failed to fan out message:new to members');
+    });
 
   return res.status(201).json(message);
 };
+
+/**
+ * One-line summary of a message for a notification body.
+ *
+ * Media messages have no text, so they get a labelled placeholder rather than an
+ * empty notification. Text is truncated because Android collapses the body to a
+ * single line anyway and FCM rejects payloads above 4KB — a pasted wall of text
+ * would otherwise fail the whole send.
+ */
+function messagePreview(
+  content: string | null,
+  mediaType: 'PHOTO' | 'VIDEO' | 'DOCUMENT' | null
+): string {
+  const text = content?.trim();
+  if (text) return text.length > 180 ? `${text.slice(0, 177)}...` : text;
+
+  switch (mediaType) {
+    case 'PHOTO':
+      return 'Sent a photo';
+    case 'VIDEO':
+      return 'Sent a video';
+    case 'DOCUMENT':
+      return 'Sent a document';
+    default:
+      return 'Sent a message';
+  }
+}
+
+/**
+ * Pushes a new chat message to every recipient's devices.
+ *
+ * No `Notification` row is written for chat, on purpose. Messages already have a
+ * dedicated surface — the conversation list and its unread counts — and the
+ * notifications screen is an activity feed for things that happen *to* the user
+ * (relation requests, approvals, follows). Writing a row per message would double
+ * the write volume on the hottest path in the app and bury approvals under chat
+ * noise. The push is the notification; the chat list is the record.
+ *
+ * Every recipient is pushed regardless of socket state. "Has a live socket" is not
+ * the same as "is looking at the screen" — Android keeps sockets alive briefly
+ * after backgrounding — so filtering on it here would drop notifications for
+ * exactly the backgrounded case this is meant to serve. The client suppresses the
+ * banner when it is genuinely in the foreground.
+ */
+async function notifyNewMessage(args: {
+  recipientIds: string[];
+  conversationId: string;
+  isGroup: boolean;
+  groupName: string | null;
+  senderName: string;
+  senderPhotoUrl: string | null;
+  preview: string;
+}): Promise<void> {
+  const {
+    recipientIds,
+    conversationId,
+    isGroup,
+    groupName,
+    senderName,
+    senderPhotoUrl,
+    preview,
+  } = args;
+
+  if (recipientIds.length === 0) return;
+
+  // In a group the chat name is the useful header and the sender belongs in the
+  // body; in a DM the sender *is* the conversation.
+  const title = isGroup ? groupName || 'Group chat' : senderName;
+  const body = isGroup ? `${senderName}: ${preview}` : preview;
+
+  await sendToUsers(recipientIds, {
+    title,
+    body,
+    channel: PUSH_CHANNELS.messages,
+    imageUrl: senderPhotoUrl ?? undefined,
+    // One tray entry per conversation. Ten messages in a row replace each other
+    // instead of stacking ten notifications.
+    collapseKey: `chat:${conversationId}`,
+    data: {
+      type: 'MESSAGE',
+      route: '/chat',
+      conversationId,
+      title,
+    },
+  }).catch((err) => {
+    log.warn({ err, conversationId }, 'message push failed');
+  });
+}
 
 // ─── Delete Message ───────────────────────────────────────────────────────────
 

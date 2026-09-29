@@ -2,7 +2,8 @@
 import { Response } from 'express';
 import prisma from '../lib/prisma';
 import { AuthRequest } from '../middleware/authMiddleware';
-import { emitToUser, emitToRoom } from '../lib/socket';
+import { emitToRoom } from '../lib/socket';
+import { createNotification } from '../services/notificationService';
 import { uploadMedia } from '../lib/mediaUpload';
 import type { ValidatedFile } from '../lib/fileValidation';
 import { badRequest, forbidden, notFound, unauthenticated } from '../lib/errors';
@@ -51,18 +52,20 @@ async function canViewUserPosts(viewerId: string, targetUserId: string): Promise
  * without a block.
  */
 async function notifyPostLike(postOwnerId: string, likerId: string, postId: string): Promise<void> {
-  const liker = await prisma.user.findUnique({ where: { id: likerId }, select: { firstName: true } });
-  const notif = await prisma.notification.create({
-    data: {
-      userId: postOwnerId,
-      type: 'POST_LIKE',
-      title: 'New Like',
-      message: `${liker?.firstName ?? 'Someone'} liked your post`,
-      postId,
-    },
+  const liker = await prisma.user.findUnique({
+    where: { id: likerId },
+    select: { firstName: true, photoUrl: true },
   });
-  emitToUser(postOwnerId, 'notification:new', notif);
-  emitToUser(postOwnerId, 'notification', notif);
+  // Persisted and delivered over the socket, but not pushed to the lock screen:
+  // see the `POST_LIKE` entry in notificationService's POLICY map for why.
+  await createNotification({
+    userId: postOwnerId,
+    type: 'POST_LIKE',
+    title: 'New Like',
+    message: `${liker?.firstName ?? 'Someone'} liked your post`,
+    postId,
+    imageUrl: liker?.photoUrl,
+  });
 }
 
 /** Best-effort "someone commented on your post" notification. See notifyPostLike. */
@@ -72,18 +75,20 @@ async function notifyPostComment(
   postId: string,
   comment: unknown
 ): Promise<void> {
-  const commenter = await prisma.user.findUnique({ where: { id: commenterId }, select: { firstName: true } });
-  const notif = await prisma.notification.create({
-    data: {
-      userId: postOwnerId,
-      type: 'POST_COMMENT',
-      title: 'New Comment',
-      message: `${commenter?.firstName ?? 'Someone'} commented on your post`,
-      postId,
-    },
+  const commenter = await prisma.user.findUnique({
+    where: { id: commenterId },
+    select: { firstName: true, photoUrl: true },
   });
-  emitToUser(postOwnerId, 'notification:new', notif);
-  emitToUser(postOwnerId, 'notification', notif);
+  await createNotification({
+    userId: postOwnerId,
+    type: 'POST_COMMENT',
+    title: 'New Comment',
+    message: `${commenter?.firstName ?? 'Someone'} commented on your post`,
+    postId,
+    imageUrl: commenter?.photoUrl,
+  });
+  // Live comment stream for anyone with the post open; unrelated to the
+  // recipient's notification above.
   emitToRoom(postId, 'post:comment', comment);
 }
 

@@ -3,6 +3,7 @@ import { Response } from 'express';
 import prisma from '../lib/prisma';
 import { FamilyGraphMatchEngine } from '../services/matrimonyEngine';
 import { OtpService } from '../services/otpService';
+import { createNotification } from '../services/notificationService';
 import { AuthRequest } from '../middleware/authMiddleware';
 import { badRequest, notFound, rateLimited, unauthenticated } from '../lib/errors';
 import { createLogger, maskPhone } from '../lib/logger';
@@ -463,15 +464,14 @@ export class MatrimonyController {
       }
     });
 
-    // Send Notification to the target
-    await prisma.notification.create({
-      data: {
-        userId: targetUserId,
-        type: 'MATRIMONY_PROFILE_APPROVAL',
-        title: 'Matrimony Profile Management',
-        message: `${parent?.firstName || 'Someone'} wants to create and manage a Matrimony Profile for you.`,
-        relationId: relation.id
-      }
+    // Send Notification to the target. Goes to the lock screen too: this is an
+    // approval request that blocks the requester until the target acts on it.
+    await createNotification({
+      userId: targetUserId,
+      type: 'MATRIMONY_PROFILE_APPROVAL',
+      title: 'Matrimony Profile Management',
+      message: `${parent?.firstName || 'Someone'} wants to create and manage a Matrimony Profile for you.`,
+      relationId: relation.id,
     });
 
     return res.json({ status: 'success', message: 'Approval request sent to the user' });

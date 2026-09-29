@@ -2,7 +2,7 @@
 import { Response } from 'express';
 import prisma from '../lib/prisma';
 import { AuthRequest } from '../middleware/authMiddleware';
-import { emitToUser } from '../lib/socket';
+import { createNotification } from '../services/notificationService';
 import { badRequest, notFound, unauthenticated } from '../lib/errors';
 import { createLogger } from '../lib/logger';
 
@@ -38,25 +38,28 @@ export const followUser = async (req: AuthRequest, res: Response) => {
   const status = target.isPrivate ? 'PENDING' : 'ACCEPTED';
   await prisma.follow.create({ data: { followerId, followingId, status } });
 
-  // Notify target. Notification delivery is best-effort and must not fail the
-  // follow action itself, so any error here is logged rather than thrown.
-  try {
-    const follower = await prisma.user.findUnique({ where: { id: followerId }, select: { firstName: true, lastName: true } });
-    const notif = await prisma.notification.create({
-      data: {
-        userId: followingId,
-        type: target.isPrivate ? 'FOLLOW_REQUEST' : ('FOLLOW_ACCEPTED' as any),
-        title: target.isPrivate ? 'Follow Request' : 'New Follower',
-        message: target.isPrivate
-          ? `${follower?.firstName ?? 'Someone'} wants to follow you`
-          : `${follower?.firstName ?? 'Someone'} started following you`,
-      },
+  // Notify target. `createNotification` persists, emits over the socket and
+  // dispatches the push, and never throws — the follow itself is already
+  // committed and must not be turned into a 500 by a delivery failure.
+  const follower = await prisma.user
+    .findUnique({
+      where: { id: followerId },
+      select: { firstName: true, lastName: true, photoUrl: true },
+    })
+    .catch((err) => {
+      log.warn({ err, followerId }, 'could not load follower for notification');
+      return null;
     });
-    emitToUser(followingId, 'notification:new', notif);
-    emitToUser(followingId, 'notification', notif);
-  } catch (err) {
-    log.error({ err, followerId, followingId }, 'follow notification failed');
-  }
+
+  await createNotification({
+    userId: followingId,
+    type: target.isPrivate ? 'FOLLOW_REQUEST' : 'FOLLOW_ACCEPTED',
+    title: target.isPrivate ? 'Follow Request' : 'New Follower',
+    message: target.isPrivate
+      ? `${follower?.firstName ?? 'Someone'} wants to follow you`
+      : `${follower?.firstName ?? 'Someone'} started following you`,
+    imageUrl: follower?.photoUrl,
+  });
 
   return res.json({ status: target.isPrivate ? 'REQUESTED' : 'FOLLOWED' });
 };
@@ -91,21 +94,20 @@ export const acceptFollowRequest = async (req: AuthRequest, res: Response) => {
   await prisma.follow.update({ where: { id }, data: { status: 'ACCEPTED' } });
 
   // Notify the follower. Best-effort: never fails the accept action.
-  try {
-    const me = await prisma.user.findUnique({ where: { id: userId }, select: { firstName: true } });
-    const notif = await prisma.notification.create({
-      data: {
-        userId: follow.followerId,
-        type: 'FOLLOW_ACCEPTED',
-        title: 'Follow Accepted',
-        message: `${me?.firstName ?? 'Someone'} accepted your follow request`,
-      },
+  const me = await prisma.user
+    .findUnique({ where: { id: userId }, select: { firstName: true, photoUrl: true } })
+    .catch((err) => {
+      log.warn({ err, userId }, 'could not load accepter for notification');
+      return null;
     });
-    emitToUser(follow.followerId, 'notification:new', notif);
-    emitToUser(follow.followerId, 'notification', notif);
-  } catch (err) {
-    log.error({ err, userId, followerId: follow.followerId }, 'accept follow notification failed');
-  }
+
+  await createNotification({
+    userId: follow.followerId,
+    type: 'FOLLOW_ACCEPTED',
+    title: 'Follow Accepted',
+    message: `${me?.firstName ?? 'Someone'} accepted your follow request`,
+    imageUrl: me?.photoUrl,
+  });
 
   return res.json({ message: 'Follow request accepted' });
 };

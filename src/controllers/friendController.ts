@@ -1,7 +1,7 @@
 import { Response } from 'express';
 import prisma from '../lib/prisma';
 import { AuthRequest } from '../middleware/authMiddleware';
-import { emitToUser } from '../lib/socket';
+import { createNotification } from '../services/notificationService';
 import { TreeCacheService } from '../services/treeCacheService';
 import { awardPoints, deductPoints } from '../services/scoreService';
 import { getRelationTypeRegistry, type RelationTypeRegistry } from '../services/relationTypeRegistry';
@@ -305,51 +305,12 @@ function normalizeVisualSide(side?: string | null): 'top' | 'bottom' | 'left' | 
   return null;
 }
 
-async function createNotification(args: {
-  userId: string;
-  type: 'RELATION_REQUEST' | 'RELATION_APPROVED' | 'RELATION_REJECTED';
-  title: string;
-  message: string;
-  relationId?: string;
-}) {
-  const { userId, type, title, message, relationId } = args;
-  try {
-    const notification = await prisma.notification.create({
-      data: {
-        userId,
-        type,
-        title,
-        message,
-        relationId: relationId ?? null,
-      },
-      // Narrowed from `include: { relation: { include: { fromUser: true, toUser: true } } }`,
-      // which pushed every column of both users into a websocket payload.
-      include: {
-        relation: {
-          select: {
-            id: true,
-            fromUserId: true,
-            toUserId: true,
-            status: true,
-            relationTypeCode: true,
-            category: true,
-            createdById: true,
-            customName: true,
-            customPhotoUrl: true,
-            fromUser: { select: RELATION_USER_SELECT },
-            toUser: { select: RELATION_USER_SELECT },
-          },
-        },
-      },
-    });
-
-    // emitToUser never throws, so no try/catch is needed around the emit itself.
-    emitToUser(userId, 'notification', notification);
-  } catch (err) {
-    // Notification delivery must never fail the action that triggered it.
-    log.error({ err, userId, type }, 'failed to create notification');
-  }
-}
+/**
+ * This file used to carry a byte-for-byte duplicate of `relationController`'s
+ * `createNotification`. Both are now the shared `services/notificationService`
+ * implementation, which additionally dispatches an FCM push so friend requests
+ * reach a closed app. Call sites take the same argument shape as before.
+ */
 
 /**
  * GET /friends/requests

@@ -2,7 +2,7 @@
 import { Response } from 'express';
 import prisma from '../lib/prisma';
 import { AuthRequest } from '../middleware/authMiddleware';
-import { emitToUser } from '../lib/socket';
+import { createNotification } from '../services/notificationService';
 import {
   RELATION_AXIS_CONFIG,
   SPOUSE_PAIRS,
@@ -100,52 +100,14 @@ function resolveRelationForViewer(
   return { code: rel.relationTypeCode, label: registry.label(rel.relationTypeCode, lang) };
 }
 
-async function createNotification(args: {
-  userId: string;
-  type: 'RELATION_REQUEST' | 'RELATION_APPROVED' | 'RELATION_REJECTED';
-  title: string;
-  message: string;
-  relationId?: string;
-}) {
-  const { userId, type, title, message, relationId } = args;
-  try {
-    const notification = await prisma.notification.create({
-      data: {
-        userId,
-        type,
-        title,
-        message,
-        relationId: relationId ?? null,
-      },
-      // Narrowed from `include: { relation: { include: { fromUser: true, toUser: true } } }`.
-      // That pushed every column of both users — email, address, dateOfBirth,
-      // bloodGroup — into a websocket payload delivered to the recipient.
-      include: {
-        relation: {
-          select: {
-            id: true,
-            fromUserId: true,
-            toUserId: true,
-            status: true,
-            relationTypeCode: true,
-            category: true,
-            createdById: true,
-            customName: true,
-            customPhotoUrl: true,
-            fromUser: { select: RELATION_USER_SELECT },
-            toUser: { select: RELATION_USER_SELECT },
-          },
-        },
-      },
-    });
-
-    // emitToUser never throws, so the previous try/catch around getIO() is gone.
-    emitToUser(userId, 'notification', notification);
-  } catch (err) {
-    // Notification delivery must never fail the action that triggered it.
-    log.error({ err, userId, type }, 'failed to create notification');
-  }
-}
+/**
+ * Notification creation now lives in `services/notificationService`, which
+ * persists the row, emits it over Socket.IO *and* dispatches an FCM push so it
+ * reaches the device when the app is closed. The local copy of this helper only
+ * did the first two, and an identical copy existed in `friendController`.
+ *
+ * Call sites are unchanged — the imported function takes the same shape.
+ */
 
 function resolveNodeForViewer(nodeUser: any, relation: any, viewerUserId: string) {
   if (!relation) return nodeUser;

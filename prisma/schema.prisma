@@ -63,6 +63,7 @@ model User {
   relationsTo                         Relation[]           @relation("UserRelationsTo")
   stories                             Story[]
   storyViews                          StoryView[]
+  pushTokens                          PushToken[]
   blockedByUsers                      UserBlock[]          @relation("Blocked")
   blockedUsers                        UserBlock[]          @relation("BlockedBy")
   userScore                           UserScore?
@@ -163,6 +164,40 @@ model Notification {
   @@index([userId, state, createdAt])
   @@index([relationId])
   @@index([postId])
+}
+
+/**
+ * A single device's push registration.
+ *
+ * One row per device, not per user: a user signed in on a phone and a tablet has
+ * two rows and must receive a notification on both. `token` is unique because FCM
+ * tokens are globally unique and can migrate between users — if someone logs out
+ * and a second person logs in on the same handset, FCM hands back the same token,
+ * so registration upserts on `token` and rewrites `userId` rather than accumulating
+ * stale rows that would deliver one user's messages to another's lock screen.
+ *
+ * `disabledAt` is set when FCM reports the token as permanently dead
+ * (app uninstalled, notifications revoked). Rows are kept rather than deleted so a
+ * reinstall on the same device reactivates instead of fragmenting the table, and so
+ * delivery-failure rates stay observable.
+ */
+model PushToken {
+  id         String       @id @default(uuid())
+  userId     String
+  token      String       @unique
+  platform   PushPlatform
+  /** Stable per-install identifier, used to replace a device's previous token on refresh. */
+  deviceId   String?
+  deviceName String?
+  appVersion String?
+  createdAt  DateTime     @default(now())
+  lastSeenAt DateTime     @default(now())
+  disabledAt DateTime?
+  user       User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // The only hot read is "active tokens for this user", run on every push fanout.
+  @@index([userId, disabledAt])
+  @@index([userId, deviceId])
 }
 
 model Post {
@@ -656,6 +691,12 @@ enum NotificationType {
 enum NotificationState {
   UNREAD
   READ
+}
+
+enum PushPlatform {
+  ANDROID
+  IOS
+  WEB
 }
 
 enum FollowStatus {

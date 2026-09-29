@@ -1,7 +1,15 @@
 import { Response } from 'express';
+import type { PushPlatform } from '@prisma/client';
 import prisma from '../lib/prisma';
 import { AuthRequest } from '../middleware/authMiddleware';
 import { forbidden, notFound, unauthenticated } from '../lib/errors';
+import {
+  isPushEnabled,
+  registerToken,
+  unregisterToken,
+  sendToUser,
+  PUSH_CHANNELS,
+} from '../services/pushService';
 
 /**
  * Field set for the participants embedded in a notification's relation.
@@ -296,4 +304,122 @@ export const markAllNotificationsRead = async (req: AuthRequest, res: Response) 
   });
 
   return res.json({ updatedCount: result.count });
+};
+
+/* ── Push token registration ─────────────────────────────────────────────── */
+
+/**
+ * POST /api/notifications/push-token
+ *
+ * Called by the client every time it obtains a device token: on login, and again
+ * whenever FCM rotates it. Idempotent, so the client can call it on every app
+ * start without checking whether the token has changed.
+ *
+ * `userId` comes from the verified JWT, never the body — otherwise one account
+ * could register a token against another and redirect their notifications.
+ *
+ * Returns `pushEnabled: false` when the server has no Firebase credentials, which
+ * lets the client stop asking for notification permission it cannot act on.
+ */
+export const registerPushToken = async (req: AuthRequest, res: Response) => {
+  const userId = req.user?.id;
+  if (!userId) throw unauthenticated();
+
+  const { token, platform, deviceId, deviceName, appVersion } = req.body as {
+    token: string;
+    platform: PushPlatform;
+    deviceId?: string;
+    deviceName?: string;
+    appVersion?: string;
+  };
+
+  const saved = await registerToken({
+    userId,
+    token,
+    platform,
+    deviceId,
+    deviceName,
+    appVersion,
+  });
+
+  // The token itself is never echoed back: it is a delivery credential, and the
+  // client already has it.
+  return res.status(201).json({
+    registered: true,
+    pushEnabled: isPushEnabled(),
+    platform: saved.platform,
+  });
+};
+
+/**
+ * DELETE /api/notifications/push-token
+ *
+ * Called on logout. Without this, the next person to sign in on a shared handset
+ * keeps receiving the previous user's notifications until FCM happens to rotate
+ * the token.
+ *
+ * Returns 200 even when nothing matched — logout must not fail because the token
+ * was already gone.
+ */
+export const unregisterPushToken = async (req: AuthRequest, res: Response) => {
+  const userId = req.user?.id;
+  if (!userId) throw unauthenticated();
+
+  const { token } = req.body as { token: string };
+  const removed = await unregisterToken(userId, token);
+
+  return res.json({ unregistered: removed > 0 });
+};
+
+/**
+ * POST /api/notifications/push-test
+ *
+ * Sends a push to the caller's own devices. Exists so push delivery can be
+ * verified end to end without staging a real relation request, which is otherwise
+ * a two-account, several-screen exercise on a physical device.
+ *
+ * Self-targeted only — the caller's ID comes from the JWT and no recipient
+ * parameter is accepted, so this cannot be used to send arbitrary notifications
+ * to other users.
+ */
+export const sendTestPush = async (req: AuthRequest, res: Response) => {
+  const userId = req.user?.id;
+  if (!userId) throw unauthenticated();
+
+  if (!isPushEnabled()) {
+    return res.status(503).json({
+      sent: false,
+      reason:
+        'Push is not configured on this server. Set FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY.',
+    });
+  }
+
+  const activeTokens = await prisma.pushToken.count({
+    where: { userId, disabledAt: null },
+  });
+
+  if (activeTokens === 0) {
+    return res.status(404).json({
+      sent: false,
+      reason:
+        'No active device registered for this account. Open the app, grant notification permission, then retry.',
+    });
+  }
+
+  const result = await sendToUser(userId, {
+    title: 'Samaj Unnati',
+    body: 'Push notifications are working correctly.',
+    channel: PUSH_CHANNELS.default,
+    data: { type: 'TEST', route: '/notifications' },
+  });
+
+  return res.json({
+    sent: result.sent > 0,
+    devices: activeTokens,
+    // Per-device breakdown: `disabled` being non-zero means some registered
+    // tokens were dead and have just been pruned.
+    delivered: result.sent,
+    failed: result.failed,
+    disabled: result.disabled,
+  });
 };

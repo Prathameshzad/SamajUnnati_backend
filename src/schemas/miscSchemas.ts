@@ -32,6 +32,38 @@ export const notificationIdSchema = {
   params: z.object({ id: uuidString }).strip(),
 };
 
+/* ── Push tokens ─────────────────────────────────────────────────────────── */
+
+/**
+ * An FCM registration token is an opaque string — roughly 160 characters for
+ * Android today, but the format is explicitly not part of Google's contract and
+ * has changed before. So this validates length and nothing else: a regex would
+ * start rejecting real devices the next time the format moves. The ceiling exists
+ * only to stop an unbounded string reaching a `@unique` TEXT column.
+ */
+const pushTokenField = z
+  .string()
+  .trim()
+  .min(32, 'token looks too short to be a push token')
+  .max(4096, 'token must be at most 4096 characters');
+
+export const registerPushTokenSchema = {
+  body: z
+    .object({
+      token: pushTokenField,
+      platform: z.enum(['ANDROID', 'IOS', 'WEB']),
+      /** Stable per-install ID, so a rotated token replaces its predecessor. */
+      deviceId: z.string().trim().max(128).optional(),
+      deviceName: z.string().trim().max(128).optional(),
+      appVersion: z.string().trim().max(32).optional(),
+    })
+    .strip(),
+};
+
+export const unregisterPushTokenSchema = {
+  body: z.object({ token: pushTokenField }).strip(),
+};
+
 /* ── Scores ──────────────────────────────────────────────────────────────── */
 
 /** Already `Math.min(Number(limit) || 10, 50)`; same bounds, now validated. */

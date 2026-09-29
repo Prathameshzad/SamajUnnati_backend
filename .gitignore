@@ -6,3 +6,8 @@ coverage/
 .DS_Store
 *.log
 generated/
+
+# Firebase service account keys. The credential lives in .env (FIREBASE_*),
+# never as a committed JSON file. This is a safety net in case one is dropped here.
+*firebase-adminsdk*.json
+serviceAccountKey.json

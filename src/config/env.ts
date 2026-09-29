@@ -124,6 +124,31 @@ const schema = z.object({
 
   /** Google Maps Platform API key — used for pincode / GPS geocoding during registration. */
   GOOGLE_MAPS_API_KEY: z.string().optional(),
+
+  /**
+   * Firebase Cloud Messaging (FCM HTTP v1) service account.
+   *
+   * Taken from the JSON that Firebase Console → Project settings → Service
+   * accounts → "Generate new private key" produces. Three fields of that file are
+   * all that is needed to mint an access token, so the whole JSON is deliberately
+   * not stored on disk — a file would end up committed sooner or later.
+   *
+   * All three are optional so local development and CI boot without Firebase.
+   * Push is simply disabled in that case (see `config.push.enabled`); it is never
+   * a startup failure, matching how R2 degrades to the local-disk fallback.
+   */
+  FIREBASE_PROJECT_ID: z.string().optional(),
+  FIREBASE_CLIENT_EMAIL: z.string().optional(),
+  /**
+   * The PEM private key. Dotenv preserves the literal `\n` sequences that the
+   * Firebase JSON contains, so they are expanded to real newlines below — without
+   * that, the Google auth library rejects the key with an opaque
+   * "error:1E08010C:DECODER routines::unsupported".
+   */
+  FIREBASE_PRIVATE_KEY: z.string().optional(),
+
+  /** Seconds a data-only push may sit on FCM's servers waiting for a device to come online. */
+  PUSH_TTL_SECONDS: intFromString(60 * 60 * 24 * 2, 0, 60 * 60 * 24 * 28),
 });
 
 const parsed = schema.safeParse(process.env);
@@ -203,6 +228,17 @@ const r2Enabled = Boolean(
     raw.CLOUDFLARE_R2_ACCESS_KEY_ID &&
     raw.CLOUDFLARE_R2_SECRET_ACCESS_KEY &&
     raw.CLOUDFLARE_R2_BUCKET_NAME
+);
+
+/**
+ * `\n` inside a dotenv value stays a two-character escape sequence, and the
+ * Firebase JSON stores the PEM with exactly those escapes. Expanding them here
+ * means the operator can paste the `private_key` value verbatim.
+ */
+const firebasePrivateKey = raw.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n');
+
+const pushEnabled = Boolean(
+  raw.FIREBASE_PROJECT_ID && raw.FIREBASE_CLIENT_EMAIL && firebasePrivateKey
 );
 
 export const config = {
@@ -291,6 +327,15 @@ export const config = {
 
   google: {
     mapsApiKey: raw.GOOGLE_MAPS_API_KEY,
+  },
+
+  push: {
+    /** False means every send is a no-op. Checked once at the top of pushService. */
+    enabled: pushEnabled,
+    projectId: raw.FIREBASE_PROJECT_ID,
+    clientEmail: raw.FIREBASE_CLIENT_EMAIL,
+    privateKey: firebasePrivateKey,
+    ttlSeconds: raw.PUSH_TTL_SECONDS,
   },
 } as const;
 
