@@ -11,6 +11,7 @@ import {
   createRelation,
   approveRelation,
   rejectRelation,
+  unfollowRelation,
   updateRelation,
   deleteRelation,
   getFullTree,
@@ -70,6 +71,7 @@ router.get(
 router.post('/', writeLimiter, validate(createRelationSchema), asyncHandler(createRelation));
 router.post('/:id/approve', writeLimiter, validate(relationIdSchema), asyncHandler(approveRelation));
 router.post('/:id/reject', writeLimiter, validate(relationIdSchema), asyncHandler(rejectRelation));
+router.post('/:id/unfollow', writeLimiter, validate(relationIdSchema), asyncHandler(unfollowRelation));
 router.patch('/:id', writeLimiter, validate(updateRelationSchema), asyncHandler(updateRelation));
 router.delete('/:id', writeLimiter, validate(relationIdSchema), asyncHandler(deleteRelation));
 

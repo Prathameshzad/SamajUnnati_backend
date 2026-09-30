@@ -742,6 +742,53 @@ export const rejectRelation = async (req: AuthRequest, res: Response) => {
   }
 };
 
+export const unfollowRelation = async (req: AuthRequest, res: Response) => {
+  const userId = req.user?.id;
+  const { id } = req.params;
+  if (!userId) throw unauthenticated();
+
+  const relation = await prisma.relation.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      fromUserId: true,
+      toUserId: true,
+      createdById: true,
+      status: true,
+    },
+  });
+
+  if (!relation) throw notFound('Relation not found');
+
+  const isParticipant = relation.fromUserId === userId || relation.toUserId === userId;
+  const isCreator = relation.createdById === userId;
+  if (!isParticipant && !isCreator) {
+    throw forbidden('Not authorized to unfollow this relation');
+  }
+  if (relation.status !== 'CONFIRMED') {
+    throw badRequest('Only approved relations can be unfollowed');
+  }
+
+  await prisma.$executeRaw`
+    UPDATE "Relation"
+    SET "hiddenByUserIds" = CASE
+      WHEN ${userId} = ANY("hiddenByUserIds") THEN "hiddenByUserIds"
+      ELSE array_append("hiddenByUserIds", ${userId})
+    END,
+    "updatedAt" = NOW()
+    WHERE "id" = ${id}
+  `;
+
+  await TreeCacheService.invalidateUserTree(
+    relation.fromUserId,
+    relation.toUserId,
+    relation.createdById,
+    userId
+  );
+
+  return res.json({ status: 'UNFOLLOWED' });
+};
+
 export const updateRelation = async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;
   const { id } = req.params;
@@ -993,6 +1040,7 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
           customPhotoUrl: true,
           visualSide: true,
           createdById: true,
+          hiddenByUserIds: true,
           createdAt: true,
           updatedAt: true,
           fromUser: {
@@ -1027,6 +1075,9 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
 
       for (const rel of rawRelations) {
         if (processedRelations.has(rel.id)) continue;
+        // Unfollowing is directional: hide this edge only from the caller's tree.
+        // The confirmed relation row remains available to the other participant.
+        if (rel.hiddenByUserIds?.includes(userId)) continue;
         if (category && rel.category !== category) continue;
         if (rel.status === 'REJECTED') {
           // If the user created this relation, keep it visible in their tree as REJECTED so they know the request was declined
@@ -1043,7 +1094,12 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
         // and must NOT be auto-injected onto the visual Family Tree canvas unless explicitly added by the user.
         // For FRIENDS and other categories: reciprocal confirmed relations can be traversed.
         if (rel.category === 'FAMILY') {
-          if (!isCreator) continue;
+          const retainedAfterOtherUnfollow =
+            isConfirmed &&
+            (isFromMe || isToMe || isCreator) &&
+            rel.hiddenByUserIds?.length > 0 &&
+            !rel.hiddenByUserIds.includes(userId);
+          if (!isCreator && !retainedAfterOtherUnfollow) continue;
         } else {
           if (!isCreator && !isFromMe && !isToMe) continue;
           if (!isConfirmed && !isCreator) continue;
@@ -1105,7 +1161,8 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
           customName: isViewerCreated ? rel.customName : null,
           customPhotoUrl: isViewerCreated ? rel.customPhotoUrl : null,
           visualSide: rel.visualSide,
-          createdById: rel.createdById
+          createdById: rel.createdById,
+          hiddenByUserIds: rel.hiddenByUserIds,
         });
 
         if (visited.has(targetId)) continue;

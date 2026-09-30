@@ -115,6 +115,7 @@ model Relation {
   visualSide                      String?
   createdById                     String?
   deletedAt                       DateTime?
+  hiddenByUserIds                 String[]         @default([])
   notifications                   Notification[]
   User_Relation_createdByIdToUser User?            @relation("Relation_createdByIdToUser", fields: [createdById], references: [id])
   fromUser                        User             @relation("UserRelationsFrom", fields: [fromUserId], references: [id])
