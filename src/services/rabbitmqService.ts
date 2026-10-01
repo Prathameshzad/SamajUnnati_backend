@@ -2,10 +2,28 @@
 import amqp from 'amqplib';
 import { config } from '../config/env';
 import { createLogger, maskPhone } from '../lib/logger';
+import { sendOtpSms } from './smsService';
 
 const log = createLogger('rabbitmq');
 
 const QUEUE_NAME = 'otp_queue';
+
+/**
+ * How many times a single OTP message is retried through the queue after a
+ * transient SMS-provider failure before we give up on it.
+ *
+ * Why bounded: a plain nack(requeue=true) puts the message straight back at the
+ * head of the queue and is redelivered immediately, so a persistent provider
+ * error becomes a tight infinite loop that hammers the gateway and can burn SMS
+ * credits. We instead count attempts in a message header and stop after this
+ * many. When we give up, the message is dropped (acked) — the code is still in
+ * Redis until its TTL, and the user can simply request another OTP, which is
+ * what the per-phone rate limiter is there to bound.
+ */
+const MAX_SMS_RETRIES = 3;
+
+/** Delay before a failed OTP is retried, in milliseconds (per-message TTL). */
+const RETRY_DELAY_MS = 5_000;
 
 let connection: any = null;
 let channel: any = null;
@@ -120,21 +138,95 @@ export class RabbitMQService {
 
       await ch.consume(
         QUEUE_NAME,
-        (msg: any) => {
+        async (msg: any) => {
           if (!msg) return;
+
+          let content: { phone: string; code: string; type?: string };
           try {
-            const content = JSON.parse(msg.content.toString());
-            // No OTP code in this log line — see publishOtp.
-            log.info(
-              { phone: maskPhone(content.phone), type: content.type },
-              'dispatching OTP to SMS provider'
-            );
-            ch.ack(msg);
+            content = JSON.parse(msg.content.toString());
           } catch (err: any) {
             log.error({ err: err.message }, 'malformed message discarded');
             // requeue=false: a message that cannot be parsed will never parse,
             // so requeueing it would spin forever.
             ch.nack(msg, false, false);
+            return;
+          }
+
+          // Attempt number carried on the message header. First delivery = 1.
+          const attempt = Number(msg.properties?.headers?.['x-attempt'] ?? 1);
+
+          // No OTP code in this log line — see publishOtp.
+          log.info(
+            { phone: maskPhone(content.phone), type: content.type, attempt },
+            'dispatching OTP to SMS provider'
+          );
+
+          /**
+           * Shared failure path: either retry (bounded) or give up.
+           *
+           * We always ack the current delivery and, when a retry is warranted,
+           * re-publish a fresh copy with an incremented counter and a short
+           * per-message TTL. This gives real spacing between attempts instead of
+           * the instant hot loop a nack(requeue=true) produces, and it caps the
+           * total attempts at MAX_SMS_RETRIES.
+           */
+          const retryOrGiveUp = (reason: string) => {
+            if (attempt >= MAX_SMS_RETRIES) {
+              log.error(
+                { phone: maskPhone(content.phone), type: content.type, attempt, reason },
+                'OTP SMS gave up after max retries; user can request a new code'
+              );
+              ch.ack(msg); // drop it — do not loop forever
+              return;
+            }
+
+            const nextAttempt = attempt + 1;
+            try {
+              ch.sendToQueue(QUEUE_NAME, Buffer.from(JSON.stringify(content)), {
+                persistent: true,
+                headers: { 'x-attempt': nextAttempt },
+                // Spacing between attempts. Still capped by the code's usefulness.
+                expiration: String(RETRY_DELAY_MS),
+              });
+              log.warn(
+                { phone: maskPhone(content.phone), type: content.type, attempt, nextAttempt, reason },
+                'OTP SMS failed; scheduled retry'
+              );
+            } catch (republishErr: any) {
+              log.error(
+                { phone: maskPhone(content.phone), err: republishErr?.message ?? String(republishErr) },
+                'failed to schedule OTP retry'
+              );
+            }
+            ch.ack(msg); // original is replaced by the re-published copy
+          };
+
+          try {
+            // The actual send. In non-production this is a deliberate no-op
+            // (see smsService): the SMS is only triggered when NODE_ENV=production.
+            const result = await sendOtpSms(content.phone, content.code, content.type ?? 'LOGIN');
+
+            if (result.ok) {
+              ch.ack(msg);
+              return;
+            }
+
+            // 'disabled' = provider not configured. Retrying cannot fix that, so
+            // give up immediately rather than cycling through the retry budget.
+            if (result.outcome === 'disabled') {
+              log.error(
+                { phone: maskPhone(content.phone), type: content.type },
+                'OTP SMS not sent: provider disabled; dropping message'
+              );
+              ch.ack(msg);
+              return;
+            }
+
+            // Transient provider rejection — bounded retry.
+            retryOrGiveUp(`provider outcome=${result.outcome}`);
+          } catch (err: any) {
+            log.error({ err: err?.message ?? String(err) }, 'OTP dispatch handler error');
+            retryOrGiveUp('handler exception');
           }
         },
         { noAck: false }

@@ -116,6 +116,8 @@ model Relation {
   createdById                     String?
   deletedAt                       DateTime?
   hiddenByUserIds                 String[]         @default([])
+  /** Set only by an explicit PENDING -> CONFIRMED approval transition. */
+  approvedAt                      DateTime?
   notifications                   Notification[]
   User_Relation_createdByIdToUser User?            @relation("Relation_createdByIdToUser", fields: [createdById], references: [id])
   fromUser                        User             @relation("UserRelationsFrom", fields: [fromUserId], references: [id])
@@ -142,6 +144,7 @@ model Relation {
   @@index([fromUserId, status])
   @@index([toUserId, status])
   @@index([createdById, status])
+  @@index([approvedAt])
   // badgeService.getUserBadgeData filters `category IN (...) AND status = CONFIRMED
   // AND deletedAt IS NULL`, run on every getMe/getUserById/getRelationCounts call.
   @@index([category, status, deletedAt])
@@ -638,15 +641,18 @@ model UserScore {
 }
 
 model ScoreEvent {
-  id         String      @id @default(uuid())
-  userId     String
-  points     Int
-  reason     ScoreReason
-  relationId String?
-  createdAt  DateTime    @default(now())
-  userScore  UserScore   @relation(fields: [userId], references: [id])
+  id               String      @id @default(uuid())
+  userId           String
+  points           Int
+  reason           ScoreReason
+  relationId       String?
+  operationKey     String?     @unique
+  reversesEventId  String?     @unique
+  createdAt        DateTime    @default(now())
+  userScore        UserScore   @relation(fields: [userId], references: [id])
 
   @@index([userId, createdAt])
+  @@index([relationId])
 }
 
 enum ScoreReason {

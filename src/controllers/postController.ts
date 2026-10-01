@@ -289,6 +289,7 @@ export const getUserPosts = async (req: AuthRequest, res: Response): Promise<Res
       where: {
         deletedAt: null,
         status: 'CONFIRMED',
+        hiddenByUserIds: { isEmpty: true },
         OR: [{ fromUserId: userId }, { toUserId: userId }],
       },
       select: { fromUserId: true, toUserId: true },

@@ -9,13 +9,17 @@ import {
   RELATION_LEVEL_MAP,
 } from '../utils/relationMetadata';
 import { TreeCacheService } from '../services/treeCacheService';
-import { awardPoints, deductPoints } from '../services/scoreService';
+import {
+  awardPointsInTransaction,
+  emitScoreUpdate,
+  lockScoreOwnerInTransaction,
+  reverseRelationPointsInTransaction,
+} from '../services/scoreService';
 import { getUserBadgeData } from '../services/badgeService';
 import {
   getRelationTypeRegistry,
   type RelationTypeRegistry,
 } from '../services/relationTypeRegistry';
-import { deletionPenalty } from '../config/gamification';
 import { badRequest, forbidden, notFound, unauthenticated } from '../lib/errors';
 import { createLogger } from '../lib/logger';
 
@@ -464,6 +468,7 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
       where: {
         toUserId: userId,
         fromUser: { phone: cleanPhone },
+        category: 'FAMILY',
         status: 'CONFIRMED'
       },
       include: {
@@ -477,33 +482,44 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
       const displayLabel = resolveLabel(existingRelation.relationType, lang);
       
       const reciprocalCode = existingRelation.relationType?.reciprocalCode || existingRelation.relationTypeCode;
-      const recType = await prisma.relationType.findUnique({ where: { code: reciprocalCode } });
 
-      await prisma.relation.upsert({
-        where: {
-          fromUserId_toUserId_relationTypeCode: {
+      const { reciprocalRelation, scoreUpdate } = await prisma.$transaction(async (tx) => {
+        await lockScoreOwnerInTransaction(tx, userId);
+        const saved = await tx.relation.upsert({
+          where: {
+            fromUserId_toUserId_relationTypeCode: {
+              fromUserId: userId,
+              toUserId: existingRelation.fromUserId,
+              relationTypeCode: reciprocalCode,
+            },
+          },
+          // Idempotent retry: never rewrite a terminal state or its owner.
+          update: {},
+          create: {
             fromUserId: userId,
             toUserId: existingRelation.fromUserId,
             relationTypeCode: reciprocalCode,
+            category: 'FAMILY',
+            status: 'CONFIRMED',
+            createdById: userId,
           },
-        },
-        update: { status: 'CONFIRMED' },
-        create: {
-          fromUserId: userId,
-          toUserId: existingRelation.fromUserId,
-          relationTypeCode: reciprocalCode,
-          category: recType?.category || 'FAMILY',
-          status: 'CONFIRMED',
-          createdById: userId,
-        },
+        });
+        const score = await awardPointsInTransaction(
+          tx,
+          userId,
+          'ADD_ALIVE',
+          saved.id,
+          `relation:${saved.id}:add`
+        );
+        return { reciprocalRelation: saved, scoreUpdate: score };
       });
-
       await TreeCacheService.invalidateUserTree(userId, existingRelation.fromUserId);
+      emitScoreUpdate(scoreUpdate);
 
       return res.status(200).json({
         alreadyAccepted: true,
         message: `You have already accepted this person's request previously and this person was telling you ${displayLabel}. They are now added to your tree.`,
-        relation: existingRelation
+        relation: reciprocalRelation
       });
     }
 
@@ -514,6 +530,9 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
 
     if (!relType) {
       throw badRequest(`Invalid relation type: ${relationTypeCode}`);
+    }
+    if (relType.category !== 'FAMILY') {
+      throw badRequest('Use the category-specific endpoint for non-family relations');
     }
 
     let relatedUser = null;
@@ -572,33 +591,46 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
       throw badRequest('Cannot create relation with yourself');
     }
 
-    const relation = await prisma.relation.upsert({
-      where: {
-        fromUserId_toUserId_relationTypeCode: {
+    const { relation, scoreUpdate } = await prisma.$transaction(async (tx) => {
+      await lockScoreOwnerInTransaction(tx, userId);
+      const savedRelation = await tx.relation.upsert({
+        where: {
+          fromUserId_toUserId_relationTypeCode: {
+            fromUserId,
+            toUserId: relatedUser.id,
+            relationTypeCode,
+          },
+        },
+        // An idempotent retry may refresh presentation fields, but must never
+        // regress CONFIRMED/REJECTED back to PENDING or transfer score ownership.
+        update: {
+          ...(customName ? { customName } : {}),
+          ...(customPhotoUrl ? { customPhotoUrl } : {}),
+          visualSide: normalizeVisualSide(visualSide),
+        },
+        create: {
           fromUserId,
           toUserId: relatedUser.id,
           relationTypeCode,
+          category: 'FAMILY',
+          status: isPersonAlive ? 'PENDING' : 'CONFIRMED',
+          customName: customName || null,
+          customPhotoUrl: customPhotoUrl || null,
+          visualSide: normalizeVisualSide(visualSide),
+          createdById: userId,
         },
-      },
-      update: {
-        status: isPersonAlive ? 'PENDING' : 'CONFIRMED',
-        ...(customName ? { customName } : {}),
-        ...(customPhotoUrl ? { customPhotoUrl } : {}),
-        visualSide: normalizeVisualSide(visualSide),
-        createdById: userId,
-      },
-      create: {
-        fromUserId,
-        toUserId: relatedUser.id,
-        relationTypeCode,
-        category: relType.category,
-        status: isPersonAlive ? 'PENDING' : 'CONFIRMED',
-        customName: customName || null,
-        customPhotoUrl: customPhotoUrl || null,
-        visualSide: normalizeVisualSide(visualSide),
-        createdById: userId,
-      },
-      include: { toUser: true, fromUser: true },
+        include: { toUser: true, fromUser: true },
+      });
+
+      const addReason = savedRelation.toUser.isAlive === false ? 'ADD_DECEASED' : 'ADD_ALIVE';
+      const score = await awardPointsInTransaction(
+        tx,
+        savedRelation.createdById ?? userId,
+        addReason,
+        savedRelation.id,
+        `relation:${savedRelation.id}:add`
+      );
+      return { relation: savedRelation, scoreUpdate: score };
     });
 
     const displayLabel = resolveLabel(relType, lang);
@@ -606,7 +638,7 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
 
     // Deceased relatives do not receive request notifications, and no "waiting for approval"
     // notification is generated for the creator since deceased ancestors cannot approve requests.
-    if (isPersonAlive) {
+    if (isPersonAlive && scoreUpdate.applied) {
       if (relatedUser.phone) {
         await createNotification({
           userId: relatedUser.id,
@@ -626,17 +658,8 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    // ── Award score to the creator ──
-    // Scoring is secondary to the relation itself, so a failure here is logged
-    // rather than allowed to fail the request.
-    try {
-      const scoreReason = isPersonAlive ? 'ADD_ALIVE' : 'ADD_DECEASED';
-      await awardPoints(userId, scoreReason, relation.id);
-    } catch (scoreErr) {
-      log.warn({ err: scoreErr, userId, relationId: relation.id }, 'score award failed');
-    }
-
     await TreeCacheService.invalidateUserTree(fromUserId, relatedUser.id, userId);
+    emitScoreUpdate(scoreUpdate);
 
     return res.status(201).json({
       ...relation,
@@ -650,8 +673,8 @@ export const approveRelation = async (req: AuthRequest, res: Response) => {
   const { id } = req.params;
   if (!userId) throw unauthenticated();
 
-  {
-    const relation = await prisma.relation.findUnique({
+  const outcome = await prisma.$transaction(async (tx) => {
+    const relation = await tx.relation.findUnique({
       where: { id },
       select: {
         id: true,
@@ -659,47 +682,70 @@ export const approveRelation = async (req: AuthRequest, res: Response) => {
         toUserId: true,
         createdById: true,
         status: true,
-        relationTypeCode: true,
+        category: true,
       },
     });
 
-    // Ownership check: only the recipient of the request may approve it.
-    if (!relation || relation.toUserId !== userId) {
-      throw notFound('Relation not found or not authorized');
+    if (!relation || relation.toUserId !== userId || relation.category !== 'FAMILY') {
+      throw notFound('Family relation request not found or not authorized');
+    }
+    if (relation.status === 'CONFIRMED') {
+      return { relation, transitioned: false, scoreUpdate: null };
+    }
+    if (relation.status !== 'PENDING') {
+      throw badRequest('Request is no longer pending');
     }
 
-    // Step 2: Mark the original relation as CONFIRMED (standard approval)
-    const updated = await prisma.relation.update({
-      where: { id },
-      data: { status: 'CONFIRMED' },
-    });
+    await lockScoreOwnerInTransaction(tx, relation.createdById ?? relation.fromUserId);
 
-    // Notify the actual root user (createdById) — not the structural source node
+    // Compare-and-set closes concurrent double approval: only one transaction
+    // can change PENDING to CONFIRMED and therefore only one can award +20.
+    const changed = await tx.relation.updateMany({
+      where: { id, toUserId: userId, category: 'FAMILY', status: 'PENDING' },
+      data: { status: 'CONFIRMED', approvedAt: new Date() },
+    });
+    if (changed.count === 0) {
+      const current = await tx.relation.findUniqueOrThrow({ where: { id } });
+      if (current.status !== 'CONFIRMED') {
+        throw badRequest('Request was rejected before it could be approved');
+      }
+      return { relation: current, transitioned: false, scoreUpdate: null };
+    }
+
+    const updated = await tx.relation.findUniqueOrThrow({ where: { id } });
+    const creatorId = relation.createdById ?? relation.fromUserId;
+    const scoreUpdate = await awardPointsInTransaction(
+      tx,
+      creatorId,
+      'RELATION_APPROVED',
+      relation.id,
+      `relation:${relation.id}:approved`
+    );
+    return { relation: updated, transitioned: true, scoreUpdate };
+  });
+
+  if (outcome.transitioned) {
     const approver = await prisma.user.findUnique({
       where: { id: userId },
       select: { firstName: true },
     });
-
     await createNotification({
-      userId: relation.createdById ?? relation.fromUserId,
+      userId: outcome.relation.createdById ?? outcome.relation.fromUserId,
       type: 'RELATION_APPROVED',
       title: 'Relation approved',
       message: `${approver?.firstName || 'Your family member'} approved your request.`,
-      relationId: relation.id,
+      relationId: outcome.relation.id,
     });
-
-    // ── Award +20 score to the original creator ──
-    try {
-      const creatorId = relation.createdById ?? relation.fromUserId;
-      await awardPoints(creatorId, 'RELATION_APPROVED', relation.id);
-    } catch (scoreErr) {
-      log.warn({ err: scoreErr, relationId: relation.id }, 'score award failed');
-    }
-
-    await TreeCacheService.invalidateUserTree(relation.fromUserId, relation.toUserId, relation.createdById, userId);
-
-    return res.json(updated);
   }
+
+  await TreeCacheService.invalidateUserTree(
+    outcome.relation.fromUserId,
+    outcome.relation.toUserId,
+    outcome.relation.createdById,
+    userId
+  );
+  emitScoreUpdate(outcome.scoreUpdate);
+  return res.json(outcome.relation);
 };
 
 export const rejectRelation = async (req: AuthRequest, res: Response) => {
@@ -707,39 +753,58 @@ export const rejectRelation = async (req: AuthRequest, res: Response) => {
   const { id } = req.params;
   if (!userId) throw unauthenticated();
 
-  {
-    const relation = await prisma.relation.findUnique({
+  const outcome = await prisma.$transaction(async (tx) => {
+    const relation = await tx.relation.findUnique({
       where: { id },
       select: {
         id: true,
         fromUserId: true,
         toUserId: true,
         createdById: true,
+        status: true,
+        category: true,
         toUser: { select: { firstName: true } },
       },
     });
-    // Ownership check: only the recipient may reject.
-    if (!relation || relation.toUserId !== userId) {
-      throw notFound('Relation not found');
+    if (!relation || relation.toUserId !== userId || relation.category !== 'FAMILY') {
+      throw notFound('Family relation request not found or not authorized');
     }
+    if (relation.status === 'REJECTED') return { relation, transitioned: false };
+    if (relation.status !== 'PENDING') throw badRequest('Request is no longer pending');
 
-    const updated = await prisma.relation.update({
-      where: { id },
+    await lockScoreOwnerInTransaction(tx, relation.createdById ?? relation.fromUserId);
+
+    const changed = await tx.relation.updateMany({
+      where: { id, toUserId: userId, category: 'FAMILY', status: 'PENDING' },
       data: { status: 'REJECTED' },
     });
+    const updated = await tx.relation.findUniqueOrThrow({
+      where: { id },
+      include: { toUser: { select: { firstName: true } } },
+    });
+    if (changed.count === 0 && updated.status !== 'REJECTED') {
+      throw badRequest('Request was approved before it could be rejected');
+    }
+    return { relation: updated, transitioned: changed.count === 1 };
+  });
 
+  if (outcome.transitioned) {
     await createNotification({
-      userId: relation.fromUserId,
+      userId: outcome.relation.createdById ?? outcome.relation.fromUserId,
       type: 'RELATION_REJECTED',
       title: 'Relation rejected',
-      message: `${relation.toUser?.firstName || 'User'} rejected your request.`,
-      relationId: relation.id,
+      message: `${outcome.relation.toUser?.firstName || 'User'} rejected your request.`,
+      relationId: outcome.relation.id,
     });
-
-    await TreeCacheService.invalidateUserTree(relation.fromUserId, relation.toUserId, relation.createdById, userId);
-
-    return res.json(updated);
   }
+
+  await TreeCacheService.invalidateUserTree(
+    outcome.relation.fromUserId,
+    outcome.relation.toUserId,
+    outcome.relation.createdById,
+    userId
+  );
+  return res.json(outcome.relation);
 };
 
 export const unfollowRelation = async (req: AuthRequest, res: Response) => {
@@ -747,46 +812,69 @@ export const unfollowRelation = async (req: AuthRequest, res: Response) => {
   const { id } = req.params;
   if (!userId) throw unauthenticated();
 
-  const relation = await prisma.relation.findUnique({
-    where: { id },
-    select: {
-      id: true,
-      fromUserId: true,
-      toUserId: true,
-      createdById: true,
-      status: true,
-    },
+  const outcome = await prisma.$transaction(async (tx) => {
+    const relation = await tx.relation.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        fromUserId: true,
+        toUserId: true,
+        createdById: true,
+        status: true,
+        category: true,
+        hiddenByUserIds: true,
+      },
+    });
+    if (!relation) throw notFound('Relation not found');
+
+    const isParticipant = relation.fromUserId === userId || relation.toUserId === userId;
+    const isCreator = relation.createdById === userId;
+    if (!isParticipant && !isCreator) throw forbidden('Not authorized to unfollow this relation');
+    if (!['FAMILY', 'FRIEND'].includes(relation.category)) {
+      throw badRequest('This relation category cannot be unfollowed here');
+    }
+    if (relation.status !== 'CONFIRMED') {
+      throw badRequest('Only approved relations can be unfollowed');
+    }
+
+    await lockScoreOwnerInTransaction(tx, relation.createdById ?? relation.fromUserId);
+
+    // Compare-and-set makes concurrent/repeated unfollow requests idempotent.
+    const changed = await tx.relation.updateMany({
+      where: {
+        id,
+        status: 'CONFIRMED',
+        NOT: { hiddenByUserIds: { has: userId } },
+      },
+      data: { hiddenByUserIds: { push: userId } },
+    });
+    if (changed.count === 0) {
+      return { relation, changed: false, scoreUpdate: null };
+    }
+
+    // The initiating viewer disappears from their tree; all viewers also lose
+    // the green verified tick because hiddenByUserIds is now non-empty. Reverse
+    // only the approval bonus: the original add still exists for the other tree.
+    const updated = await tx.relation.findUniqueOrThrow({ where: { id } });
+    const creatorId = relation.createdById ?? relation.fromUserId;
+    const scoreUpdate = await reverseRelationPointsInTransaction(
+      tx,
+      creatorId,
+      relation.id,
+      'APPROVAL_ONLY'
+    );
+    return { relation: updated, changed: true, scoreUpdate };
   });
 
-  if (!relation) throw notFound('Relation not found');
-
-  const isParticipant = relation.fromUserId === userId || relation.toUserId === userId;
-  const isCreator = relation.createdById === userId;
-  if (!isParticipant && !isCreator) {
-    throw forbidden('Not authorized to unfollow this relation');
-  }
-  if (relation.status !== 'CONFIRMED') {
-    throw badRequest('Only approved relations can be unfollowed');
-  }
-
-  await prisma.$executeRaw`
-    UPDATE "Relation"
-    SET "hiddenByUserIds" = CASE
-      WHEN ${userId} = ANY("hiddenByUserIds") THEN "hiddenByUserIds"
-      ELSE array_append("hiddenByUserIds", ${userId})
-    END,
-    "updatedAt" = NOW()
-    WHERE "id" = ${id}
-  `;
-
   await TreeCacheService.invalidateUserTree(
-    relation.fromUserId,
-    relation.toUserId,
-    relation.createdById,
+    outcome.relation.fromUserId,
+    outcome.relation.toUserId,
+    outcome.relation.createdById,
     userId
   );
+  emitScoreUpdate(outcome.scoreUpdate);
 
-  return res.json({ status: 'UNFOLLOWED' });
+  return res.json({ status: 'UNFOLLOWED', changed: outcome.changed });
 };
 
 export const updateRelation = async (req: AuthRequest, res: Response) => {
@@ -1371,15 +1459,20 @@ export const getRelationCounts = async (req: AuthRequest, res: Response) => {
         },
       },
     }),
-    prisma.relation.count({ where: { fromUserId: userId, status: 'CONFIRMED' } }),
+    prisma.relation.count({
+      where: { fromUserId: userId, status: 'CONFIRMED', hiddenByUserIds: { isEmpty: true } },
+    }),
     prisma.relation.count({ where: { createdById: userId, status: 'REJECTED' } }),
-    prisma.relation.count({ where: { toUserId: userId, status: 'CONFIRMED' } }),
+    prisma.relation.count({
+      where: { toUserId: userId, status: 'CONFIRMED', hiddenByUserIds: { isEmpty: true } },
+    }),
     prisma.relation.findMany({
       where: { createdById: userId },
       select: { fromUserId: true, toUserId: true },
     }),
     prisma.relation.findMany({
       where: {
+        hiddenByUserIds: { isEmpty: true },
         OR: [
           { fromUserId: userId, status: 'CONFIRMED' },
           { toUserId: userId, status: 'CONFIRMED' },
@@ -1413,40 +1506,84 @@ export const deleteRelation = async (req: AuthRequest, res: Response) => {
   const { id } = req.params;
   if (!userId) throw unauthenticated();
 
-  const relation = await prisma.relation.findUnique({
-    where: { id },
-    select: {
-      id: true,
-      fromUserId: true,
-      toUserId: true,
-      createdById: true,
-      status: true,
-      fromUser: { select: { firstName: true, isAlive: true } },
-      toUser: { select: { firstName: true, isAlive: true } },
-    },
-  });
-  if (!relation) throw notFound('Relation not found');
+  const outcome = await prisma.$transaction(async (tx) => {
+    const relation = await tx.relation.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        fromUserId: true,
+        toUserId: true,
+        createdById: true,
+        status: true,
+        category: true,
+        relationTypeCode: true,
+        relationType: { select: { reciprocalCode: true } },
+        fromUser: { select: { firstName: true, isAlive: true } },
+        toUser: { select: { firstName: true, isAlive: true } },
+      },
+    });
+    if (!relation || relation.category !== 'FAMILY') {
+      throw notFound('Family relation not found');
+    }
 
-  const isParticipant = relation.fromUserId === userId || relation.toUserId === userId;
-  const isCreator = relation.createdById === userId;
+    const isParticipant = relation.fromUserId === userId || relation.toUserId === userId;
+    const isCreator = relation.createdById === userId;
+    if (!isParticipant && !isCreator) throw forbidden('Not authorized to delete this relation');
 
-  if (!isParticipant && !isCreator) {
-    throw forbidden('Not authorized to delete this relation');
-  }
+    const creatorId = relation.createdById ?? relation.fromUserId;
+    await lockScoreOwnerInTransaction(tx, creatorId);
 
-  // If CONFIRMED – mark the reciprocal as REJECTED so the other person sees it (best effort)
-  if (relation.status === 'CONFIRMED') {
-    try {
-      await prisma.relation.updateMany({
-        where: { fromUserId: relation.toUserId, toUserId: relation.fromUserId },
-        data: { status: 'REJECTED' }
+    if (relation.status === 'CONFIRMED') {
+      // Scope the counterpart update to the exact reciprocal family type. The old
+      // query rejected every reverse relation between these users, including
+      // unrelated FRIEND/MATRIMONY edges.
+      await tx.relation.updateMany({
+        where: {
+          fromUserId: relation.toUserId,
+          toUserId: relation.fromUserId,
+          category: 'FAMILY',
+          relationTypeCode: relation.relationType.reciprocalCode ?? relation.relationTypeCode,
+          status: 'CONFIRMED',
+        },
+        data: { status: 'REJECTED' },
       });
-      const otherUserId = relation.fromUserId === userId ? relation.toUserId : relation.fromUserId;
-      const remover = relation.fromUserId === userId ? relation.fromUser : relation.toUser;
-      const targetUser = relation.fromUserId === userId ? relation.toUser : relation.fromUser;
+    }
 
-      // Only notify if target user is alive and not the remover themselves
-      if (otherUserId && otherUserId !== userId && targetUser?.isAlive !== false) {
+    await tx.notification.updateMany({
+      where: { relationId: id },
+      data: { relationId: null },
+    });
+
+    const scoreUpdate = await reverseRelationPointsInTransaction(
+      tx,
+      creatorId,
+      relation.id,
+      'ALL'
+    );
+    await tx.relation.delete({ where: { id } });
+    return { relation, scoreUpdate };
+  });
+
+  await TreeCacheService.invalidateUserTree(
+    outcome.relation.fromUserId,
+    outcome.relation.toUserId,
+    outcome.relation.createdById,
+    userId
+  );
+  emitScoreUpdate(outcome.scoreUpdate);
+
+  if (outcome.relation.status === 'CONFIRMED') {
+    try {
+      const otherUserId = outcome.relation.fromUserId === userId
+        ? outcome.relation.toUserId
+        : outcome.relation.fromUserId;
+      const remover = outcome.relation.fromUserId === userId
+        ? outcome.relation.fromUser
+        : outcome.relation.toUser;
+      const targetUser = outcome.relation.fromUserId === userId
+        ? outcome.relation.toUser
+        : outcome.relation.fromUser;
+      if (otherUserId !== userId && targetUser?.isAlive !== false) {
         await createNotification({
           userId: otherUserId,
           type: 'RELATION_REJECTED',
@@ -1454,36 +1591,13 @@ export const deleteRelation = async (req: AuthRequest, res: Response) => {
           message: `${remover?.firstName || 'Someone'} has removed you from their family tree.`,
         });
       }
-    } catch (notifErr) {
-      log.warn({ err: notifErr, relationId: id }, 'Failed to process reciprocal removal notification');
+    } catch (notificationError) {
+      log.warn(
+        { err: notificationError, relationId: outcome.relation.id },
+        'relation deleted but removal notification failed'
+      );
     }
   }
-
-  // 1. Unlink notifications referencing this relation to avoid foreign key failure
-  await prisma.notification.updateMany({
-    where: { relationId: id },
-    data: { relationId: null }
-  });
-
-  // 2. Delete the relation
-  await prisma.relation.delete({ where: { id } });
-
-  // 3. Deduct points from creator.
-  // `deletionPenalty` derives the exact same numbers the old inline logic did
-  // (isTargetAlive ? 5 : 2, +20 if it had been confirmed) from SCORE_POINTS, so a
-  // future change to those award amounts can no longer desync from the reversal.
-  try {
-    const creatorId = relation.createdById ?? relation.fromUserId;
-    const targetUser = relation.createdById === relation.fromUserId ? relation.toUser : relation.fromUser;
-    const isTargetAlive = targetUser?.isAlive !== false;
-
-    const { points, reason } = deletionPenalty(isTargetAlive, relation.status === 'CONFIRMED');
-    await deductPoints(creatorId, points, reason, relation.id);
-  } catch (scoreErr) {
-    log.warn({ err: scoreErr, relationId: relation.id }, 'score deduction failed');
-  }
-
-  await TreeCacheService.invalidateUserTree(relation.fromUserId, relation.toUserId, relation.createdById, userId);
 
   return res.json({ message: 'Relation deleted' });
 };

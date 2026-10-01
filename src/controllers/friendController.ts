@@ -3,9 +3,13 @@ import prisma from '../lib/prisma';
 import { AuthRequest } from '../middleware/authMiddleware';
 import { createNotification } from '../services/notificationService';
 import { TreeCacheService } from '../services/treeCacheService';
-import { awardPoints, deductPoints } from '../services/scoreService';
+import {
+  awardPointsInTransaction,
+  emitScoreUpdate,
+  lockScoreOwnerInTransaction,
+  reverseRelationPointsInTransaction,
+} from '../services/scoreService';
 import { getRelationTypeRegistry, type RelationTypeRegistry } from '../services/relationTypeRegistry';
-import { deletionPenalty } from '../config/gamification';
 import { badRequest, forbidden, notFound, unauthenticated } from '../lib/errors';
 import { createLogger } from '../lib/logger';
 import { RELATION_USER_SELECT, assertSourceNodeOwned } from './relationController';
@@ -89,6 +93,10 @@ export const getFriendTree = async (req: AuthRequest, res: Response) => {
   const allRelations = await prisma.relation.findMany({
     where: {
       category: 'FRIEND',
+      // Hide an edge only from the viewer who unfollowed it. If the other
+      // participant unfollowed, keep it visible but return hiddenByUserIds so the
+      // client removes the verified tick.
+      NOT: { hiddenByUserIds: { has: userId } },
       OR: [
         { status: { not: 'REJECTED' } },
         { createdById: userId, status: 'REJECTED' },
@@ -104,6 +112,7 @@ export const getFriendTree = async (req: AuthRequest, res: Response) => {
         customName: true,
         customPhotoUrl: true,
         visualSide: true,
+        hiddenByUserIds: true,
         createdById: true,
         createdAt: true,
         updatedAt: true,
@@ -179,7 +188,8 @@ export const getFriendTree = async (req: AuthRequest, res: Response) => {
           category: rel.category,
           customName: rel.customName,
           customPhotoUrl: rel.customPhotoUrl,
-          visualSide: rel.visualSide
+          visualSide: rel.visualSide,
+          hiddenByUserIds: rel.hiddenByUserIds
         }
       });
     }
@@ -387,61 +397,74 @@ export const approveFriend = async (req: AuthRequest, res: Response) => {
   const { id } = req.params;
   if (!userId) throw unauthenticated();
 
-  const relation = await prisma.relation.findUnique({
-    where: { id },
-    select: {
-      id: true,
-      fromUserId: true,
-      toUserId: true,
-      createdById: true,
-      status: true,
-      category: true,
-    },
-  });
+  const outcome = await prisma.$transaction(async (tx) => {
+    const relation = await tx.relation.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        fromUserId: true,
+        toUserId: true,
+        createdById: true,
+        status: true,
+        category: true,
+      },
+    });
+    if (!relation || relation.toUserId !== userId || relation.category !== 'FRIEND') {
+      throw notFound('Friend request not found or not authorized');
+    }
+    if (relation.status === 'CONFIRMED') {
+      return { relation, transitioned: false, scoreUpdate: null };
+    }
+    if (relation.status !== 'PENDING') throw badRequest('Request is no longer pending');
 
-  if (!relation || relation.toUserId !== userId) {
-    throw notFound('Friend request not found or not authorized');
-  }
+    await lockScoreOwnerInTransaction(tx, relation.createdById ?? relation.fromUserId);
 
-  if (relation.category !== 'FRIEND') {
-    throw badRequest('Not a friend request');
-  }
+    const changed = await tx.relation.updateMany({
+      where: { id, toUserId: userId, category: 'FRIEND', status: 'PENDING' },
+      data: { status: 'CONFIRMED', approvedAt: new Date() },
+    });
+    if (changed.count === 0) {
+      const current = await tx.relation.findUniqueOrThrow({ where: { id } });
+      if (current.status !== 'CONFIRMED') {
+        throw badRequest('Request was rejected before it could be approved');
+      }
+      return { relation: current, transitioned: false, scoreUpdate: null };
+    }
 
-  if (relation.status !== 'PENDING') {
-    throw badRequest('Request is no longer pending');
-  }
-
-  // Mark the request as CONFIRMED
-  const updated = await prisma.relation.update({
-    where: { id },
-    data: { status: 'CONFIRMED' },
-  });
-
-  const approver = await prisma.user.findUnique({
-    where: { id: userId },
-    select: { firstName: true },
-  });
-
-  // Notify the original requester (createdById or fromUserId)
-  await createNotification({
-    userId: relation.createdById ?? relation.fromUserId,
-    type: 'RELATION_APPROVED',
-    title: 'Friend request approved',
-    message: `${approver?.firstName || 'Someone'} approved your friend request.`,
-    relationId: relation.id,
-  });
-
-  // Award +20 points to creator. Secondary to the approval itself.
-  try {
+    const updated = await tx.relation.findUniqueOrThrow({ where: { id } });
     const creatorId = relation.createdById ?? relation.fromUserId;
-    await awardPoints(creatorId, 'RELATION_APPROVED', relation.id);
-  } catch (scoreErr) {
-    log.warn({ err: scoreErr, relationId: relation.id }, 'score award failed');
+    const scoreUpdate = await awardPointsInTransaction(
+      tx,
+      creatorId,
+      'RELATION_APPROVED',
+      relation.id,
+      `relation:${relation.id}:approved`
+    );
+    return { relation: updated, transitioned: true, scoreUpdate };
+  });
+
+  if (outcome.transitioned) {
+    const approver = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { firstName: true },
+    });
+    await createNotification({
+      userId: outcome.relation.createdById ?? outcome.relation.fromUserId,
+      type: 'RELATION_APPROVED',
+      title: 'Friend request approved',
+      message: `${approver?.firstName || 'Someone'} approved your friend request.`,
+      relationId: outcome.relation.id,
+    });
   }
 
-  await TreeCacheService.invalidateUserTree(relation.fromUserId, relation.toUserId, relation.createdById, userId);
-
-  return res.json(updated);
+  await TreeCacheService.invalidateUserTree(
+    outcome.relation.fromUserId,
+    outcome.relation.toUserId,
+    outcome.relation.createdById,
+    userId
+  );
+  emitScoreUpdate(outcome.scoreUpdate);
+  return res.json(outcome.relation);
 };
 
 /**
@@ -454,48 +477,58 @@ export const rejectFriend = async (req: AuthRequest, res: Response) => {
   const { id } = req.params;
   if (!userId) throw unauthenticated();
 
-  const relation = await prisma.relation.findUnique({
-    where: { id },
-    select: {
-      id: true,
-      fromUserId: true,
-      toUserId: true,
-      createdById: true,
-      status: true,
-      category: true,
-      toUser: { select: { firstName: true } },
-    },
+  const outcome = await prisma.$transaction(async (tx) => {
+    const relation = await tx.relation.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        fromUserId: true,
+        toUserId: true,
+        createdById: true,
+        status: true,
+        category: true,
+        toUser: { select: { firstName: true } },
+      },
+    });
+    if (!relation || relation.toUserId !== userId || relation.category !== 'FRIEND') {
+      throw notFound('Friend request not found or not authorized');
+    }
+    if (relation.status === 'REJECTED') return { relation, transitioned: false };
+    if (relation.status !== 'PENDING') throw badRequest('Request is no longer pending');
+
+    await lockScoreOwnerInTransaction(tx, relation.createdById ?? relation.fromUserId);
+
+    const changed = await tx.relation.updateMany({
+      where: { id, toUserId: userId, category: 'FRIEND', status: 'PENDING' },
+      data: { status: 'REJECTED' },
+    });
+    const updated = await tx.relation.findUniqueOrThrow({
+      where: { id },
+      include: { toUser: { select: { firstName: true } } },
+    });
+    if (changed.count === 0 && updated.status !== 'REJECTED') {
+      throw badRequest('Request was approved before it could be rejected');
+    }
+    return { relation: updated, transitioned: changed.count === 1 };
   });
 
-  if (!relation || relation.toUserId !== userId) {
-    throw notFound('Friend request not found or not authorized');
+  if (outcome.transitioned) {
+    await createNotification({
+      userId: outcome.relation.createdById ?? outcome.relation.fromUserId,
+      type: 'RELATION_REJECTED',
+      title: 'Friend request rejected',
+      message: `${outcome.relation.toUser?.firstName || 'Someone'} rejected your friend request.`,
+      relationId: outcome.relation.id,
+    });
   }
 
-  if (relation.category !== 'FRIEND') {
-    throw badRequest('Not a friend request');
-  }
-
-  if (relation.status !== 'PENDING') {
-    throw badRequest('Request is no longer pending');
-  }
-
-  const updated = await prisma.relation.update({
-    where: { id },
-    data: { status: 'REJECTED' },
-  });
-
-  // Notify the original requester
-  await createNotification({
-    userId: relation.createdById ?? relation.fromUserId,
-    type: 'RELATION_REJECTED',
-    title: 'Friend request rejected',
-    message: `${relation.toUser?.firstName || 'Someone'} rejected your friend request.`,
-    relationId: relation.id,
-  });
-
-  await TreeCacheService.invalidateUserTree(relation.fromUserId, relation.toUserId, relation.createdById, userId);
-
-  return res.json(updated);
+  await TreeCacheService.invalidateUserTree(
+    outcome.relation.fromUserId,
+    outcome.relation.toUserId,
+    outcome.relation.createdById,
+    userId
+  );
+  return res.json(outcome.relation);
 };
 
 /**
@@ -508,42 +541,78 @@ export const deleteFriend = async (req: AuthRequest, res: Response) => {
   const { id } = req.params;
   if (!userId) throw unauthenticated();
 
-  const relation = await prisma.relation.findUnique({
-    where: { id },
-    select: {
-      id: true,
-      fromUserId: true,
-      toUserId: true,
-      createdById: true,
-      status: true,
-      category: true,
-      fromUser: { select: { firstName: true, isAlive: true } },
-      toUser: { select: { firstName: true, isAlive: true } },
-    },
+  const outcome = await prisma.$transaction(async (tx) => {
+    const relation = await tx.relation.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        fromUserId: true,
+        toUserId: true,
+        createdById: true,
+        status: true,
+        category: true,
+        relationTypeCode: true,
+        relationType: { select: { reciprocalCode: true } },
+        fromUser: { select: { firstName: true, isAlive: true } },
+        toUser: { select: { firstName: true, isAlive: true } },
+      },
+    });
+    if (!relation || relation.category !== 'FRIEND') throw notFound('Friend not found');
+
+    const isParticipant = relation.fromUserId === userId || relation.toUserId === userId;
+    const isCreator = relation.createdById === userId;
+    if (!isParticipant && !isCreator) throw forbidden('Not authorized to remove this friend');
+
+    const creatorId = relation.createdById ?? relation.fromUserId;
+    await lockScoreOwnerInTransaction(tx, creatorId);
+
+    if (relation.status === 'CONFIRMED') {
+      await tx.relation.updateMany({
+        where: {
+          fromUserId: relation.toUserId,
+          toUserId: relation.fromUserId,
+          category: 'FRIEND',
+          relationTypeCode: relation.relationType.reciprocalCode ?? relation.relationTypeCode,
+          status: 'CONFIRMED',
+        },
+        data: { status: 'REJECTED' },
+      });
+    }
+
+    await tx.notification.updateMany({
+      where: { relationId: id },
+      data: { relationId: null },
+    });
+    const scoreUpdate = await reverseRelationPointsInTransaction(
+      tx,
+      creatorId,
+      relation.id,
+      'ALL'
+    );
+    await tx.relation.delete({ where: { id } });
+    return { relation, scoreUpdate };
   });
 
-  if (!relation) throw notFound('Friend not found');
+  await TreeCacheService.invalidateUserTree(
+    outcome.relation.fromUserId,
+    outcome.relation.toUserId,
+    outcome.relation.createdById,
+    userId
+  );
+  emitScoreUpdate(outcome.scoreUpdate);
 
-  // Must be a participant or the creator
-  const isParticipant = relation.fromUserId === userId || relation.toUserId === userId;
-  const isCreator = relation.createdById === userId;
-
-  if (!isParticipant && !isCreator) {
-    throw forbidden('Not authorized to remove this friend');
-  }
-
-  // If already confirmed, mark the reciprocal side as REJECTED so the other party is aware (best effort)
-  if (relation.status === 'CONFIRMED') {
+  if (outcome.relation.status === 'CONFIRMED') {
     try {
-      await prisma.relation.updateMany({
-        where: { fromUserId: relation.toUserId, toUserId: relation.fromUserId },
-        data: { status: 'REJECTED' }
-      });
-      // Notify the other party if alive and not self
-      const otherUserId = relation.fromUserId === userId ? relation.toUserId : relation.fromUserId;
-      const remover = relation.fromUserId === userId ? relation.fromUser : relation.toUser;
-      const targetUser = relation.fromUserId === userId ? relation.toUser : relation.fromUser;
-      if (otherUserId && otherUserId !== userId && targetUser?.isAlive !== false) {
+      const otherUserId = outcome.relation.fromUserId === userId
+        ? outcome.relation.toUserId
+        : outcome.relation.fromUserId;
+      const remover = outcome.relation.fromUserId === userId
+        ? outcome.relation.fromUser
+        : outcome.relation.toUser;
+      const targetUser = outcome.relation.fromUserId === userId
+        ? outcome.relation.toUser
+        : outcome.relation.fromUser;
+      if (otherUserId !== userId && targetUser?.isAlive !== false) {
         await createNotification({
           userId: otherUserId,
           type: 'RELATION_REJECTED',
@@ -551,36 +620,13 @@ export const deleteFriend = async (req: AuthRequest, res: Response) => {
           message: `${remover?.firstName || 'Someone'} has removed you from their friend list.`,
         });
       }
-    } catch (notifErr) {
-      log.warn({ err: notifErr, relationId: id }, 'Failed to process friend removal notification');
+    } catch (notificationError) {
+      log.warn(
+        { err: notificationError, relationId: outcome.relation.id },
+        'friend deleted but removal notification failed'
+      );
     }
   }
-
-  // 1. Unlink notifications referencing this relation to avoid foreign key failure
-  await prisma.notification.updateMany({
-    where: { relationId: id },
-    data: { relationId: null }
-  });
-
-  // 2. Delete the relation
-  await prisma.relation.delete({ where: { id } });
-
-  // 3. Deduct points from creator.
-  // `deletionPenalty` derives the exact same numbers the old inline logic did
-  // (isTargetAlive ? 5 : 2, +20 if it had been confirmed) from SCORE_POINTS, so a
-  // future change to those award amounts can no longer desync from the reversal.
-  try {
-    const creatorId = relation.createdById ?? relation.fromUserId;
-    const targetUser = relation.createdById === relation.fromUserId ? relation.toUser : relation.fromUser;
-    const isTargetAlive = targetUser?.isAlive !== false;
-
-    const { points, reason } = deletionPenalty(isTargetAlive, relation.status === 'CONFIRMED');
-    await deductPoints(creatorId, points, reason, relation.id);
-  } catch (scoreErr) {
-    log.warn({ err: scoreErr, relationId: relation.id }, 'score deduction failed');
-  }
-
-  await TreeCacheService.invalidateUserTree(relation.fromUserId, relation.toUserId, relation.createdById, userId);
 
   return res.json({ message: 'Friend removed' });
 };
@@ -662,39 +708,50 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
     throw badRequest('Cannot add yourself or the source as a friend');
   }
 
-  const relation = await prisma.relation.upsert({
-    where: {
-      fromUserId_toUserId_relationTypeCode: {
+  const { relation, scoreUpdate } = await prisma.$transaction(async (tx) => {
+    await lockScoreOwnerInTransaction(tx, userId);
+    const savedRelation = await tx.relation.upsert({
+      where: {
+        fromUserId_toUserId_relationTypeCode: {
+          fromUserId,
+          toUserId: relatedUser.id,
+          relationTypeCode,
+        },
+      },
+      // Idempotent retry: presentation fields may refresh, but terminal state and
+      // score ownership may not be overwritten.
+      update: {
+        ...(customName ? { customName } : {}),
+        ...(customPhotoUrl ? { customPhotoUrl } : {}),
+        visualSide: normalizeVisualSide(visualSide),
+      },
+      create: {
         fromUserId,
         toUserId: relatedUser.id,
         relationTypeCode,
+        category: 'FRIEND',
+        status: isPersonAlive ? 'PENDING' : 'CONFIRMED',
+        customName: customName || null,
+        customPhotoUrl: customPhotoUrl || null,
+        visualSide: normalizeVisualSide(visualSide),
+        createdById: userId,
       },
-    },
-    update: {
-      status: 'PENDING',
-      ...(customName ? { customName } : {}),
-      ...(customPhotoUrl ? { customPhotoUrl } : {}),
-      visualSide: normalizeVisualSide(visualSide),
-      createdById: userId,
-    },
-    create: {
-      fromUserId,
-      toUserId: relatedUser.id,
-      relationTypeCode,
-      category: 'FRIEND',
-      status: isPersonAlive ? 'PENDING' : 'CONFIRMED',
-      customName: customName || null,
-      customPhotoUrl: customPhotoUrl || null,
-      visualSide: normalizeVisualSide(visualSide),
-      createdById: userId,
-    },
-    include: { toUser: true, fromUser: true },
+      include: { toUser: true, fromUser: true },
+    });
+    const addReason = savedRelation.toUser.isAlive === false ? 'ADD_DECEASED' : 'ADD_ALIVE';
+    const score = await awardPointsInTransaction(
+      tx,
+      savedRelation.createdById ?? userId,
+      addReason,
+      savedRelation.id,
+      `relation:${savedRelation.id}:add`
+    );
+    return { relation: savedRelation, scoreUpdate: score };
   });
-
   const displayLabel = resolveLabel(relType, lang);
   const authUser = await prisma.user.findUnique({ where: { id: userId } });
 
-  if (isPersonAlive) {
+  if (isPersonAlive && scoreUpdate.applied) {
     // Notify the recipient of the friend request (if they have a phone = real registered user)
     if (relatedUser.phone) {
       await createNotification({
@@ -716,15 +773,8 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
     });
   }
 
-  // Award score to the creator. Secondary to the relation itself.
-  try {
-    const scoreReason = isPersonAlive ? 'ADD_ALIVE' : 'ADD_DECEASED';
-    await awardPoints(userId, scoreReason, relation.id);
-  } catch (scoreErr) {
-    log.warn({ err: scoreErr, userId, relationId: relation.id }, 'score award failed');
-  }
-
   await TreeCacheService.invalidateUserTree(fromUserId, relatedUser.id, userId);
+  emitScoreUpdate(scoreUpdate);
 
   return res.status(201).json({
     ...relation,

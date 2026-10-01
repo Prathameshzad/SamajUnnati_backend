@@ -127,6 +127,7 @@ export async function getUserBadgeData(userId: string): Promise<UserBadgeInfo> {
       where: {
         status: 'CONFIRMED',
         deletedAt: null,
+        hiddenByUserIds: { isEmpty: true },
         category: { in: ['FAMILY', 'FRIEND'] },
         OR: [{ fromUserId: userId }, { toUserId: userId }, { createdById: userId }],
       },

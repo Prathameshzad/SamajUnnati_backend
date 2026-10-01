@@ -69,26 +69,6 @@ export function calculateLevel(total: number): number {
   return level;
 }
 
-/**
- * Points reversed when a relation is deleted.
- *
- * This encodes exactly what `deleteRelation` did inline, but derives the numbers
- * from SCORE_POINTS so the two can no longer disagree.
- */
-export function deletionPenalty(
-  isTargetAlive: boolean,
-  wasConfirmed: boolean
-): { points: number; reason: Extract<ScoreReason, 'REMOVE_ALIVE' | 'REMOVE_DECEASED'> } {
-  const reason = isTargetAlive ? 'REMOVE_ALIVE' : 'REMOVE_DECEASED';
-  // Original: `isTargetAlive ? 5 : 2`, i.e. the magnitude of the matching add.
-  let points = Math.abs(SCORE_POINTS[isTargetAlive ? 'ADD_ALIVE' : 'ADD_DECEASED']);
-  if (wasConfirmed) {
-    // Original: `pointsToDeduct += 20` — reverse the approval bonus too.
-    points += Math.abs(SCORE_POINTS.RELATION_APPROVED);
-  }
-  return { points, reason };
-}
-
 /* ── Badge tiers ─────────────────────────────────────────────────────────── */
 
 export type BadgeTierCode = 'UNRANKED' | 'BRONZE' | 'SILVER' | 'GOLD' | 'PLATINUM' | 'DIAMOND';

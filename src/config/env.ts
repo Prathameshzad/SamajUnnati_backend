@@ -95,7 +95,8 @@ const schema = z.object({
    */
   OTP_DEBUG_RESPONSE: boolFromString(false),
   OTP_TTL_SECONDS: intFromString(10 * 60, 30, 3600),
-  OTP_MAX_PER_WINDOW: intFromString(3, 1, 100),
+  /** Max OTP sends per phone per window. Default: 5 per 15 minutes. */
+  OTP_MAX_PER_WINDOW: intFromString(5, 1, 100),
   OTP_RATE_WINDOW_SECONDS: intFromString(15 * 60, 60, 86_400),
   /**
    * Defaults to 4 because the web (app/login, app/signup) and mobile (app/index)
@@ -149,6 +150,26 @@ const schema = z.object({
 
   /** Seconds a data-only push may sit on FCM's servers waiting for a device to come online. */
   PUSH_TTL_SECONDS: intFromString(60 * 60 * 24 * 2, 0, 60 * 60 * 24 * 28),
+
+  /**
+   * OTP SMS gateway (BulkSMSIndia DLT transactional route).
+   *
+   * The SMS is only ever sent when NODE_ENV=production (see smsService). In every
+   * other environment the OTP is returned in the API response instead, so these
+   * are optional outside production and the app boots without them.
+   *
+   *   SMS_AUTH_KEY    — account working/API key (BulkSMSIndia `apikey`)
+   *   SMS_SENDER_ID   — DLT-approved 6-char sender id (`senderid`)
+   *   SMS_PEID        — DLT principal entity id (`peid`)
+   *   SMS_BASE_URL    — gateway base URL (defaults to BulkSMSIndia)
+   *
+   * Template ids are NOT here — they are static DLT identifiers kept in the
+   * code-side registry at src/constants/dltTemplates.ts.
+   */
+  SMS_AUTH_KEY: z.string().optional(),
+  SMS_SENDER_ID: z.string().optional(),
+  SMS_PEID: z.string().optional(),
+  SMS_BASE_URL: z.string().default('https://bulksmsindia.app'),
 });
 
 const parsed = schema.safeParse(process.env);
@@ -214,6 +235,13 @@ if (isProduction) {
   if (!r2Configured) {
     fatal.push(
       'All CLOUDFLARE_R2_* variables (including CLOUDFLARE_R2_PUBLIC_DOMAIN) are required in production.'
+    );
+  }
+  // OTP delivery is production-only, so the gateway credentials are required there.
+  // Without them, production would issue codes it can never deliver.
+  if (!raw.SMS_AUTH_KEY || !raw.SMS_SENDER_ID) {
+    fatal.push(
+      'SMS_AUTH_KEY and SMS_SENDER_ID are required in production so OTP messages can be delivered.'
     );
   }
 }
@@ -336,6 +364,19 @@ export const config = {
     clientEmail: raw.FIREBASE_CLIENT_EMAIL,
     privateKey: firebasePrivateKey,
     ttlSeconds: raw.PUSH_TTL_SECONDS,
+  },
+
+  sms: {
+    /**
+     * True only when a gateway is configured. smsService short-circuits every
+     * send outside production regardless of this, so in dev/staging it is false
+     * and nothing is dispatched.
+     */
+    enabled: Boolean(raw.SMS_AUTH_KEY && raw.SMS_SENDER_ID),
+    authKey: raw.SMS_AUTH_KEY,
+    senderId: raw.SMS_SENDER_ID,
+    peid: raw.SMS_PEID,
+    baseUrl: raw.SMS_BASE_URL.replace(/\/$/, ''),
   },
 } as const;
 
