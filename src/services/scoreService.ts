@@ -41,7 +41,7 @@ type ScoreTx = Prisma.TransactionClient;
  * row -> score row -> ledger events.
  */
 export async function lockScoreOwnerInTransaction(tx: ScoreTx, userId: string): Promise<void> {
-  await tx.$queryRaw`
+  await tx.$executeRaw`
     SELECT pg_advisory_xact_lock(hashtextextended(${`score-owner:${userId}`}, 0))
   `;
 }

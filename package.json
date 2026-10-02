@@ -8,6 +8,7 @@
     "start": "node dist/index.js",
     "audit:scores": "node scripts/audit_score_integrity.js",
     "repair:scores": "node scripts/repair_score_integrity.js",
+    "rebuild:scores": "node scripts/rebuild_all_user_scores.js",
     "postinstall": "prisma generate",
     "seed:family": "ts-node scripts/stress_seeder.ts seed:family",
     "seed:friends": "ts-node scripts/stress_seeder.ts seed:friends",

@@ -1451,7 +1451,7 @@ export const getRelationCounts = async (req: AuthRequest, res: Response) => {
   const [pending, confirmed, rejected, accepted, userCreatedRelations, confirmedRelations, badge] = await Promise.all([
     prisma.relation.count({
       where: {
-        createdById: userId,
+        OR: [{ createdById: userId }, { fromUserId: userId }],
         status: 'PENDING',
         toUser: {
           isAlive: true,
@@ -1462,12 +1462,22 @@ export const getRelationCounts = async (req: AuthRequest, res: Response) => {
     prisma.relation.count({
       where: { fromUserId: userId, status: 'CONFIRMED', hiddenByUserIds: { isEmpty: true } },
     }),
-    prisma.relation.count({ where: { createdById: userId, status: 'REJECTED' } }),
+    prisma.relation.count({
+      where: {
+        OR: [{ createdById: userId }, { fromUserId: userId }],
+        status: 'REJECTED',
+      },
+    }),
     prisma.relation.count({
       where: { toUserId: userId, status: 'CONFIRMED', hiddenByUserIds: { isEmpty: true } },
     }),
     prisma.relation.findMany({
-      where: { createdById: userId },
+      where: {
+        OR: [
+          { createdById: userId },
+          { fromUserId: userId },
+        ],
+      },
       select: { fromUserId: true, toUserId: true },
     }),
     prisma.relation.findMany({
