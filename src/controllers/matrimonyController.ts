@@ -406,10 +406,12 @@ export class MatrimonyController {
       if (otpResult.rateLimited) {
         throw rateLimited(otpResult.message, { retryAfterSeconds: otpResult.retryAfterSeconds });
       }
+      if (!otpResult.success) {
+        return res.status(503).json({ status: 'error', message: otpResult.message });
+      }
       return res.json({
         status: 'success',
         exists: false,
-        ...(otpResult.code ? { code: otpResult.code } : {}),
       });
     }
 

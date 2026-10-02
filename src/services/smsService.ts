@@ -11,10 +11,10 @@
  *     matches delivered text against the registered body, so only the OTP value
  *     is substituted into its {#var#} placeholder.
  *
- *  2. The production gate. In any non-production environment this never calls the
- *     SMS provider: the local/staging flow reads the OTP from the API response
- *     (config.otp.debugResponse) instead, so there is no reason to spend a real
- *     SMS credit or hit the DLT gateway. Only NODE_ENV=production sends a message.
+ *  2. Delivery gating. Development always skips provider delivery, even when
+ *     credentials are configured, so a direct call or stale queued message can
+ *     never produce a real SMS from a local backend. Other environments call
+ *     the gateway whenever credentials are configured.
  *
  *  3. Normalising the destination number into the <country><10-digit> form the
  *     gateway expects, since stored numbers are inconsistent (bare 10 digits,
@@ -53,9 +53,12 @@ function toGatewayNumber(phone: string): string | null {
 }
 
 export interface SendSmsResult {
-  /** True when the provider accepted the message, or when the send was intentionally skipped in a non-production env. */
+  /** True when the provider accepts the message. */
   ok: boolean;
-  /** 'sent' = handed to provider; 'skipped' = non-production; 'disabled' = no provider configured; 'error' = provider rejected. */
+  /**
+   * 'sent' = handed to provider; 'skipped' = development safety guard;
+   * 'disabled' = no provider configured; 'error' = provider rejected.
+   */
   outcome: 'sent' | 'skipped' | 'disabled' | 'error';
 }
 
@@ -64,30 +67,26 @@ export interface SendSmsResult {
  *
  * Returns a result rather than throwing: SMS delivery is best-effort relative to
  * the issuing of the code (the code is already stored in Redis and verifiable).
- * The caller — the RabbitMQ consumer — decides ack/nack from this.
+ * The caller — the RabbitMQ consumer — decides whether to ack or schedule a retry.
  */
 export async function sendOtpSms(
   phone: string,
   code: string,
   type: string
 ): Promise<SendSmsResult> {
-  // (2) Production gate. Outside production we never touch the gateway; the OTP
-  // is surfaced through the API response for local/staging testing instead.
-  if (!config.isProduction) {
-    log.info(
-      { phone: maskPhone(phone), type, env: config.env },
-      'non-production: SMS send skipped (OTP is returned in API response)'
-    );
-    return { ok: true, outcome: 'skipped' };
+  // Defense in depth: callers must not be able to reach the provider from a
+  // development process, even if credentials exist or a stale message is
+  // delivered by an accidentally started consumer. Do this before phone
+  // normalization, template rendering, or any network setup.
+  if (config.isDevelopment) {
+    log.info({ type }, 'OTP SMS provider delivery skipped in development');
+    return { ok: false, outcome: 'skipped' };
   }
 
   if (!config.sms.enabled) {
-    // In production with no provider configured this is a real misconfiguration:
-    // the user will never receive a code. Loud, but not a crash — the request
-    // path already returned, and other users are unaffected.
     log.error(
-      { phone: maskPhone(phone), type },
-      'production: SMS provider is not configured; OTP cannot be delivered'
+      { phone: maskPhone(phone), type, env: config.env },
+      'SMS provider is not configured; OTP cannot be delivered'
     );
     return { ok: false, outcome: 'disabled' };
   }

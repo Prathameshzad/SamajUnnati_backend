@@ -87,13 +87,6 @@ const schema = z.object({
   /** Comma-separated allowlist. Empty in development means "reflect any origin". */
   CORS_ORIGINS: z.string().optional(),
 
-  /**
-   * Returns the generated OTP in the HTTP response. This is a debugging aid only.
-   * It used to be keyed off `NODE_ENV !== 'production'`, which meant the deployed
-   * container (NODE_ENV=development in docker-compose) was handing OTPs to callers.
-   * It is now opt-in and force-disabled in production.
-   */
-  OTP_DEBUG_RESPONSE: boolFromString(false),
   OTP_TTL_SECONDS: intFromString(10 * 60, 30, 3600),
   /** Max OTP sends per phone per window. Default: 5 per 15 minutes. */
   OTP_MAX_PER_WINDOW: intFromString(5, 1, 100),
@@ -154,9 +147,10 @@ const schema = z.object({
   /**
    * OTP SMS gateway (BulkSMSIndia DLT transactional route).
    *
-   * The SMS is only ever sent when NODE_ENV=production (see smsService). In every
-   * other environment the OTP is returned in the API response instead, so these
-   * are optional outside production and the app boots without them.
+   * Production and test dispatch stored OTP values through RabbitMQ and this
+   * configured SMS provider. Development keeps the same generation, Redis TTL,
+   * rate-limit, and attempt-limit behavior but returns the code to the local
+   * client without contacting RabbitMQ or SMS.
    *
    *   SMS_AUTH_KEY    — account working/API key (BulkSMSIndia `apikey`)
    *   SMS_SENDER_ID   — DLT-approved 6-char sender id (`senderid`)
@@ -237,11 +231,11 @@ if (isProduction) {
       'All CLOUDFLARE_R2_* variables (including CLOUDFLARE_R2_PUBLIC_DOMAIN) are required in production.'
     );
   }
-  // OTP delivery is production-only, so the gateway credentials are required there.
-  // Without them, production would issue codes it can never deliver.
-  if (!raw.SMS_AUTH_KEY || !raw.SMS_SENDER_ID) {
+  // Production must have an external delivery path. Development intentionally
+  // uses the local HTTP return path; test retains transport behavior when exercised.
+  if (!raw.SMS_AUTH_KEY || !raw.SMS_SENDER_ID || !raw.SMS_PEID) {
     fatal.push(
-      'SMS_AUTH_KEY and SMS_SENDER_ID are required in production so OTP messages can be delivered.'
+      'SMS_AUTH_KEY, SMS_SENDER_ID, and SMS_PEID are required in production so OTP messages can be delivered.'
     );
   }
 }
@@ -308,9 +302,6 @@ export const config = {
   cors: { origins: csv(raw.CORS_ORIGINS) },
 
   otp: {
-    // In development, automatically return the OTP so the frontend can auto-fill.
-    // In production, strictly enforce that OTP is never echoed in HTTP responses.
-    debugResponse: !isProduction && (raw.NODE_ENV === 'development' || raw.OTP_DEBUG_RESPONSE),
     ttlSeconds: raw.OTP_TTL_SECONDS,
     maxPerWindow: raw.OTP_MAX_PER_WINDOW,
     rateWindowSeconds: raw.OTP_RATE_WINDOW_SECONDS,
@@ -367,12 +358,8 @@ export const config = {
   },
 
   sms: {
-    /**
-     * True only when a gateway is configured. smsService short-circuits every
-     * send outside production regardless of this, so in dev/staging it is false
-     * and nothing is dispatched.
-     */
-    enabled: Boolean(raw.SMS_AUTH_KEY && raw.SMS_SENDER_ID),
+    /** True whenever gateway credentials are configured, in any environment. */
+    enabled: Boolean(raw.SMS_AUTH_KEY && raw.SMS_SENDER_ID && raw.SMS_PEID),
     authKey: raw.SMS_AUTH_KEY,
     senderId: raw.SMS_SENDER_ID,
     peid: raw.SMS_PEID,

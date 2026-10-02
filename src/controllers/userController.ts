@@ -9,7 +9,6 @@ import { getUserBadgeData } from '../services/badgeService';
 import { notFound, unauthenticated, badRequest } from '../lib/errors';
 import { OtpService } from '../services/otpService';
 import { signAuthToken } from '../lib/jwt';
-import { config } from '../config/env';
 import { createLogger } from '../lib/logger';
 
 const log = createLogger('users');
@@ -131,7 +130,7 @@ export const updateMe = async (
     religion?: string;
     community?: string;
     caste?: string;
-    subcaste?: string;
+    subcaste?: string | null;
     dateOfBirth?: string;
     bloodGroup?: string;
     gender?: string;
@@ -335,13 +334,12 @@ export const requestChangePhoneOtp = async (
       retryAfterSeconds: otpResult.retryAfterSeconds,
     });
   }
-
-  const isDev = !config.isProduction && (config.isDevelopment || config.otp.debugResponse);
-  const debugCode = isDev && otpResult.code ? otpResult.code : undefined;
+  if (!otpResult.success) {
+    return res.status(503).json({ message: otpResult.message });
+  }
 
   return res.json({
     message: 'OTP sent to new phone number',
-    ...(debugCode ? { code: debugCode, otp: debugCode } : {}),
   });
 };
 

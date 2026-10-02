@@ -14,7 +14,11 @@
     "seed:all": "ts-node scripts/stress_seeder.ts seed:all",
     "seed:dense": "ts-node scripts/stress_seeder.ts seed:dense",
     "seed:huge": "ts-node scripts/stress_seeder.ts seed:huge",
-    "seed:clear": "ts-node scripts/stress_seeder.ts seed:clear"
+    "seed:clear": "ts-node scripts/stress_seeder.ts seed:clear",
+    "seed:screenshot-demo": "node scripts/seed_screenshot_demo.js",
+    "db:baseline-deploy": "node scripts/baseline_and_deploy.js",
+    "db:deploy": "prisma migrate deploy",
+    "db:status": "prisma migrate status"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.940.0",

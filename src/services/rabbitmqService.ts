@@ -46,7 +46,7 @@ async function createChannel(): Promise<any> {
     channel = null;
   });
 
-  const ch = await conn.createChannel();
+  const ch = await conn.createConfirmChannel();
   await ch.assertQueue(QUEUE_NAME, { durable: true });
 
   /**
@@ -110,18 +110,14 @@ export class RabbitMQService {
 
       const payload = { phone, code, type, timestamp: new Date().toISOString() };
 
-      const published = ch.sendToQueue(QUEUE_NAME, Buffer.from(JSON.stringify(payload)), {
+      ch.sendToQueue(QUEUE_NAME, Buffer.from(JSON.stringify(payload)), {
         persistent: true,
         // Codes are useless after their TTL; expire them in the queue too.
         expiration: String(config.otp.ttlSeconds * 1000),
       });
-
-      if (published) {
-        log.debug({ phone: maskPhone(phone), type }, 'OTP queued');
-      } else {
-        log.warn({ phone: maskPhone(phone) }, 'OTP publish buffer full');
-      }
-      return published;
+      await ch.waitForConfirms();
+      log.debug({ phone: maskPhone(phone), type }, 'OTP confirmed by broker');
+      return true;
     } catch (err: any) {
       log.error({ err: err.message }, 'publish failed');
       return false;
@@ -202,9 +198,15 @@ export class RabbitMQService {
           };
 
           try {
-            // The actual send. In non-production this is a deliberate no-op
-            // (see smsService): the SMS is only triggered when NODE_ENV=production.
+            // Defense in depth: startup does not register this consumer in
+            // development, and smsService independently skips provider delivery
+            // if this handler is invoked directly or survives a startup race.
             const result = await sendOtpSms(content.phone, content.code, content.type ?? 'LOGIN');
+
+            if (result.outcome === 'skipped') {
+              ch.ack(msg);
+              return;
+            }
 
             if (result.ok) {
               ch.ack(msg);

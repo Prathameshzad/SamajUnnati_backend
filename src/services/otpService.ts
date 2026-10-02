@@ -10,10 +10,11 @@ const log = createLogger('otp');
 export interface SendOtpResult {
   success: boolean;
   rateLimited?: boolean;
+  deliveryUnavailable?: boolean;
   retryAfterSeconds?: number;
   message?: string;
-  /** Only ever populated when OTP_DEBUG_RESPONSE is on and we are not in production. */
-  code?: string;
+  /** Plaintext code returned only by the development-only local delivery path. */
+  developmentOtp?: string;
 }
 
 /** Wrong-guess budget per issued OTP, independent of the HTTP rate limiter. */
@@ -57,7 +58,9 @@ export class OtpService {
   }
 
   /**
-   * Generates, stores and dispatches an OTP.
+   * Generates and stores an OTP, then dispatches it through the environment's
+   * delivery path. Development returns the code to the local client without
+   * contacting RabbitMQ/SMS; production and test use the configured SMS path.
    *
    * Two security changes here:
    *  1. The code is generated with `crypto.randomInt`, not `Math.random`.
@@ -71,12 +74,22 @@ export class OtpService {
    *     Length stays at 4 by default because the OTP input screens are built for
    *     4 boxes; raise OTP_CODE_DIGITS once those are updated.
    *
-   * The plaintext code is no longer written to the application log.
+   * The plaintext code is returned only by the explicit development path and is
+   * never written to logs. Production and test callers never receive it.
    */
   static async sendOtp(
     phone: string,
     type: 'LOGIN' | 'REGISTER' | 'RESEND' | 'CHANGE_PHONE' = 'LOGIN'
   ): Promise<SendOtpResult> {
+    if (!config.isDevelopment && !config.sms.enabled) {
+      log.error({ phone: maskPhone(phone), type }, 'OTP delivery unavailable: SMS provider not configured');
+      return {
+        success: false,
+        deliveryUnavailable: true,
+        message: 'OTP delivery is temporarily unavailable. Please try again later.',
+      };
+    }
+
     const rateCheck = await this.checkRateLimit(phone);
     if (rateCheck.rateLimited) {
       log.warn(
@@ -106,11 +119,29 @@ export class OtpService {
     // put a live credential into log storage and anywhere logs were shipped.
     log.info({ phone: maskPhone(phone), type, ttlSeconds: config.otp.ttlSeconds }, 'otp issued');
 
-    await RabbitMQService.publishOtp(phone, code, type === 'CHANGE_PHONE' ? 'RESEND' : type);
+    // Local development deliberately bypasses the transport. The code remains
+    // rate-limited, stored with the normal TTL, and subject to verification
+    // attempt limits, but no RabbitMQ message or provider SMS is produced.
+    if (config.isDevelopment) {
+      return {
+        success: true,
+        message: 'OTP generated for development',
+        developmentOtp: code,
+      };
+    }
+
+    const published = await RabbitMQService.publishOtp(phone, code, type === 'CHANGE_PHONE' ? 'RESEND' : type);
+    if (!published) {
+      await RedisService.del(otpKey(phone));
+      return {
+        success: false,
+        deliveryUnavailable: true,
+        message: 'OTP delivery is temporarily unavailable. Please try again later.',
+      };
+    }
 
     return {
       success: true,
-      ...(config.otp.debugResponse ? { code } : {}),
       message: 'OTP sent successfully',
     };
   }
@@ -123,10 +154,10 @@ export class OtpService {
    *     if (code === '1111') { return true; }
    *
    * That is a universal authentication bypass for every account in the system,
-   * active in production. It is removed. For local development, set
-   * OTP_DEBUG_RESPONSE=true and the real code is returned by the auth endpoints
-   * instead — which cannot be exploited remotely because it is force-disabled
-   * when NODE_ENV=production.
+   * active in production. It is removed. In production and test, OTP values are
+   * delivered only through the configured SMS transport and are never returned
+   * by HTTP or written to logs. Development uses the explicit local return path
+   * in `sendOtp`, while verification still checks the stored, expiring code.
    *
    * Also added: a per-code attempt counter. Without it, an attacker could keep
    * guessing against the same OTP for its full 10-minute lifetime.

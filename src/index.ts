@@ -231,9 +231,13 @@ server.listen(config.port, () => {
   // Load reference data up front so the first tree request does not pay for it.
   void warmRelationTypeRegistry();
 
-  RabbitMQService.startConsumer().catch((err) => {
-    logger.warn({ err }, 'rabbitmq consumer failed to start');
-  });
+  if (config.isDevelopment) {
+    logger.info('rabbitmq OTP consumer disabled in development');
+  } else {
+    RabbitMQService.startConsumer().catch((err) => {
+      logger.warn({ err }, 'rabbitmq consumer failed to start');
+    });
+  }
 });
 
 registerShutdown(server, [

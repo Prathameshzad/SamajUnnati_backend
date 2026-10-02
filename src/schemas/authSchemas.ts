@@ -20,6 +20,10 @@ export const verifyOtpSchema = {
   body: z.object({ phone: phoneField, code: otpCodeField }).strip(),
 };
 
+const requiredLegalConsent = z
+  .union([z.literal(true), z.literal('true')])
+  .transform(() => true as const);
+
 /**
  * Registration is multipart (an optional profile photo is attached), so every
  * value arrives as a string.
@@ -33,6 +37,7 @@ export const registerSchema = {
   body: z
     .object({
       phone: phoneField,
+      acceptedTermsAndPrivacy: requiredLegalConsent,
       firstName: requiredText(TEXT_LIMITS.name),
       middleName: boundedText(TEXT_LIMITS.name),
       lastName: boundedText(TEXT_LIMITS.name),

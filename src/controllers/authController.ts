@@ -6,6 +6,7 @@ import { signAuthToken } from '../lib/jwt';
 import { uploadProfileImageToR2 } from '../lib/r2';
 import { OtpService } from '../services/otpService';
 import { config } from '../config/env';
+import { CURRENT_PRIVACY_VERSION, CURRENT_TERMS_VERSION } from '../constants/legal';
 
 type GenderValue = 'MALE' | 'FEMALE';
 
@@ -75,8 +76,6 @@ export const checkPhone = async (
       });
     }
 
-    const isDev = !config.isProduction && (config.isDevelopment || config.otp.debugResponse);
-
     if (!user) {
       const otpResult = await OtpService.sendOtp(normalized, 'REGISTER');
       if (otpResult.rateLimited) {
@@ -86,11 +85,15 @@ export const checkPhone = async (
           retryAfterSeconds: otpResult.retryAfterSeconds,
         });
       }
-      const debugCode = (isDev && otpResult.code) ? otpResult.code : undefined;
+      if (!otpResult.success) {
+        return res.status(503).json({ message: otpResult.message });
+      }
       return res.json({
         exists: false,
         message: 'OTP sent for registration',
-        ...(debugCode ? { code: debugCode, otp: debugCode } : {}),
+        ...(config.isDevelopment && otpResult.developmentOtp
+          ? { developmentOtp: otpResult.developmentOtp }
+          : {}),
       });
     }
 
@@ -103,12 +106,16 @@ export const checkPhone = async (
         retryAfterSeconds: otpResult.retryAfterSeconds,
       });
     }
+    if (!otpResult.success) {
+      return res.status(503).json({ message: otpResult.message });
+    }
 
-    const debugCode = (isDev && otpResult.code) ? otpResult.code : undefined;
     return res.json({
       exists: true,
       message: 'OTP sent to registered number',
-      ...(debugCode ? { code: debugCode, otp: debugCode } : {}),
+      ...(config.isDevelopment && otpResult.developmentOtp
+        ? { developmentOtp: otpResult.developmentOtp }
+        : {}),
     });
   } catch (error: any) {
     console.error('check-phone error details:', {
@@ -152,6 +159,7 @@ export const registerUser = async (
     area,
     latitude,
     longitude,
+    acceptedTermsAndPrivacy,
   } = req.body as {
     phone?: string;
     email?: string;
@@ -173,7 +181,14 @@ export const registerUser = async (
     area?: string;
     latitude?: string;
     longitude?: string;
+    acceptedTermsAndPrivacy?: true;
   };
+
+  if (acceptedTermsAndPrivacy !== true) {
+    return res.status(400).json({
+      message: 'You must accept the Terms and Conditions and Privacy Policy to register',
+    });
+  }
 
   // Derive firstName / lastName from fullName if needed
   let derivedFirstName = firstName?.trim();
@@ -204,6 +219,7 @@ export const registerUser = async (
       where: { phone: normalizedPhone },
     });
 
+    const acceptedAt = new Date();
     const userData = {
       email: email ?? null,
       firstName: derivedFirstName ?? null,
@@ -221,6 +237,9 @@ export const registerUser = async (
       relationLanguage: relationLanguage ?? 'en',
       profileCompleted: true,
       isRegistered: true,
+      termsPrivacyAcceptedAt: acceptedAt,
+      termsVersion: CURRENT_TERMS_VERSION,
+      privacyVersion: CURRENT_PRIVACY_VERSION,
       worldX: (Math.random() - 0.5) * 100000,
       worldY: (Math.random() - 0.5) * 100000,
       // Location fields from the new registration step
@@ -279,12 +298,15 @@ export const requestOtp = async (req: Request, res: Response) => {
       retryAfterSeconds: otpResult.retryAfterSeconds,
     });
   }
+  if (!otpResult.success) {
+    return res.status(503).json({ message: otpResult.message });
+  }
 
-  const isDev = !config.isProduction && (config.isDevelopment || config.otp.debugResponse);
-  const debugCode = (isDev && otpResult.code) ? otpResult.code : undefined;
   return res.json({
     message: 'OTP sent',
-    ...(debugCode ? { code: debugCode, otp: debugCode } : {}),
+    ...(config.isDevelopment && otpResult.developmentOtp
+      ? { developmentOtp: otpResult.developmentOtp }
+      : {}),
   });
 };
 
