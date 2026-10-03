@@ -188,7 +188,19 @@ export const getFriendTree = async (req: AuthRequest, res: Response) => {
           category: rel.category,
           customName: rel.customName,
           customPhotoUrl: rel.customPhotoUrl,
-          visualSide: rel.visualSide,
+          // visualSide is stored relative to fromUserId. Invert it when this
+          // tree traversal reaches the relation from the opposite endpoint.
+          visualSide: isOutgoing
+            ? rel.visualSide
+            : rel.visualSide === 'top'
+              ? 'bottom'
+              : rel.visualSide === 'bottom'
+                ? 'top'
+                : rel.visualSide === 'left'
+                  ? 'right'
+                  : rel.visualSide === 'right'
+                    ? 'left'
+                    : null,
           hiddenByUserIds: rel.hiddenByUserIds
         }
       });

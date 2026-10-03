@@ -14,7 +14,7 @@ import {
   deleteFriend,
 } from '../controllers/friendController';
 import {
-  createRelationSchema,
+  createFriendSchema,
   relationIdSchema,
   relationLangOnlySchema,
 } from '../schemas/relationSchemas';
@@ -23,13 +23,11 @@ const router = Router();
 
 router.use(authMiddleware);
 
-// `createFriend` destructures exactly the same body shape as `createRelation`,
-// so the schema is shared rather than duplicated.
 router.get('/tree/full', heavyReadLimiter, validate(relationLangOnlySchema), asyncHandler(getFriendTree));
 router.get('/requests', readLimiter, validate(relationLangOnlySchema), asyncHandler(getFriendRequests));
 router.get('/', readLimiter, validate(relationLangOnlySchema), asyncHandler(listFriends));
 
-router.post('/', writeLimiter, validate(createRelationSchema), asyncHandler(createFriend));
+router.post('/', writeLimiter, validate(createFriendSchema), asyncHandler(createFriend));
 router.post('/:id/approve', writeLimiter, validate(relationIdSchema), asyncHandler(approveFriend));
 router.post('/:id/reject', writeLimiter, validate(relationIdSchema), asyncHandler(rejectFriend));
 router.delete('/:id', writeLimiter, validate(relationIdSchema), asyncHandler(deleteFriend));

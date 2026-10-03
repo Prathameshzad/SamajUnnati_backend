@@ -115,6 +115,14 @@ export const createRelationSchema = {
     .strip(),
 };
 
+/** Friend placement is selected from a concrete axis button and must never default. */
+export const createFriendSchema = {
+  ...createRelationSchema,
+  body: createRelationSchema.body.extend({
+    visualSide: z.enum(['top', 'bottom', 'left', 'right']),
+  }),
+};
+
 export const updateRelationSchema = {
   params: z.object({ id: uuidString }).strip(),
   body: z

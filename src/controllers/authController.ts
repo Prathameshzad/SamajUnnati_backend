@@ -76,6 +76,27 @@ export const checkPhone = async (
       });
     }
 
+    if (config.isDevelopment) {
+      if (user && user.profileCompleted) {
+        const token = signAuthToken({ userId: user.id, phone: user.phone || normalized });
+        return res.json({
+          exists: true,
+          bypass: true,
+          token,
+          user,
+          message: 'Development login bypass',
+        });
+      }
+      return res.json({
+        exists: false,
+        bypass: true,
+        verified: true,
+        phone: normalized,
+        user: user || undefined,
+        message: 'Development register bypass',
+      });
+    }
+
     if (!user) {
       const otpResult = await OtpService.sendOtp(normalized, 'REGISTER');
       if (otpResult.rateLimited) {
@@ -289,6 +310,14 @@ export const requestOtp = async (req: Request, res: Response) => {
   const { phone, type } = req.body;
   const normalized = normalizePhone(phone);
   if (!normalized) return res.status(400).json({ message: 'Invalid phone' });
+
+  if (config.isDevelopment) {
+    return res.json({
+      message: 'OTP bypassed in development',
+      bypass: true,
+      developmentOtp: '1111',
+    });
+  }
 
   const otpResult = await OtpService.sendOtp(normalized, type || 'RESEND');
   if (otpResult.rateLimited) {

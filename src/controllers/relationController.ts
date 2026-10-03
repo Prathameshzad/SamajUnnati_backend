@@ -1204,12 +1204,22 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
          */
         const fromIndex = queueIndex.get(rel.fromUserId);
         const toIndex = queueIndex.get(rel.toUserId);
+        // A viewer-created relation's fromUserId is the placement anchor selected
+        // in the UI. If only its target is in this frontier, defer the edge until
+        // the anchor is reached instead of permanently processing it backward.
+        if (rel.createdById === userId && fromIndex === undefined) continue;
+
+        // Relations created by this viewer use fromUserId as their explicit
+        // placement anchor. Prefer it when both endpoints are in the frontier so
+        // adding through another friend's node cannot flip the new edge around.
         const sourceId =
-          fromIndex !== undefined && (toIndex === undefined || fromIndex <= toIndex)
+          rel.createdById === userId && fromIndex !== undefined
             ? rel.fromUserId
-            : toIndex !== undefined
-              ? rel.toUserId
-              : undefined;
+            : fromIndex !== undefined && (toIndex === undefined || fromIndex <= toIndex)
+              ? rel.fromUserId
+              : toIndex !== undefined
+                ? rel.toUserId
+                : undefined;
         if (!sourceId) continue;
 
         const neighborUser = (rel.fromUserId === sourceId) ? rel.toUser : rel.fromUser;
@@ -1217,6 +1227,17 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
         const targetId = neighborUser.id;
         const sourceData = visited.get(sourceId)!;
         const sourceGen = sourceData.gen;
+        const visualSide = isOutgoing
+          ? rel.visualSide
+          : rel.visualSide === 'top'
+            ? 'bottom'
+            : rel.visualSide === 'bottom'
+              ? 'top'
+              : rel.visualSide === 'left'
+                ? 'right'
+                : rel.visualSide === 'right'
+                  ? 'left'
+                  : null;
 
         // Resolve the relation code from ROOT's perspective
         const rootView = resolveRelationWithCache(rel, userId, lang);
@@ -1248,7 +1269,7 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
           status: rel.status,
           customName: isViewerCreated ? rel.customName : null,
           customPhotoUrl: isViewerCreated ? rel.customPhotoUrl : null,
-          visualSide: rel.visualSide,
+          visualSide,
           createdById: rel.createdById,
           hiddenByUserIds: rel.hiddenByUserIds,
         });
@@ -1264,16 +1285,17 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
         let localNeighborGen: number;
         const canonicalLevel = RELATION_LEVEL_MAP[targetRelCode];
 
-        // Dynamic level for NATEVAIK generic relative based on visualSide placement
+        // Dynamic level for NATEVAIK generic relative based on the side from
+        // the current source node's perspective (already inverted when needed).
         if (targetRelCode === 'NATEVAIK') {
-          if (rel.visualSide === 'top') {
+          if (visualSide === 'top') {
             let nextGen = sourceGen + 1;
             // When adding on top, never place onto the root level (gen 0). It must be at least gen 1 (above root).
             if (nextGen === 0) {
               nextGen = 1;
             }
             localNeighborGen = nextGen;
-          } else if (rel.visualSide === 'bottom') {
+          } else if (visualSide === 'bottom') {
             localNeighborGen = sourceGen - 1;
           } else {
             localNeighborGen = sourceGen;
