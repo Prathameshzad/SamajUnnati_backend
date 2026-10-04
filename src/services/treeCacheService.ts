@@ -16,6 +16,10 @@ import { createLogger } from '../lib/logger';
 
 const log = createLogger('tree-cache');
 
+// Rotated whenever the serialized full-tree payload shape changes. This keeps
+// older cached responses (which lack newer fields) from reaching updated clients.
+const FULL_TREE_RESPONSE_SCHEMA = 'v2-registration-state';
+
 export class TreeCacheService {
   private static async fullTreeKey(
     userId: string,
@@ -24,7 +28,7 @@ export class TreeCacheService {
     category?: string
   ): Promise<string> {
     const version = await CacheService.getVersion(CacheScope.USER, userId);
-    return `tree:full:${CacheService.buildTag}:${userId}:${version}:${depth}:${lang}:${category || 'ALL'}`;
+    return `tree:full:${CacheService.buildTag}:${FULL_TREE_RESPONSE_SCHEMA}:${userId}:${version}:${depth}:${lang}:${category || 'ALL'}`;
   }
 
   private static async graphChunkKey(

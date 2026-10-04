@@ -151,9 +151,208 @@ export function invalidateRelationTypeRegistry(): void {
   cachedAt = 0;
 }
 
+const ESSENTIAL_TYPES = [
+  {
+    code: 'MAME_SASRA',
+    category: 'FAMILY' as const,
+    targetGender: 'MALE' as const,
+    treeLevel: 1,
+    treeSide: 'SPOUSE',
+    reciprocalCode: 'JAVAI',
+    mr: 'मामे सासरा',
+    en: 'Uncle-in-law (Maternal)',
+  },
+  {
+    code: 'CHULAT_SASU',
+    category: 'FAMILY' as const,
+    targetGender: 'FEMALE' as const,
+    treeLevel: 1,
+    treeSide: 'SPOUSE',
+    reciprocalCode: 'PUTAN_JAVAI',
+    mr: 'चुलत सासू',
+    en: 'Paternal Aunt-in-law',
+  },
+  {
+    code: 'CHULAT_MEVHANA',
+    category: 'FAMILY' as const,
+    targetGender: 'MALE' as const,
+    treeLevel: 0,
+    treeSide: 'SPOUSE',
+    reciprocalCode: 'CHULAT_MEVHANA',
+    mr: 'चुलत मेव्हणा',
+    en: 'Cousin Brother-in-law',
+  },
+  {
+    code: 'CHULAT_MEVHANI',
+    category: 'FAMILY' as const,
+    targetGender: 'FEMALE' as const,
+    treeLevel: 0,
+    treeSide: 'SPOUSE',
+    reciprocalCode: 'CHULAT_SADU',
+    mr: 'चुलत मेव्हणी',
+    en: 'Cousin Sister-in-law',
+  },
+  {
+    code: 'CHULAT_SUNRE',
+    category: 'FAMILY' as const,
+    targetGender: 'FEMALE' as const,
+    treeLevel: 0,
+    treeSide: 'SPOUSE',
+    reciprocalCode: 'CHULAT_MEVHANA',
+    mr: 'चुलत सुनरे',
+    en: "Cousin Brother-in-law's Wife",
+  },
+  {
+    code: 'CHULAT_SADU',
+    category: 'FAMILY' as const,
+    targetGender: 'MALE' as const,
+    treeLevel: 0,
+    treeSide: 'SPOUSE',
+    reciprocalCode: 'CHULAT_MEVHANI',
+    mr: 'चुलत साडू',
+    en: "Cousin Sister-in-law's Husband",
+  },
+  {
+    code: 'CHULAT_BHACHA',
+    category: 'FAMILY' as const,
+    targetGender: 'MALE' as const,
+    treeLevel: -1,
+    treeSide: 'ROOT',
+    reciprocalCode: 'MAMA',
+    mr: 'चुलत भाचा',
+    en: 'Cousin Nephew',
+  },
+  {
+    code: 'CHULAT_BHACHI',
+    category: 'FAMILY' as const,
+    targetGender: 'FEMALE' as const,
+    treeLevel: -1,
+    treeSide: 'ROOT',
+    reciprocalCode: 'MAMA',
+    mr: 'चुलत भाची',
+    en: 'Cousin Niece',
+  },
+];
+
+export async function ensureEssentialRelationTypes(): Promise<void> {
+  for (const item of ESSENTIAL_TYPES) {
+    try {
+      await prisma.relationType.upsert({
+        where: { code: item.code },
+        update: {
+          category: item.category,
+          targetGender: item.targetGender,
+          treeLevel: item.treeLevel,
+          treeSide: item.treeSide,
+          reciprocalCode: item.reciprocalCode,
+        },
+        create: {
+          code: item.code,
+          category: item.category,
+          targetGender: item.targetGender,
+          treeLevel: item.treeLevel,
+          treeSide: item.treeSide,
+          reciprocalCode: item.reciprocalCode,
+        },
+      });
+
+      // mr translation
+      await prisma.relationTranslation.upsert({
+        where: {
+          relationTypeCode_languageCode_community: {
+            relationTypeCode: item.code,
+            languageCode: 'mr',
+            community: '',
+          },
+        },
+        update: { label: item.mr },
+        create: {
+          relationTypeCode: item.code,
+          languageCode: 'mr',
+          community: '',
+          label: item.mr,
+        },
+      }).catch(async () => {
+        // Fallback if unique constraint without community uses null
+        const existing = await prisma.relationTranslation.findFirst({
+          where: { relationTypeCode: item.code, languageCode: 'mr' },
+        });
+        if (existing) {
+          await prisma.relationTranslation.update({
+            where: { id: existing.id },
+            data: { label: item.mr },
+          });
+        } else {
+          await prisma.relationTranslation.create({
+            data: {
+              relationTypeCode: item.code,
+              languageCode: 'mr',
+              label: item.mr,
+            },
+          });
+        }
+      });
+
+      // en translation
+      await prisma.relationTranslation.upsert({
+        where: {
+          relationTypeCode_languageCode_community: {
+            relationTypeCode: item.code,
+            languageCode: 'en',
+            community: '',
+          },
+        },
+        update: { label: item.en },
+        create: {
+          relationTypeCode: item.code,
+          languageCode: 'en',
+          community: '',
+          label: item.en,
+        },
+      }).catch(async () => {
+        const existing = await prisma.relationTranslation.findFirst({
+          where: { relationTypeCode: item.code, languageCode: 'en' },
+        });
+        if (existing) {
+          await prisma.relationTranslation.update({
+            where: { id: existing.id },
+            data: { label: item.en },
+          });
+        } else {
+          await prisma.relationTranslation.create({
+            data: {
+              relationTypeCode: item.code,
+              languageCode: 'en',
+              label: item.en,
+            },
+          });
+        }
+      });
+    } catch (e) {
+      log.warn({ err: e, code: item.code }, 'Failed to ensure essential relation type');
+    }
+  }
+
+  // Update MAMI_SASRA translation to MAME_SASRA label 'मामे सासरा'
+  try {
+    const mamiSasraTranslations = await prisma.relationTranslation.findMany({
+      where: { relationTypeCode: 'MAMI_SASRA', languageCode: 'mr' },
+    });
+    for (const t of mamiSasraTranslations) {
+      await prisma.relationTranslation.update({
+        where: { id: t.id },
+        data: { label: 'मामे सासरा' },
+      });
+    }
+  } catch (err) {
+    // Ignore if not found
+  }
+}
+
 /** Warms the cache at boot so the first request does not pay for the load. */
 export async function warmRelationTypeRegistry(): Promise<void> {
   try {
+    await ensureEssentialRelationTypes();
     const registry = await getRelationTypeRegistry();
     log.info({ types: registry.size }, 'relation type registry warmed');
   } catch (err) {

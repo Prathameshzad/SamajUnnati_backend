@@ -79,6 +79,8 @@ export const getFriendTree = async (req: AuthRequest, res: Response) => {
       gender: true,
       isAlive: true,
       phone: true,
+      profileCompleted: true,
+      isRegistered: true,
     }
   });
 
@@ -117,10 +119,30 @@ export const getFriendTree = async (req: AuthRequest, res: Response) => {
         createdAt: true,
         updatedAt: true,
         fromUser: {
-          select: { id: true, phone: true, firstName: true, lastName: true, photoUrl: true, gender: true, isAlive: true }
+          select: {
+            id: true,
+            phone: true,
+            firstName: true,
+            lastName: true,
+            photoUrl: true,
+            gender: true,
+            isAlive: true,
+            profileCompleted: true,
+            isRegistered: true,
+          }
         },
         toUser: {
-          select: { id: true, phone: true, firstName: true, lastName: true, photoUrl: true, gender: true, isAlive: true }
+          select: {
+            id: true,
+            phone: true,
+            firstName: true,
+            lastName: true,
+            photoUrl: true,
+            gender: true,
+            isAlive: true,
+            profileCompleted: true,
+            isRegistered: true,
+          }
         },
     }
   });
@@ -314,6 +336,13 @@ function normalizePhone(value: string): string {
   return digits;
 }
 
+/** Match both the current 10-digit format and legacy Indian numbers with 91. */
+function phoneLookupVariants(normalizedPhone: string): string[] {
+  return normalizedPhone.length === 10
+    ? [normalizedPhone, `91${normalizedPhone}`]
+    : [normalizedPhone];
+}
+
 function normalizeGender(gender?: string | null): 'MALE' | 'FEMALE' | null {
   if (!gender) return null;
   const g = String(gender).trim().toUpperCase();
@@ -419,12 +448,29 @@ export const approveFriend = async (req: AuthRequest, res: Response) => {
         createdById: true,
         status: true,
         category: true,
+        hiddenByUserIds: true,
       },
     });
     if (!relation || relation.toUserId !== userId || relation.category !== 'FRIEND') {
       throw notFound('Friend request not found or not authorized');
     }
     if (relation.status === 'CONFIRMED') {
+      if (relation.hiddenByUserIds && relation.hiddenByUserIds.length > 0) {
+        await tx.relation.update({
+          where: { id },
+          data: { hiddenByUserIds: [] },
+        });
+        await tx.relation.updateMany({
+          where: {
+            fromUserId: relation.toUserId,
+            toUserId: relation.fromUserId,
+            category: 'FRIEND',
+          },
+          data: { hiddenByUserIds: [] },
+        });
+        const current = await tx.relation.findUniqueOrThrow({ where: { id } });
+        return { relation: current, transitioned: true, scoreUpdate: null };
+      }
       return { relation, transitioned: false, scoreUpdate: null };
     }
     if (relation.status !== 'PENDING') throw badRequest('Request is no longer pending');
@@ -433,8 +479,18 @@ export const approveFriend = async (req: AuthRequest, res: Response) => {
 
     const changed = await tx.relation.updateMany({
       where: { id, toUserId: userId, category: 'FRIEND', status: 'PENDING' },
-      data: { status: 'CONFIRMED', approvedAt: new Date() },
+      data: { status: 'CONFIRMED', approvedAt: new Date(), hiddenByUserIds: [] },
     });
+    if (changed.count > 0) {
+      await tx.relation.updateMany({
+        where: {
+          fromUserId: relation.toUserId,
+          toUserId: relation.fromUserId,
+          category: 'FRIEND',
+        },
+        data: { hiddenByUserIds: [] },
+      });
+    }
     if (changed.count === 0) {
       const current = await tx.relation.findUniqueOrThrow({ where: { id } });
       if (current.status !== 'CONFIRMED') {
@@ -649,16 +705,12 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
   if (!userId) throw unauthenticated();
 
   const {
-    phone, firstName, lastName, gender, relationTypeCode, sourceUserId, customName, customPhotoUrl, isAlive, visualSide, dateOfBirth, bloodGroup,
+    phone, firstName, lastName, gender, relationTypeCode, sourceUserId, customName, customPhotoUrl, isAlive, visualSide, dateOfBirth, dateOfDeath, bloodGroup,
     education, occupation, maritalStatus, pincode, address, area
   } = req.body;
 
   const fromUserId = sourceUserId || userId;
 
-  // AUTHORIZATION FIX (mirrors relationController.createRelation): `sourceUserId`
-  // arrives in the request body and, until now, was used unchecked as the
-  // relation's anchor. Verify it is actually a node in the caller's own tree
-  // before creating anything against it.
   if (sourceUserId) {
     await assertSourceNodeOwned(userId, sourceUserId);
   }
@@ -670,7 +722,14 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
     const d = new Date(dateOfBirth);
     if (!isNaN(d.getTime())) parsedDob = d;
   }
-  const cleanBloodGroup = bloodGroup ? String(bloodGroup).trim() : null;
+
+  let parsedDateOfDeath: Date | null = null;
+  if (!isPersonAlive && dateOfDeath) {
+    const d = new Date(dateOfDeath);
+    if (!isNaN(d.getTime())) parsedDateOfDeath = d;
+  }
+
+  const cleanBloodGroup = (isPersonAlive && bloodGroup) ? String(bloodGroup).trim() : null;
 
   let cleanPhone = null;
   if (isPersonAlive && phone && String(phone).trim()) {
@@ -691,7 +750,14 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
 
   let relatedUser = null;
   if (cleanPhone) {
-    relatedUser = await prisma.user.findUnique({ where: { phone: cleanPhone } });
+    relatedUser = await prisma.user.findFirst({
+      where: { phone: { in: phoneLookupVariants(cleanPhone) } },
+      // Prefer the real account if legacy 10/12-digit duplicates exist.
+      orderBy: [
+        { profileCompleted: 'desc' },
+        { isRegistered: 'desc' },
+      ],
+    });
   }
 
   if (!relatedUser) {
@@ -703,7 +769,8 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
         lastName: lastName || null,
         gender: normalizeGender(gender),
         dateOfBirth: parsedDob,
-        bloodGroup: cleanBloodGroup,
+        dateOfDeath: !isPersonAlive ? parsedDateOfDeath : null,
+        bloodGroup: isPersonAlive ? cleanBloodGroup : null,
         education: education ? String(education).trim() : null,
         occupation: occupation ? String(occupation).trim() : null,
         maritalStatus: maritalStatus ? String(maritalStatus).trim() : null,
@@ -720,8 +787,44 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
     throw badRequest('Cannot add yourself or the source as a friend');
   }
 
-  const { relation, scoreUpdate } = await prisma.$transaction(async (tx) => {
+  const { relation, scoreUpdate, isRecreating } = await prisma.$transaction(async (tx) => {
     await lockScoreOwnerInTransaction(tx, userId);
+
+    // Block adding the same friend with the exact same relation type if an active relation already exists
+    const existingActiveRelation = await tx.relation.findFirst({
+      where: {
+        category: 'FRIEND',
+        relationTypeCode,
+        OR: [
+          { fromUserId, toUserId: relatedUser.id },
+          { fromUserId: relatedUser.id, toUserId: fromUserId },
+          { createdById: userId, toUserId: relatedUser.id },
+        ],
+        status: { in: ['CONFIRMED', 'PENDING'] },
+        NOT: { hiddenByUserIds: { has: userId } },
+      },
+    });
+
+    if (existingActiveRelation) {
+      const displayLabel = resolveLabel(relType, lang);
+      throw badRequest(`This person is already added with relation: ${displayLabel}`);
+    }
+
+    const existing = await tx.relation.findUnique({
+      where: {
+        fromUserId_toUserId_relationTypeCode: {
+          fromUserId,
+          toUserId: relatedUser.id,
+          relationTypeCode,
+        },
+      },
+      select: { id: true, status: true, hiddenByUserIds: true },
+    });
+
+    const isRecreating = Boolean(
+      existing && (existing.hiddenByUserIds.length > 0 || existing.status === 'REJECTED')
+    );
+
     const savedRelation = await tx.relation.upsert({
       where: {
         fromUserId_toUserId_relationTypeCode: {
@@ -730,12 +833,17 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
           relationTypeCode,
         },
       },
-      // Idempotent retry: presentation fields may refresh, but terminal state and
-      // score ownership may not be overwritten.
       update: {
         ...(customName ? { customName } : {}),
         ...(customPhotoUrl ? { customPhotoUrl } : {}),
         visualSide: normalizeVisualSide(visualSide),
+        ...(isRecreating
+          ? {
+              status: isPersonAlive ? 'PENDING' : 'CONFIRMED',
+              createdById: userId,
+              hiddenByUserIds: [],
+            }
+          : {}),
       },
       create: {
         fromUserId,
@@ -747,6 +855,7 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
         customPhotoUrl: customPhotoUrl || null,
         visualSide: normalizeVisualSide(visualSide),
         createdById: userId,
+        hiddenByUserIds: [],
       },
       include: { toUser: true, fromUser: true },
     });
@@ -758,12 +867,12 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
       savedRelation.id,
       `relation:${savedRelation.id}:add`
     );
-    return { relation: savedRelation, scoreUpdate: score };
+    return { relation: savedRelation, scoreUpdate: score, isRecreating };
   });
   const displayLabel = resolveLabel(relType, lang);
   const authUser = await prisma.user.findUnique({ where: { id: userId } });
 
-  if (isPersonAlive && scoreUpdate.applied) {
+  if (isPersonAlive && (scoreUpdate.applied || isRecreating)) {
     // Notify the recipient of the friend request (if they have a phone = real registered user)
     if (relatedUser.phone) {
       await createNotification({

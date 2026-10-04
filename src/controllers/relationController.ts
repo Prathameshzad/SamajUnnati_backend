@@ -43,6 +43,11 @@ export const RELATION_USER_SELECT = {
   phone: true,
   area: true,
   isAlive: true,
+  dateOfBirth: true,
+  dateOfDeath: true,
+  bloodGroup: true,
+  profileCompleted: true,
+  isRegistered: true,
 } as const;
 
 type GenderValue = 'MALE' | 'FEMALE' | null;
@@ -267,6 +272,7 @@ export const getTree = async (req: AuthRequest, res: Response) => {
         area: true,
         isAlive: true,
         dateOfBirth: true,
+        dateOfDeath: true,
         bloodGroup: true,
         education: true,
         occupation: true,
@@ -392,6 +398,13 @@ function normalizePhone(value: string): string {
   return digits;
 }
 
+/** Match both the current 10-digit format and legacy Indian numbers with 91. */
+function phoneLookupVariants(normalizedPhone: string): string[] {
+  return normalizedPhone.length === 10
+    ? [normalizedPhone, `91${normalizedPhone}`]
+    : [normalizedPhone];
+}
+
 /**
  * Confirms the caller may anchor a new relation to `sourceUserId`.
  *
@@ -437,7 +450,7 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
   if (!userId) throw unauthenticated();
 
   const {
-    phone, firstName, lastName, gender, relationTypeCode, sourceUserId, customName, customPhotoUrl, isAlive, dateOfBirth, bloodGroup,
+    phone, firstName, lastName, gender, relationTypeCode, sourceUserId, customName, customPhotoUrl, isAlive, dateOfBirth, dateOfDeath, bloodGroup,
     education, occupation, maritalStatus, pincode, address, area, visualSide
   } = req.body;
   const fromUserId = sourceUserId || userId;
@@ -453,7 +466,14 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
     const d = new Date(dateOfBirth);
     if (!isNaN(d.getTime())) parsedDob = d;
   }
-  const cleanBloodGroup = bloodGroup ? String(bloodGroup).trim() : null;
+
+  let parsedDateOfDeath: Date | null = null;
+  if (!isPersonAlive && dateOfDeath) {
+    const d = new Date(dateOfDeath);
+    if (!isNaN(d.getTime())) parsedDateOfDeath = d;
+  }
+
+  const cleanBloodGroup = (isPersonAlive && bloodGroup) ? String(bloodGroup).trim() : null;
 
   let cleanPhone = null;
   if (isPersonAlive && phone && String(phone).trim()) {
@@ -463,64 +483,100 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
     }
   }
 
+  const matchedExistingUser = cleanPhone
+    ? await prisma.user.findFirst({
+        where: { phone: { in: phoneLookupVariants(cleanPhone) } },
+        // Prefer the actual account when both a legacy-prefixed user and a
+        // placeholder exist for the same national number.
+        orderBy: [
+          { profileCompleted: 'desc' },
+          { isRegistered: 'desc' },
+        ],
+      })
+    : null;
+
   {
-    const existingRelation = await prisma.relation.findFirst({
-      where: {
-        toUserId: userId,
-        fromUser: { phone: cleanPhone },
-        category: 'FAMILY',
-        status: 'CONFIRMED'
-      },
-      include: {
-        relationType: { include: { translations: true } },
-        fromUser: true
-      }
-    });
+    const existingRelation = matchedExistingUser
+      ? await prisma.relation.findFirst({
+          where: {
+            toUserId: userId,
+            fromUserId: matchedExistingUser.id,
+            category: 'FAMILY',
+            status: 'CONFIRMED',
+            hiddenByUserIds: { isEmpty: true }
+          },
+          include: {
+            relationType: { include: { translations: true } },
+            fromUser: true
+          }
+        })
+      : null;
 
     if (existingRelation && isPersonAlive) {
-      // Create the reciprocal relation to add them to the tree manually
-      const displayLabel = resolveLabel(existingRelation.relationType, lang);
-      
       const reciprocalCode = existingRelation.relationType?.reciprocalCode || existingRelation.relationTypeCode;
 
-      const { reciprocalRelation, scoreUpdate } = await prisma.$transaction(async (tx) => {
-        await lockScoreOwnerInTransaction(tx, userId);
-        const saved = await tx.relation.upsert({
+      // Only handle reciprocal auto-fill if the relation being added matches the reciprocal relation
+      if (relationTypeCode === reciprocalCode) {
+        const displayLabel = resolveLabel(existingRelation.relationType, lang);
+
+        const alreadyInTree = await prisma.relation.findFirst({
           where: {
-            fromUserId_toUserId_relationTypeCode: {
+            category: 'FAMILY',
+            relationTypeCode: reciprocalCode,
+            OR: [
+              { fromUserId: userId, toUserId: existingRelation.fromUserId },
+              { fromUserId: existingRelation.fromUserId, toUserId: userId },
+              { createdById: userId, toUserId: existingRelation.fromUserId },
+            ],
+            status: { in: ['CONFIRMED', 'PENDING'] },
+            NOT: { hiddenByUserIds: { has: userId } },
+          },
+        });
+
+        if (alreadyInTree) {
+          throw badRequest(`This person is already added with relation: ${displayLabel}`);
+        }
+
+        // Create the reciprocal relation to add them to the tree manually
+        const { reciprocalRelation, scoreUpdate } = await prisma.$transaction(async (tx) => {
+          await lockScoreOwnerInTransaction(tx, userId);
+          const saved = await tx.relation.upsert({
+            where: {
+              fromUserId_toUserId_relationTypeCode: {
+                fromUserId: userId,
+                toUserId: existingRelation.fromUserId,
+                relationTypeCode: reciprocalCode,
+              },
+            },
+            // Idempotent retry: never rewrite a terminal state or its owner.
+            update: {},
+            create: {
               fromUserId: userId,
               toUserId: existingRelation.fromUserId,
               relationTypeCode: reciprocalCode,
+              category: 'FAMILY',
+              status: 'CONFIRMED',
+              createdById: userId,
             },
-          },
-          // Idempotent retry: never rewrite a terminal state or its owner.
-          update: {},
-          create: {
-            fromUserId: userId,
-            toUserId: existingRelation.fromUserId,
-            relationTypeCode: reciprocalCode,
-            category: 'FAMILY',
-            status: 'CONFIRMED',
-            createdById: userId,
-          },
+          });
+          const score = await awardPointsInTransaction(
+            tx,
+            userId,
+            'ADD_ALIVE',
+            saved.id,
+            `relation:${saved.id}:add`
+          );
+          return { reciprocalRelation: saved, scoreUpdate: score };
         });
-        const score = await awardPointsInTransaction(
-          tx,
-          userId,
-          'ADD_ALIVE',
-          saved.id,
-          `relation:${saved.id}:add`
-        );
-        return { reciprocalRelation: saved, scoreUpdate: score };
-      });
-      await TreeCacheService.invalidateUserTree(userId, existingRelation.fromUserId);
-      emitScoreUpdate(scoreUpdate);
+        await TreeCacheService.invalidateUserTree(userId, existingRelation.fromUserId);
+        emitScoreUpdate(scoreUpdate);
 
-      return res.status(200).json({
-        alreadyAccepted: true,
-        message: `You have already accepted this person's request previously and this person was telling you ${displayLabel}. They are now added to your tree.`,
-        relation: reciprocalRelation
-      });
+        return res.status(200).json({
+          alreadyAccepted: true,
+          message: `You have already accepted this person's request previously and this person was telling you ${displayLabel}. They are now added to your tree.`,
+          relation: reciprocalRelation
+        });
+      }
     }
 
     const relType = await prisma.relationType.findUnique({
@@ -535,10 +591,7 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
       throw badRequest('Use the category-specific endpoint for non-family relations');
     }
 
-    let relatedUser = null;
-    if (cleanPhone) {
-      relatedUser = await prisma.user.findUnique({ where: { phone: cleanPhone } });
-    }
+    let relatedUser = matchedExistingUser;
 
     if (!relatedUser) {
       const creator = await prisma.user.findUnique({ where: { id: userId } });
@@ -553,7 +606,8 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
           lastName: lastName || null,
           gender: normalizeGender(gender || relType.targetGender),
           dateOfBirth: parsedDob,
-          bloodGroup: cleanBloodGroup,
+          dateOfDeath: !isPersonAlive ? parsedDateOfDeath : null,
+          bloodGroup: isPersonAlive ? cleanBloodGroup : null,
           education: education ? String(education).trim() : null,
           occupation: occupation ? String(occupation).trim() : null,
           maritalStatus: maritalStatus ? String(maritalStatus).trim() : null,
@@ -570,8 +624,21 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
       // Existing user found (e.g. by phone) -> update profile fields if provided
       const updateFields: any = {};
       if (parsedDob) updateFields.dateOfBirth = parsedDob;
-      if (cleanBloodGroup) updateFields.bloodGroup = cleanBloodGroup;
-      if (isAlive !== undefined) updateFields.isAlive = isPersonAlive;
+      if (isAlive !== undefined) {
+        updateFields.isAlive = isPersonAlive;
+        if (!isPersonAlive) {
+          updateFields.bloodGroup = null;
+          updateFields.dateOfDeath = parsedDateOfDeath;
+        } else {
+          updateFields.dateOfDeath = null;
+          if (cleanBloodGroup) updateFields.bloodGroup = cleanBloodGroup;
+        }
+      } else if (!isPersonAlive) {
+        updateFields.bloodGroup = null;
+        if (parsedDateOfDeath) updateFields.dateOfDeath = parsedDateOfDeath;
+      } else if (cleanBloodGroup) {
+        updateFields.bloodGroup = cleanBloodGroup;
+      }
       if (education) updateFields.education = String(education).trim();
       if (occupation) updateFields.occupation = String(occupation).trim();
       if (maritalStatus) updateFields.maritalStatus = String(maritalStatus).trim();
@@ -591,8 +658,44 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
       throw badRequest('Cannot create relation with yourself');
     }
 
-    const { relation, scoreUpdate } = await prisma.$transaction(async (tx) => {
+    const { relation, scoreUpdate, isRecreating } = await prisma.$transaction(async (tx) => {
       await lockScoreOwnerInTransaction(tx, userId);
+
+      // Block adding the same person with the exact same relation type if an active relation already exists
+      const existingActiveRelation = await tx.relation.findFirst({
+        where: {
+          category: 'FAMILY',
+          relationTypeCode,
+          OR: [
+            { fromUserId, toUserId: relatedUser.id },
+            { fromUserId: relatedUser.id, toUserId: fromUserId },
+            { createdById: userId, toUserId: relatedUser.id },
+          ],
+          status: { in: ['CONFIRMED', 'PENDING'] },
+          NOT: { hiddenByUserIds: { has: userId } },
+        },
+      });
+
+      if (existingActiveRelation) {
+        const displayLabel = resolveLabel(relType, lang);
+        throw badRequest(`This person is already added with relation: ${displayLabel}`);
+      }
+
+      const existing = await tx.relation.findUnique({
+        where: {
+          fromUserId_toUserId_relationTypeCode: {
+            fromUserId,
+            toUserId: relatedUser.id,
+            relationTypeCode,
+          },
+        },
+        select: { id: true, status: true, hiddenByUserIds: true },
+      });
+
+      const isRecreating = Boolean(
+        existing && (existing.hiddenByUserIds.length > 0 || existing.status === 'REJECTED')
+      );
+
       const savedRelation = await tx.relation.upsert({
         where: {
           fromUserId_toUserId_relationTypeCode: {
@@ -601,12 +704,17 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
             relationTypeCode,
           },
         },
-        // An idempotent retry may refresh presentation fields, but must never
-        // regress CONFIRMED/REJECTED back to PENDING or transfer score ownership.
         update: {
           ...(customName ? { customName } : {}),
           ...(customPhotoUrl ? { customPhotoUrl } : {}),
           visualSide: normalizeVisualSide(visualSide),
+          ...(isRecreating
+            ? {
+                status: isPersonAlive ? 'PENDING' : 'CONFIRMED',
+                createdById: userId,
+                hiddenByUserIds: [],
+              }
+            : {}),
         },
         create: {
           fromUserId,
@@ -618,6 +726,7 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
           customPhotoUrl: customPhotoUrl || null,
           visualSide: normalizeVisualSide(visualSide),
           createdById: userId,
+          hiddenByUserIds: [],
         },
         include: { toUser: true, fromUser: true },
       });
@@ -630,15 +739,14 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
         savedRelation.id,
         `relation:${savedRelation.id}:add`
       );
-      return { relation: savedRelation, scoreUpdate: score };
+      return { relation: savedRelation, scoreUpdate: score, isRecreating };
     });
 
     const displayLabel = resolveLabel(relType, lang);
     const authUser = await prisma.user.findUnique({ where: { id: userId } });
 
-    // Deceased relatives do not receive request notifications, and no "waiting for approval"
-    // notification is generated for the creator since deceased ancestors cannot approve requests.
-    if (isPersonAlive && scoreUpdate.applied) {
+    // Send notifications for alive relatives if points were awarded or if this is a re-created request
+    if (isPersonAlive && (scoreUpdate.applied || isRecreating)) {
       if (relatedUser.phone) {
         await createNotification({
           userId: relatedUser.id,
@@ -683,6 +791,7 @@ export const approveRelation = async (req: AuthRequest, res: Response) => {
         createdById: true,
         status: true,
         category: true,
+        hiddenByUserIds: true,
       },
     });
 
@@ -690,6 +799,22 @@ export const approveRelation = async (req: AuthRequest, res: Response) => {
       throw notFound('Family relation request not found or not authorized');
     }
     if (relation.status === 'CONFIRMED') {
+      if (relation.hiddenByUserIds && relation.hiddenByUserIds.length > 0) {
+        await tx.relation.update({
+          where: { id },
+          data: { hiddenByUserIds: [] },
+        });
+        await tx.relation.updateMany({
+          where: {
+            fromUserId: relation.toUserId,
+            toUserId: relation.fromUserId,
+            category: 'FAMILY',
+          },
+          data: { hiddenByUserIds: [] },
+        });
+        const current = await tx.relation.findUniqueOrThrow({ where: { id } });
+        return { relation: current, transitioned: true, scoreUpdate: null };
+      }
       return { relation, transitioned: false, scoreUpdate: null };
     }
     if (relation.status !== 'PENDING') {
@@ -702,8 +827,18 @@ export const approveRelation = async (req: AuthRequest, res: Response) => {
     // can change PENDING to CONFIRMED and therefore only one can award +20.
     const changed = await tx.relation.updateMany({
       where: { id, toUserId: userId, category: 'FAMILY', status: 'PENDING' },
-      data: { status: 'CONFIRMED', approvedAt: new Date() },
+      data: { status: 'CONFIRMED', approvedAt: new Date(), hiddenByUserIds: [] },
     });
+    if (changed.count > 0) {
+      await tx.relation.updateMany({
+        where: {
+          fromUserId: relation.toUserId,
+          toUserId: relation.fromUserId,
+          category: 'FAMILY',
+        },
+        data: { hiddenByUserIds: [] },
+      });
+    }
     if (changed.count === 0) {
       const current = await tx.relation.findUniqueOrThrow({ where: { id } });
       if (current.status !== 'CONFIRMED') {
@@ -882,7 +1017,7 @@ export const updateRelation = async (req: AuthRequest, res: Response) => {
   const { id } = req.params;
   const {
     targetUserId: bodyTargetUserId,
-    customName, customPhotoUrl, relationTypeCode, phone, isAlive, dateOfBirth, bloodGroup,
+    customName, customPhotoUrl, relationTypeCode, phone, isAlive, dateOfBirth, dateOfDeath, bloodGroup,
     education, occupation, maritalStatus, pincode, address, area
   } = req.body;
 
@@ -926,7 +1061,28 @@ export const updateRelation = async (req: AuthRequest, res: Response) => {
     // Update target relative user's profile fields if specified
     const targetUserData: any = {};
     if (customPhotoUrl !== undefined) targetUserData.photoUrl = customPhotoUrl ? String(customPhotoUrl).trim() : null;
-    if (isAlive !== undefined) targetUserData.isAlive = Boolean(isAlive);
+    if (isAlive !== undefined) {
+      const aliveBool = Boolean(isAlive);
+      targetUserData.isAlive = aliveBool;
+      if (!aliveBool) {
+        targetUserData.bloodGroup = null;
+        if (dateOfDeath !== undefined) {
+          targetUserData.dateOfDeath = dateOfDeath ? new Date(dateOfDeath) : null;
+        }
+      } else {
+        targetUserData.dateOfDeath = null;
+        if (bloodGroup !== undefined) {
+          targetUserData.bloodGroup = bloodGroup ? String(bloodGroup).trim() : null;
+        }
+      }
+    } else {
+      if (dateOfDeath !== undefined) {
+        targetUserData.dateOfDeath = dateOfDeath ? new Date(dateOfDeath) : null;
+      }
+      if (bloodGroup !== undefined) {
+        targetUserData.bloodGroup = bloodGroup ? String(bloodGroup).trim() : null;
+      }
+    }
     if (dateOfBirth !== undefined) {
       if (dateOfBirth) {
         const d = new Date(dateOfBirth);
@@ -935,7 +1091,6 @@ export const updateRelation = async (req: AuthRequest, res: Response) => {
         targetUserData.dateOfBirth = null;
       }
     }
-    if (bloodGroup !== undefined) targetUserData.bloodGroup = bloodGroup ? String(bloodGroup).trim() : null;
     if (education !== undefined) targetUserData.education = education ? String(education).trim() : null;
     if (occupation !== undefined) targetUserData.occupation = occupation ? String(occupation).trim() : null;
     if (maritalStatus !== undefined) targetUserData.maritalStatus = maritalStatus ? String(maritalStatus).trim() : null;
@@ -1044,6 +1199,8 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
         gender: true,
         isAlive: true,
         phone: true,
+        profileCompleted: true,
+        isRegistered: true,
       }
     });
     if (!rootUserDb) throw notFound('User not found');
@@ -1132,10 +1289,30 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
           createdAt: true,
           updatedAt: true,
           fromUser: {
-            select: { id: true, phone: true, firstName: true, lastName: true, photoUrl: true, gender: true, isAlive: true }
+            select: {
+              id: true,
+              phone: true,
+              firstName: true,
+              lastName: true,
+              photoUrl: true,
+              gender: true,
+              isAlive: true,
+              profileCompleted: true,
+              isRegistered: true,
+            }
           },
           toUser: {
-            select: { id: true, phone: true, firstName: true, lastName: true, photoUrl: true, gender: true, isAlive: true }
+            select: {
+              id: true,
+              phone: true,
+              firstName: true,
+              lastName: true,
+              photoUrl: true,
+              gender: true,
+              isAlive: true,
+              profileCompleted: true,
+              isRegistered: true,
+            }
           },
           // `relationType: true` removed: treeSide/treeLevel/reciprocalCode now come
           // from the cached registry, so this join no longer runs per hop.

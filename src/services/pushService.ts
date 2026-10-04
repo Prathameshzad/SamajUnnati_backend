@@ -161,6 +161,7 @@ function buildMessage(tokens: string[], payload: PushPayload): MulticastMessage 
         channelId: channel,
         sound: 'default',
         defaultVibrateTimings: true,
+        priority: 'high',
         // Groups entries in the shade by conversation/type, so the tray shows
         // "3 new messages" rather than three separate rows.
         tag: payload.collapseKey,

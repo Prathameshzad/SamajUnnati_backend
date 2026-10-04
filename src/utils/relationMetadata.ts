@@ -294,6 +294,11 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
           direction: "SAME",
         },
         {
+          label: "चुलत सासू",
+          code: "CHULAT_SASU",
+          direction: "SAME",
+        },
+        {
           label: "आत्या सासू",
           code: "ATYA_SASU",
           direction: "SAME",
@@ -360,6 +365,8 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
     xAxis: {
       left: [
         { label: "सासरा (Father-in-law)", code: "SASRA", direction: "SAME" },
+        { label: "चुलत सासरा", code: "CHULAT_SASRA", direction: "SAME" },
+        { label: "चुलत सासू", code: "CHULAT_SASU", direction: "SAME" },
       ],
       right: [
         {
@@ -483,7 +490,7 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
   MAMA_SASRA: {
     xAxis: {
       left: [
-        { label: "मामी सासरा", code: "MAMI_SASRA", direction: "SAME" },
+        { label: "मामे सासरा", code: "MAME_SASRA", direction: "SAME" },
         { label: "मावस सासू", code: "MAVAS_SASU", direction: "SAME" }
       ],
       right: [{ label: "मामी सासू", code: "MAMI_SASU", direction: "SAME" }],
@@ -503,7 +510,7 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
     xAxis: {
       left: [{ label: "मामा सासरा", code: "MAMA_SASRA", direction: "SAME" }],
       right: [
-        { label: "मामी सासरा", code: "MAMI_SASRA", direction: "SAME" },
+        { label: "मामे सासरा", code: "MAME_SASRA", direction: "SAME" },
         { label: "मावस सासू", code: "MAVAS_SASU", direction: "SAME" }
       ],
     },
@@ -515,6 +522,157 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
       bottom: [
         { label: "चुलत दीर", code: "CHULTA_DIR", direction: "DOWN" },
         { label: "चुलत नणंद", code: "CHULTA_NANAND", direction: "DOWN" },
+      ],
+    },
+  },
+  MAME_SASRA: {
+    xAxis: {
+      left: [
+        { label: "मामे सासरा", code: "MAME_SASRA", direction: "SAME" },
+        { label: "मावस सासू", code: "MAVAS_SASU", direction: "SAME" }
+      ],
+      right: [{ label: "मामी सासू", code: "MAMI_SASU", direction: "SAME" }],
+    },
+    yAxis: {
+      top: [
+        { label: "आजी सासू", code: "AJI_SASU", direction: "UP" },
+        { label: "आजोबा सासू", code: "AJOBA_SASU", direction: "UP" },
+      ],
+      bottom: [
+        { label: "चुलत दीर", code: "CHULTA_DIR", direction: "DOWN" },
+        { label: "चुलत नणंद", code: "CHULTA_NANAND", direction: "DOWN" },
+      ],
+    },
+  },
+  CHULAT_SASRA: {
+    xAxis: {
+      left: [
+        { label: "चुलत सासू", code: "CHULAT_SASU", direction: "SAME" },
+        { label: "चुलत सासरा", code: "CHULAT_SASRA", direction: "SAME" },
+      ],
+      right: [
+        { label: "चुलत सासू", code: "CHULAT_SASU", direction: "SAME" },
+        { label: "सासरा", code: "SASRA", direction: "SAME" },
+        { label: "सासू", code: "SASU", direction: "SAME" },
+      ],
+    },
+    yAxis: {
+      top: [
+        { label: "नातेवाईक", code: "NATEVAIK", direction: "UP" },
+      ],
+      bottom: [
+        { label: "चुलत मेव्हणा", code: "CHULAT_MEVHANA", direction: "DOWN" },
+        { label: "चुलत मेव्हणी", code: "CHULAT_MEVHANI", direction: "DOWN" },
+      ],
+    },
+  },
+  CHULAT_SASU: {
+    xAxis: {
+      left: [
+        { label: "चुलत सासरा", code: "CHULAT_SASRA", direction: "SAME" },
+        { label: "सासरा", code: "SASRA", direction: "SAME" },
+        { label: "सासू", code: "SASU", direction: "SAME" },
+      ],
+      right: [
+        { label: "चुलत सासरा", code: "CHULAT_SASRA", direction: "SAME" },
+        { label: "चुलत सासू", code: "CHULAT_SASU", direction: "SAME" },
+      ],
+    },
+    yAxis: {
+      top: [
+        { label: "नातेवाईक", code: "NATEVAIK", direction: "UP" },
+      ],
+      bottom: [
+        { label: "चुलत मेव्हणा", code: "CHULAT_MEVHANA", direction: "DOWN" },
+        { label: "चुलत मेव्हणी", code: "CHULAT_MEVHANI", direction: "DOWN" },
+      ],
+    },
+  },
+  CHULAT_MEVHANA: {
+    xAxis: {
+      left: [
+        { label: "चुलत सुनरे", code: "CHULAT_SUNRE", direction: "SAME" },
+        { label: "चुलत मेव्हणा", code: "CHULAT_MEVHANA", direction: "SAME" },
+      ],
+      right: [
+        { label: "चुलत सुनरे", code: "CHULAT_SUNRE", direction: "SAME" },
+        { label: "चुलत मेव्हणी", code: "CHULAT_MEVHANI", direction: "SAME" },
+        { label: "चुलत साडू", code: "CHULAT_SADU", direction: "SAME" },
+      ],
+    },
+    yAxis: {
+      top: [
+        { label: "चुलत सासरा", code: "CHULAT_SASRA", direction: "UP" },
+        { label: "चुलत सासू", code: "CHULAT_SASU", direction: "UP" },
+      ],
+      bottom: [
+        { label: "चुलत भाचा", code: "CHULAT_BHACHA", direction: "DOWN" },
+        { label: "चुलत भाची", code: "CHULAT_BHACHI", direction: "DOWN" },
+      ],
+    },
+  },
+  CHULAT_MEVHANI: {
+    xAxis: {
+      left: [
+        { label: "चुलत साडू", code: "CHULAT_SADU", direction: "SAME" },
+        { label: "चुलत मेव्हणा", code: "CHULAT_MEVHANA", direction: "SAME" },
+        { label: "चुलत सुनरे", code: "CHULAT_SUNRE", direction: "SAME" },
+      ],
+      right: [
+        { label: "चुलत साडू", code: "CHULAT_SADU", direction: "SAME" },
+        { label: "चुलत मेव्हणी", code: "CHULAT_MEVHANI", direction: "SAME" },
+      ],
+    },
+    yAxis: {
+      top: [
+        { label: "चुलत सासरा", code: "CHULAT_SASRA", direction: "UP" },
+        { label: "चुलत सासू", code: "CHULAT_SASU", direction: "UP" },
+      ],
+      bottom: [
+        { label: "चुलत भाचा", code: "CHULAT_BHACHA", direction: "DOWN" },
+        { label: "चुलत भाची", code: "CHULAT_BHACHI", direction: "DOWN" },
+      ],
+    },
+  },
+  CHULAT_SUNRE: {
+    xAxis: {
+      left: [
+        { label: "चुलत मेव्हणा", code: "CHULAT_MEVHANA", direction: "SAME" },
+        { label: "नातेवाईक", code: "NATEVAIK", direction: "SAME" },
+      ],
+      right: [
+        { label: "चुलत मेव्हणा", code: "CHULAT_MEVHANA", direction: "SAME" },
+        { label: "नातेवाईक", code: "NATEVAIK", direction: "SAME" },
+      ],
+    },
+    yAxis: {
+      top: [
+        { label: "नातेवाईक", code: "NATEVAIK", direction: "UP" },
+      ],
+      bottom: [
+        { label: "चुलत भाचा", code: "CHULAT_BHACHA", direction: "DOWN" },
+        { label: "चुलत भाची", code: "CHULAT_BHACHI", direction: "DOWN" },
+      ],
+    },
+  },
+  CHULAT_SADU: {
+    xAxis: {
+      left: [
+        { label: "चुलत मेव्हणी", code: "CHULAT_MEVHANI", direction: "SAME" },
+        { label: "नातेवाईक", code: "NATEVAIK", direction: "SAME" },
+      ],
+      right: [
+        { label: "चुलत मेव्हणी", code: "CHULAT_MEVHANI", direction: "SAME" },
+        { label: "नातेवाईक", code: "NATEVAIK", direction: "SAME" },
+      ],
+    },
+    yAxis: {
+      top: [
+        { label: "नातेवाईक", code: "NATEVAIK", direction: "UP" },
+      ],
+      bottom: [
+        { label: "चुलत भाचा", code: "CHULAT_BHACHA", direction: "DOWN" },
+        { label: "चुलत भाची", code: "CHULAT_BHACHI", direction: "DOWN" },
       ],
     },
   },
@@ -1671,7 +1829,7 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
       ],
       bottom: [
         { label: "आजोबा", code: "AJOBA", direction: "DOWN" },
-        { label: "नाना", code: "NANA", direction: "DOWN" },
+        { label: "आजी", code: "AAJI", direction: "DOWN" },
       ],
     },
   },
@@ -1690,7 +1848,7 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
       ],
       bottom: [
         { label: "आजोबा", code: "AJOBA", direction: "DOWN" },
-        { label: "नाना", code: "NANA", direction: "DOWN" },
+        { label: "आजी", code: "AAJI", direction: "DOWN" },
       ],
     },
   },
@@ -2840,6 +2998,8 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
     },
     yAxis: {
       top: [
+        { label: "चुलत मेव्हणा", code: "CHULAT_MEVHANA", direction: "UP" },
+        { label: "चुलत मेव्हणी", code: "CHULAT_MEVHANI", direction: "UP" },
         { label: "मामेभाऊ", code: "MAMI_BHAU", direction: "UP" },
         { label: "मामे वहिनी", code: "MAMI_VAHINI", direction: "UP" },
         { label: "मामे दाजी", code: "MAMI_DAJI", direction: "UP" },
@@ -2871,6 +3031,8 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
     },
     yAxis: {
       top: [
+        { label: "चुलत मेव्हणा", code: "CHULAT_MEVHANA", direction: "UP" },
+        { label: "चुलत मेव्हणी", code: "CHULAT_MEVHANI", direction: "UP" },
         { label: "मामेभाऊ", code: "MAMI_BHAU", direction: "UP" },
         { label: "मामे वहिनी", code: "MAMI_VAHINI", direction: "UP" },
         { label: "मामे दाजी", code: "MAMI_DAJI", direction: "UP" },
@@ -3007,6 +3169,7 @@ export const SPOUSE_PAIRS: [string, string][] = [
   ["AJI_SASRA", "AJI_SASU"],
   ["AJOBA_SASRA", "AJOBA_SASU"],
   ["MAMA_SASRA", "MAMI_SASU"],
+  ["MAME_SASRA", "MAMI_SASU"],
   ["PANJOBA_SASRA", "PANAJI_SASU"],
   ["CHULAT_BHAU", "CHULAT_VAHINI"],
   ["CHULAT_DAJI", "CHULAT_BAHIN"],
@@ -3027,7 +3190,9 @@ export const SPOUSE_PAIRS: [string, string][] = [
   ["CHULAT_FUA", "CHULAT_AATYA"],
   ["CHULAT_AATYA_BHAU", "CHULAT_VAHINI"],
   ["CHULAT_DAJI", "CHULAT_AATYA_BAHIN"],
-  ["CHULAT_MEVHANA", "CHULAT_MEVHANI"],
+  ["CHULAT_SASRA", "CHULAT_SASU"],
+  ["CHULAT_MEVHANA", "CHULAT_SUNRE"],
+  ["CHULAT_SADU", "CHULAT_MEVHANI"],
   ["CHULTA_DIR", "CHULAT_BHAUJAI"],
   ["MEVHANA", "SUNRI"],
   ["MAME_AAJOBA", "MAME_AAJI"],
@@ -3131,8 +3296,8 @@ export const RELATION_LEVEL_MAP: Record<string, number> = {
   CHULAT_KAKA: 2, CHULAT_KAKI: 2, CHULAT_FUA: 2, CHULAT_AATYA: 2,
   MAVSHI: 2, MAVSA: 2, CHULTA: 2, CHULTI: 2,
   CHULAT_MAMA: 2, CHULAT_MAMI: 2, CHULAT_MAVSHA: 2, CHULAT_MAVSHI: 2, VYAHI: 2, VIHIN: 2,
-  SASRA: 2, SASU: 2, MAMA_SASRA: 2, MAMI_SASU: 2, MAMI_SASRA: 2,
-  CHULAT_SASRA: 2, ATYA_SASU: 2, MAVAS_SASU: 2,
+  SASRA: 2, SASU: 2, MAMA_SASRA: 2, MAMI_SASU: 2, MAMI_SASRA: 2, MAME_SASRA: 2,
+  CHULAT_SASRA: 2, CHULAT_SASU: 2, ATYA_SASU: 2, MAVAS_SASU: 2,
   BHAU: 1, BAHIN: 1, VAHINI: 1, DAJI: 1,
   MEVHANA: 1, MEVHANI: 1, SADU: 1, DIR_CHOTE: 1, DIR_MOTHE: 1,
   NANAND: 1, NANANDOI: 1, CHULAT_BHAU: 1, CHULAT_BAHIN: 1,
@@ -3144,7 +3309,7 @@ export const RELATION_LEVEL_MAP: Record<string, number> = {
   MAV_DAJI: 1, MAV_VAHINI: 1,
   MAMI_BHAU: 1, MAMI_BAHIN: 1, MAMI_DAJI: 1, MAMI_VAHINI: 1,
   CHULTA_DIR: 1, CHULTA_NANAND: 1, CHULAT_DIR: 1, CHULAT_NANAND: 1,
-  BHAUJAI: 1, CHULAT_MEVHANA: 1, CHULAT_MEVHANI: 1, CHULAT_BHAUJAI: 1, SUNRI: 1,
+  BHAUJAI: 1, CHULAT_MEVHANA: 1, CHULAT_MEVHANI: 1, CHULAT_SUNRE: 1, CHULAT_SADU: 1, CHULAT_BHAUJAI: 1, SUNRI: 1,
   DAJI_CHA_BHAU: 1, DAJI_CHI_BAHIN: 1, MAMI_CHA_BHAU: 1, MAMI_CHI_BAHIN: 1,
   KAKI_CHA_BHAU: 1, KAKI_CHI_BAHIN: 1, MAVSA_CHA_BHAU: 1, MAVSA_CHI_BAHIN: 1,
   FUA_CHA_BHAU: 1, FUA_CHI_BAHIN: 1, SUNRI_CHA_BHAU: 1, SUNRI_CHI_BAHIN: 1,
@@ -3194,6 +3359,7 @@ export const RELATION_X_ORDER: Record<string, number> = {
 
   // Tier 4: Spouse family (Right of Center, aligning with Sasra at +60 / Sasu at +65)
   DIR_MOTHE: 60, DIR_CHOTE: 61, NANANDOI: 62, NANAND: 63, MEVHANA: 64, MEVHANI: 65,
+  CHULAT_MEVHANA: 64.2, CHULAT_SUNRE: 64.6, CHULAT_SADU: 65.2, CHULAT_MEVHANI: 65.6,
   SADU: 66, SUNRI: 67, CHULTA_DIR: 68, CHULTA_NANAND: 69,
 
   // Tier 4: Friends (Furthest outer flanks)
@@ -3209,8 +3375,8 @@ export const RELATION_X_ORDER: Record<string, number> = {
   CHULAT_MAMA: 32, CHULAT_MAMI: 33,
   MAMA: 30, MAMI: 35, MAVSA: 40, MAVSHI: 45,
   CHULAT_MAVSHA: 42, CHULAT_MAVSHI: 43,
-  SASRA: 60, SASU: 65, MAMA_SASRA: 75, MAMI_SASU: 80,
-  CHULAT_SASRA: 85, ATYA_SASU: 90, MAVAS_SASU: 95,
+  SASRA: 60, SASU: 65, MAMA_SASRA: 75, MAME_SASRA: 75, MAMI_SASU: 80,
+  CHULAT_SASRA: 85, CHULAT_SASU: 86, ATYA_SASU: 90, MAVAS_SASU: 95,
   VYAHI: 100, VIHIN: 101,
 
   // Gen +3 (grandparent row) - Male on Left, Female on Right

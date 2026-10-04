@@ -68,13 +68,15 @@ const RELATION_TREE_SIDE: Record<string, 'ROOT' | 'SPOUSE'> = {
   SASRA: 'SPOUSE', SASU: 'SPOUSE',
   AJI_SASRA: 'SPOUSE', AJI_SASU: 'SPOUSE',
   AJOBA_SASRA: 'SPOUSE', AJOBA_SASU: 'SPOUSE',
-  MAMA_SASRA: 'SPOUSE', MAMI_SASU: 'SPOUSE',
-  CHULAT_SASRA: 'SPOUSE', ATYA_SASU: 'SPOUSE', MAVAS_SASU: 'SPOUSE',
+  MAMA_SASRA: 'SPOUSE', MAME_SASRA: 'SPOUSE', MAMI_SASU: 'SPOUSE',
+  CHULAT_SASRA: 'SPOUSE', CHULAT_SASU: 'SPOUSE', ATYA_SASU: 'SPOUSE', MAVAS_SASU: 'SPOUSE',
   PANAJI_SASU: 'SPOUSE', PANJOBA_SASRA: 'SPOUSE',
   VAHINI_SASU: 'SPOUSE', DAJI_SASRA: 'SPOUSE',
 
   // ── Partner's siblings / in-laws (SPOUSE side) ───────────────────────────
   MEVHANA: 'SPOUSE', MEVHANI: 'SPOUSE', SADU: 'SPOUSE',
+  CHULAT_MEVHANA: 'SPOUSE', CHULAT_MEVHANI: 'SPOUSE',
+  CHULAT_SUNRE: 'SPOUSE', CHULAT_SADU: 'SPOUSE',
   DIR_CHOTE: 'SPOUSE', DIR_MOTHE: 'SPOUSE',
   NANAND: 'SPOUSE', NANANDOI: 'SPOUSE',
   CHULTA_DIR: 'SPOUSE', CHULTA_NANAND: 'SPOUSE',
@@ -87,6 +89,7 @@ const RELATION_TREE_SIDE: Record<string, 'ROOT' | 'SPOUSE'> = {
 
   // ── Grandchildren-in-law chain ────────────────────────────────────────────
   BHACHA: 'ROOT', BHACHI: 'ROOT',   // children of bhau/bahin — ROOT side
+  CHULAT_BHACHA: 'ROOT', CHULAT_BHACHI: 'ROOT',
   BHACHI_SUN: 'SPOUSE', JAVAIBHACHA: 'SPOUSE', // spouses of bhau/bahin's children
 
   // ── Extended paternal & maternal ancestors ──────────────────────────────
@@ -108,7 +111,7 @@ const RELATION_TREE_SIDE: Record<string, 'ROOT' | 'SPOUSE'> = {
   MAME_KHAPAR_PANJOBA: 'ROOT', MAVAS_KHAPAR_PANJI: 'ROOT',
 
   // ── Extended in-laws & siblings' peers ──────────────────────────────────
-  BHAUJAI: 'SPOUSE', CHULAT_MEVHANA: 'SPOUSE', CHULAT_MEVHANI: 'SPOUSE',
+  BHAUJAI: 'SPOUSE',
   MAMI_SASRA: 'SPOUSE', CHULAT_NANAND: 'SPOUSE', CHULAT_BHAUJAI: 'SPOUSE',
   SUNRI: 'SPOUSE', SUNRI_CHA_BHAU: 'SPOUSE', SUNRI_CHI_BAHIN: 'SPOUSE',
   SADU_CHA_BHAU: 'SPOUSE', SADU_CHI_BAHIN: 'SPOUSE',
@@ -123,7 +126,6 @@ const RELATION_TREE_SIDE: Record<string, 'ROOT' | 'SPOUSE'> = {
   DAJI_CHA_BHAU: 'ROOT', DAJI_CHI_BAHIN: 'ROOT',
   KAKI_CHA_BHAU: 'ROOT', KAKI_CHI_BAHIN: 'ROOT',
   CHULAT_PUTANYA: 'ROOT', CHULAT_PUTANI: 'ROOT', CHULAT_SUN: 'ROOT',
-  CHULAT_BHACHA: 'ROOT', CHULAT_BHACHI: 'ROOT',
 
   // ── Generic Relative catch-all ───────────────────────────────────────────
   NATEVAIK: 'ROOT',

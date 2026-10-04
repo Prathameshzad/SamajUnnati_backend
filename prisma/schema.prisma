@@ -16,6 +16,7 @@ model User {
   pincode                             String?
   designation                         String?
   dateOfBirth                         DateTime?
+  dateOfDeath                         DateTime?
   createdAt                           DateTime             @default(now())
   updatedAt                           DateTime             @updatedAt
   gender                              Gender?
