@@ -20,6 +20,7 @@ import {
   getRelationTypeRegistry,
   type RelationTypeRegistry,
 } from '../services/relationTypeRegistry';
+import { composeRelations } from '../utils/relationComposition';
 import { badRequest, forbidden, notFound, unauthenticated } from '../lib/errors';
 import { createLogger } from '../lib/logger';
 
@@ -525,7 +526,6 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
             relationTypeCode: reciprocalCode,
             OR: [
               { fromUserId: userId, toUserId: existingRelation.fromUserId },
-              { fromUserId: existingRelation.fromUserId, toUserId: userId },
               { createdById: userId, toUserId: existingRelation.fromUserId },
             ],
             status: { in: ['CONFIRMED', 'PENDING'] },
@@ -668,7 +668,6 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
           relationTypeCode,
           OR: [
             { fromUserId, toUserId: relatedUser.id },
-            { fromUserId: relatedUser.id, toUserId: fromUserId },
             { createdById: userId, toUserId: relatedUser.id },
           ],
           status: { in: ['CONFIRMED', 'PENDING'] },
@@ -710,7 +709,7 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
           visualSide: normalizeVisualSide(visualSide),
           ...(isRecreating
             ? {
-                status: isPersonAlive ? 'PENDING' : 'CONFIRMED',
+                status: existing?.status === 'CONFIRMED' ? 'CONFIRMED' : (isPersonAlive ? 'PENDING' : 'CONFIRMED'),
                 createdById: userId,
                 hiddenByUserIds: [],
               }
@@ -1888,4 +1887,363 @@ export const checkAcceptedByPhone = async (req: AuthRequest, res: Response) => {
   }
 
   return res.json({ accepted: false });
+};
+
+// ─── Relation Suggestion Engine ──────────────────────────────────────────────
+
+/**
+ * Composition table: given (myRelationToIntermediary, intermediaryRelationToCandidate)
+ * → suggested relation code for me→candidate.
+ *
+ * Pattern: [myCode, theirCode] → suggestedCode
+ * Read as: "If intermediary is my {myCode} and candidate is intermediary's {theirCode},
+ * then candidate is my {suggestedCode}."
+ *
+ * We only include the most common/clear-cut compositions to avoid false suggestions.
+ * The reciprocal rows are handled by the API (candidate→me = reciprocalOf(suggestedCode)).
+ */
+/**
+ * GET /relations/suggestions
+ *
+ * Returns a list of registered users that the current user might know, along
+ * with the inferred relation code — based on 2nd-degree graph traversal over
+ * CONFIRMED relations between registered users only.
+ *
+ * Supports both FAMILY and FRIEND trees via ?category=FAMILY (default) or ?category=FRIEND.
+ */
+export const getRelationSuggestions = async (req: AuthRequest, res: Response) => {
+  const userId = req.user?.id;
+  const lang = (req.query.lang as string) || 'mr';
+  const category = ((req.query.category as string) || 'FAMILY').toUpperCase() as 'FAMILY' | 'FRIEND';
+  if (!userId) throw unauthenticated();
+
+  const registry = await getRelationTypeRegistry();
+
+  // Track all user IDs already connected to me (CONFIRMED or PENDING) to exclude from suggestions
+  const alreadyConnected = new Set<string>([userId]);
+  const allExistingRelations = await prisma.relation.findMany({
+    where: {
+      status: { in: ['CONFIRMED', 'PENDING'] },
+      deletedAt: null,
+      NOT: { hiddenByUserIds: { has: userId } },
+      OR: [
+        { fromUserId: userId },
+        { toUserId: userId },
+        { createdById: userId },
+      ],
+    },
+    select: { fromUserId: true, toUserId: true },
+  });
+  for (const r of allExistingRelations) {
+    alreadyConnected.add(r.fromUserId);
+    alreadyConnected.add(r.toUserId);
+  }
+
+  // Map: candidateId → suggestion details
+  const suggestions = new Map<string, {
+    suggestedCode: string;
+    suggestedLabel: string;
+    intermediaryId: string;
+    viaRelationCode: string;
+    candidate: any;
+    confidence: number;
+  }>();
+
+  if (category === 'FRIEND') {
+    // ── FRIEND TREE RECOMMENDATIONS ──────────────────────────────────────────
+    // 1. Find all CONFIRMED friends of the user involving registered users
+    const myFriends = await prisma.relation.findMany({
+      where: {
+        category: 'FRIEND',
+        status: 'CONFIRMED',
+        deletedAt: null,
+        NOT: { hiddenByUserIds: { has: userId } },
+        OR: [
+          { fromUserId: userId },
+          { toUserId: userId },
+        ],
+      },
+      select: {
+        fromUserId: true,
+        toUserId: true,
+        relationTypeCode: true,
+        fromUser: { select: { id: true, isRegistered: true } },
+        toUser: { select: { id: true, isRegistered: true } },
+      },
+    });
+
+    const friendIntermediaries = new Map<string, string>();
+    for (const rel of myFriends) {
+      if (rel.fromUserId === userId && rel.toUser?.isRegistered) {
+        friendIntermediaries.set(rel.toUserId, rel.relationTypeCode);
+      } else if (rel.toUserId === userId && rel.fromUser?.isRegistered) {
+        friendIntermediaries.set(rel.fromUserId, rel.relationTypeCode);
+      }
+    }
+
+    if (friendIntermediaries.size === 0) {
+      return res.json([]);
+    }
+
+    const intermediaryIds = Array.from(friendIntermediaries.keys());
+
+    // 2. Fetch CONFIRMED friends of all registered friend intermediaries
+    const mutualRelations = await prisma.relation.findMany({
+      where: {
+        status: 'CONFIRMED',
+        category: 'FRIEND',
+        deletedAt: null,
+        OR: [
+          { fromUserId: { in: intermediaryIds } },
+          { toUserId: { in: intermediaryIds } },
+        ],
+      },
+      select: {
+        fromUserId: true,
+        toUserId: true,
+        fromUser: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            photoUrl: true,
+            gender: true,
+            phone: true,
+            area: true,
+            isAlive: true,
+            isRegistered: true,
+            profileCompleted: true,
+          },
+        },
+        toUser: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            photoUrl: true,
+            gender: true,
+            phone: true,
+            area: true,
+            isAlive: true,
+            isRegistered: true,
+            profileCompleted: true,
+          },
+        },
+      },
+    });
+
+    for (const rel of mutualRelations) {
+      let intermediaryId: string;
+      let candidateId: string;
+      let candidateUser: any;
+
+      const fromIsIntermediary = friendIntermediaries.has(rel.fromUserId) && !friendIntermediaries.has(rel.toUserId);
+      const toIsIntermediary = friendIntermediaries.has(rel.toUserId) && !friendIntermediaries.has(rel.fromUserId);
+
+      if (fromIsIntermediary) {
+        intermediaryId = rel.fromUserId;
+        candidateId = rel.toUserId;
+        candidateUser = rel.toUser;
+      } else if (toIsIntermediary) {
+        intermediaryId = rel.toUserId;
+        candidateId = rel.fromUserId;
+        candidateUser = rel.fromUser;
+      } else {
+        continue;
+      }
+
+      if (alreadyConnected.has(candidateId)) continue;
+      if (!candidateUser?.isRegistered || candidateUser?.isAlive === false) continue;
+      if (!candidateUser?.phone) continue;
+
+      // Suggest MITRA for male/unspecified, MAITRIN for female
+      const suggestedCode = candidateUser.gender === 'FEMALE' ? 'MAITRIN' : 'MITRA';
+      const suggestedLabel = registry.label(suggestedCode, lang);
+      const myCodeToIntermediary = friendIntermediaries.get(intermediaryId)!;
+
+      const existing = suggestions.get(candidateId);
+      if (!existing) {
+        suggestions.set(candidateId, {
+          suggestedCode,
+          suggestedLabel,
+          intermediaryId,
+          viaRelationCode: myCodeToIntermediary,
+          candidate: candidateUser,
+          confidence: 1,
+        });
+      } else {
+        // Boost confidence for multiple mutual friends
+        existing.confidence += 1;
+      }
+    }
+  } else {
+    // ── FAMILY TREE RECOMMENDATIONS ──────────────────────────────────────────
+    // 1. All CONFIRMED relations in my tree with registered users
+    const treeRelations = await prisma.relation.findMany({
+      where: {
+        category: 'FAMILY',
+        status: 'CONFIRMED',
+        deletedAt: null,
+        NOT: { hiddenByUserIds: { has: userId } },
+        OR: [
+          { fromUserId: userId },
+          { toUserId: userId },
+          { createdById: userId },
+        ],
+      },
+      select: {
+        fromUserId: true,
+        toUserId: true,
+        relationTypeCode: true,
+        createdById: true,
+        fromUser: { select: { id: true, isRegistered: true } },
+        toUser: { select: { id: true, isRegistered: true } },
+      },
+    });
+
+    const intermediaries = new Map<string, string>();
+    for (const rel of treeRelations) {
+      if (rel.fromUserId === userId) {
+        if (rel.toUser?.isRegistered) {
+          intermediaries.set(rel.toUserId, rel.relationTypeCode);
+        }
+      } else if (rel.toUserId === userId) {
+        if (rel.fromUser?.isRegistered) {
+          intermediaries.set(rel.fromUserId, registry.reciprocalOf(rel.relationTypeCode));
+        }
+      } else if (rel.createdById === userId) {
+        if (rel.toUser?.isRegistered) {
+          intermediaries.set(rel.toUserId, rel.relationTypeCode);
+        }
+      }
+    }
+
+    if (intermediaries.size === 0) {
+      return res.json([]);
+    }
+
+    const intermediaryIds = Array.from(intermediaries.keys());
+
+    // 2. Fetch relations of all registered intermediaries
+    const theirRelations = await prisma.relation.findMany({
+      where: {
+        status: 'CONFIRMED',
+        category: 'FAMILY',
+        deletedAt: null,
+        OR: [
+          { fromUserId: { in: intermediaryIds } },
+          { toUserId: { in: intermediaryIds } },
+        ],
+      },
+      select: {
+        fromUserId: true,
+        toUserId: true,
+        relationTypeCode: true,
+        fromUser: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            photoUrl: true,
+            gender: true,
+            phone: true,
+            area: true,
+            isAlive: true,
+            isRegistered: true,
+            profileCompleted: true,
+          },
+        },
+        toUser: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            photoUrl: true,
+            gender: true,
+            phone: true,
+            area: true,
+            isAlive: true,
+            isRegistered: true,
+            profileCompleted: true,
+          },
+        },
+      },
+    });
+
+    // 3. Compose relations using comprehensive composition rules
+    for (const rel of theirRelations) {
+      let intermediaryId: string;
+      let candidateId: string;
+      let intermediaryToCandidate: string;
+      let candidateUser: any;
+
+      const fromIsIntermediary = intermediaries.has(rel.fromUserId) && !intermediaries.has(rel.toUserId);
+      const toIsIntermediary = intermediaries.has(rel.toUserId) && !intermediaries.has(rel.fromUserId);
+
+      if (fromIsIntermediary) {
+        intermediaryId = rel.fromUserId;
+        candidateId = rel.toUserId;
+        intermediaryToCandidate = rel.relationTypeCode;
+        candidateUser = rel.toUser;
+      } else if (toIsIntermediary) {
+        intermediaryId = rel.toUserId;
+        candidateId = rel.fromUserId;
+        intermediaryToCandidate = registry.reciprocalOf(rel.relationTypeCode);
+        candidateUser = rel.fromUser;
+      } else {
+        continue;
+      }
+
+      if (alreadyConnected.has(candidateId)) continue;
+      if (!candidateUser?.isRegistered || candidateUser?.isAlive === false) continue;
+      if (!candidateUser?.phone) continue;
+
+      const myCodeToIntermediary = intermediaries.get(intermediaryId)!;
+      const suggestedCode = composeRelations(myCodeToIntermediary, intermediaryToCandidate);
+
+      if (!suggestedCode) continue;
+
+      const relMeta = registry.get(suggestedCode);
+      if (relMeta?.targetGender && candidateUser.gender && relMeta.targetGender !== candidateUser.gender) {
+        continue;
+      }
+
+      const suggestedLabel = registry.label(suggestedCode, lang);
+
+      const existing = suggestions.get(candidateId);
+      const genderMatch = !relMeta?.targetGender || !candidateUser.gender || relMeta.targetGender === candidateUser.gender;
+      const confidence = genderMatch ? 2 : 1;
+      if (!existing || existing.confidence < confidence) {
+        suggestions.set(candidateId, {
+          suggestedCode,
+          suggestedLabel,
+          intermediaryId,
+          viaRelationCode: myCodeToIntermediary,
+          candidate: candidateUser,
+          confidence,
+        });
+      }
+    }
+  }
+
+  // ── Step 4: Format and return ─────────────────────────────────────────────
+  const result = Array.from(suggestions.entries()).map(([candidateId, s]) => ({
+    userId: candidateId,
+    firstName: s.candidate.firstName,
+    lastName: s.candidate.lastName,
+    photoUrl: s.candidate.photoUrl,
+    gender: s.candidate.gender,
+    phone: s.candidate.phone,
+    area: s.candidate.area,
+    isRegistered: s.candidate.isRegistered,
+    profileCompleted: s.candidate.profileCompleted,
+    suggestedRelationCode: s.suggestedCode,
+    suggestedRelationLabel: s.suggestedLabel,
+    viaUserId: s.intermediaryId,
+    viaRelationCode: s.viaRelationCode,
+    viaRelationLabel: registry.label(s.viaRelationCode, lang),
+  }));
+
+  // Limit to top 25 suggestions
+  return res.json(result.slice(0, 25));
 };

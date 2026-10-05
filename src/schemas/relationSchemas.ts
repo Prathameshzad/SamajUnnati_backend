@@ -159,3 +159,10 @@ export const checkAcceptedByPhoneSchema = {
 export const relationLangOnlySchema = {
   query: z.object({ lang: langQuery('mr') }).strip(),
 };
+
+export const relationSuggestionsSchema = {
+  query: z.object({
+    lang: langQuery('mr'),
+    category: z.enum(['FAMILY', 'FRIEND']).optional(),
+  }).strip(),
+};

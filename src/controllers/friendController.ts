@@ -797,7 +797,6 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
         relationTypeCode,
         OR: [
           { fromUserId, toUserId: relatedUser.id },
-          { fromUserId: relatedUser.id, toUserId: fromUserId },
           { createdById: userId, toUserId: relatedUser.id },
         ],
         status: { in: ['CONFIRMED', 'PENDING'] },
@@ -839,7 +838,7 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
         visualSide: normalizeVisualSide(visualSide),
         ...(isRecreating
           ? {
-              status: isPersonAlive ? 'PENDING' : 'CONFIRMED',
+              status: existing?.status === 'CONFIRMED' ? 'CONFIRMED' : (isPersonAlive ? 'PENDING' : 'CONFIRMED'),
               createdById: userId,
               hiddenByUserIds: [],
             }

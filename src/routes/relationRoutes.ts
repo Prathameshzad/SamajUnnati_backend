@@ -20,6 +20,7 @@ import {
   checkAcceptedByPhone,
   getGraphChunk,
   initWorldCoords,
+  getRelationSuggestions,
 } from '../controllers/relationController';
 import {
   checkAcceptedByPhoneSchema,
@@ -30,6 +31,7 @@ import {
   listRelationsSchema,
   relationIdSchema,
   relationLangOnlySchema,
+  relationSuggestionsSchema,
   updateRelationSchema,
 } from '../schemas/relationSchemas';
 
@@ -61,6 +63,7 @@ router.get('/tree', readLimiter, validate(getTreeSchema), asyncHandler(getTree))
 router.get('/tree/full', heavyReadLimiter, validate(getFullTreeSchema), asyncHandler(getFullTree));
 router.get('/requests', readLimiter, validate(relationLangOnlySchema), asyncHandler(getRequests));
 router.get('/accepted', readLimiter, validate(relationLangOnlySchema), asyncHandler(getAcceptedRequests));
+router.get('/suggestions', readLimiter, validate(relationSuggestionsSchema), asyncHandler(getRelationSuggestions));
 router.get(
   '/check-accepted',
   readLimiter,
