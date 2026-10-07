@@ -222,6 +222,14 @@ export const writeLimiter = build({
   message: 'Too many changes in a short period. Please slow down.',
 });
 
+/** Device push registration limiter so token syncs never exhaust user write quota. */
+export const pushTokenLimiter = build({
+  name: 'push-token',
+  windowMs: 60 * 1000,
+  limit: 30,
+  message: 'Too many push token registrations. Please slow down.',
+});
+
 /** Uploads consume bandwidth and permanent storage. */
 export const uploadLimiter = build({
   name: 'upload',

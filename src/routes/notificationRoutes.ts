@@ -3,7 +3,7 @@ import { Router } from 'express';
 import { authMiddleware } from '../middleware/authMiddleware';
 import { validate } from '../middleware/validate';
 import { asyncHandler } from '../lib/asyncHandler';
-import { readLimiter, writeLimiter } from '../middleware/rateLimit';
+import { readLimiter, writeLimiter, pushTokenLimiter } from '../middleware/rateLimit';
 import {
   listNotifications,
   getNotificationSummary,
@@ -28,19 +28,18 @@ router.get('/', readLimiter, validate(listNotificationsSchema), asyncHandler(lis
 router.get('/summary', readLimiter, asyncHandler(getNotificationSummary));
 
 /**
- * Device push registration. `writeLimiter` applies because the client calls this
- * on every app start; it is idempotent, so the limiter is protection against a
- * looping client rather than against abuse.
+ * Device push registration. `pushTokenLimiter` applies so token syncing
+ * does not consume the user's write quota for creating relations, posts, etc.
  */
 router.post(
   '/push-token',
-  writeLimiter,
+  pushTokenLimiter,
   validate(registerPushTokenSchema),
   asyncHandler(registerPushToken)
 );
 router.delete(
   '/push-token',
-  writeLimiter,
+  pushTokenLimiter,
   validate(unregisterPushTokenSchema),
   asyncHandler(unregisterPushToken)
 );
