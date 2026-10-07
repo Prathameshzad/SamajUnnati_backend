@@ -5,8 +5,9 @@ import prisma from '../lib/prisma';
 import { signAuthToken } from '../lib/jwt';
 import { uploadProfileImageToR2 } from '../lib/r2';
 import { OtpService } from '../services/otpService';
-import { config } from '../config/env';
+import { config, isTestBypassPhone } from '../config/env';
 import { CURRENT_PRIVACY_VERSION, CURRENT_TERMS_VERSION } from '../constants/legal';
+import { syncPendingRelationsForUser, reconnectDeletedUserRelations } from '../services/relationReconnectService';
 
 type GenderValue = 'MALE' | 'FEMALE';
 
@@ -15,6 +16,59 @@ function normalizeGender(gender?: string | null): GenderValue | null {
   const g = gender.toUpperCase();
   if (g === 'MALE' || g === 'FEMALE') return g;
   return null;
+}
+
+/**
+ * Normalizes or creates a complete review test user in the database so that
+ * reviewers bypass onboarding friction and can test all authenticated features.
+ */
+async function getOrCreateTestReviewUser(phone: string) {
+  const normalized = phone.replace(/\D/g, '');
+  const tenDigit = normalized.length >= 10 ? normalized.slice(-10) : normalized;
+
+  let user = await prisma.user.findFirst({
+    where: {
+      OR: [
+        { phone: normalized },
+        { phone: tenDigit },
+        { phone: `91${tenDigit}` },
+      ],
+    },
+  });
+
+  if (!user) {
+    user = await prisma.user.create({
+      data: {
+        phone: normalized,
+        firstName: 'Google',
+        lastName: 'Reviewer',
+        gender: 'MALE',
+        religion: 'Hindu',
+        community: 'General',
+        appLanguage: 'en',
+        relationLanguage: 'en',
+        profileCompleted: true,
+        isRegistered: true,
+        termsPrivacyAcceptedAt: new Date(),
+        termsVersion: CURRENT_TERMS_VERSION,
+        privacyVersion: CURRENT_PRIVACY_VERSION,
+        worldX: 0,
+        worldY: 0,
+      },
+    });
+  } else if (!user.profileCompleted) {
+    user = await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        firstName: user.firstName || 'Google',
+        lastName: user.lastName || 'Reviewer',
+        profileCompleted: true,
+        isRegistered: true,
+      },
+    });
+  }
+
+  return user;
 }
 
 /**
@@ -76,7 +130,13 @@ export const checkPhone = async (
       });
     }
 
-    if (config.isDevelopment) {
+    const isBypass = config.isDevelopment || isTestBypassPhone(normalized);
+
+    if (isBypass) {
+      if (isTestBypassPhone(normalized) && (!user || !user.profileCompleted)) {
+        user = await getOrCreateTestReviewUser(normalized);
+      }
+
       if (user && user.profileCompleted) {
         const token = signAuthToken({ userId: user.id, phone: user.phone || normalized });
         return res.json({
@@ -84,7 +144,7 @@ export const checkPhone = async (
           bypass: true,
           token,
           user,
-          message: 'Development login bypass',
+          message: isTestBypassPhone(normalized) ? 'Test review account login bypass' : 'Development login bypass',
         });
       }
       return res.json({
@@ -93,7 +153,7 @@ export const checkPhone = async (
         verified: true,
         phone: normalized,
         user: user || undefined,
-        message: 'Development register bypass',
+        message: isTestBypassPhone(normalized) ? 'Test review account register bypass' : 'Development register bypass',
       });
     }
 
@@ -235,10 +295,20 @@ export const registerUser = async (
   }
 
   try {
-    // We treat normalizedPhone as canonical
-    const existing = await prisma.user.findUnique({
+    // We treat normalizedPhone as canonical, with fallback variants to match placeholder stubs
+    let existing = await prisma.user.findUnique({
       where: { phone: normalizedPhone },
     });
+    if (!existing && normalizedPhone.length === 12 && normalizedPhone.startsWith('91')) {
+      existing = await prisma.user.findUnique({
+        where: { phone: normalizedPhone.slice(2) },
+      });
+    }
+    if (!existing && normalizedPhone.length === 10) {
+      existing = await prisma.user.findUnique({
+        where: { phone: `91${normalizedPhone}` },
+      });
+    }
 
     const acceptedAt = new Date();
     const userData = {
@@ -281,6 +351,11 @@ export const registerUser = async (
         data: userData,
       });
 
+      // Sync & claim pending relations and notify user for approval
+      await syncPendingRelationsForUser(user.id, user.phone || normalizedPhone).catch((err) => {
+        console.error('Error syncing pending relations for user:', err);
+      });
+
       const token = signAuthToken({ userId: user.id, phone: user.phone || normalizedPhone });
       return res.status(200).json({ token, user });
     }
@@ -290,6 +365,11 @@ export const registerUser = async (
         phone: normalizedPhone,
         ...userData,
       },
+    });
+
+    // Sync & claim pending relations and notify user for approval
+    await syncPendingRelationsForUser(user.id, user.phone || normalizedPhone).catch((err) => {
+      console.error('Error syncing pending relations for user:', err);
     });
 
     const token = signAuthToken({ userId: user.id, phone: user.phone || normalizedPhone });
@@ -311,11 +391,11 @@ export const requestOtp = async (req: Request, res: Response) => {
   const normalized = normalizePhone(phone);
   if (!normalized) return res.status(400).json({ message: 'Invalid phone' });
 
-  if (config.isDevelopment) {
+  if (config.isDevelopment || isTestBypassPhone(normalized)) {
     return res.json({
-      message: 'OTP bypassed in development',
+      message: isTestBypassPhone(normalized) ? 'Test review account OTP bypassed' : 'OTP bypassed in development',
       bypass: true,
-      developmentOtp: '1111',
+      developmentOtp: config.testBypass.otp,
     });
   }
 
@@ -348,7 +428,11 @@ export const verifyOtp = async (req: Request, res: Response) => {
   const normalized = normalizePhone(phone);
   if (!normalized) return res.status(400).json({ message: 'Invalid phone' });
 
-  const isValid = await OtpService.verifyOtp(normalized, code);
+  const isBypass = config.isDevelopment || isTestBypassPhone(normalized);
+  const isValid = isBypass
+    ? (config.isDevelopment || code === config.testBypass.otp || code === '1234' || code === '1111')
+    : await OtpService.verifyOtp(normalized, code);
+
   if (!isValid) return res.status(401).json({ message: 'Invalid OTP code' });
 
   // If valid, ensure user exists and is marked as registered (verified phone)
@@ -360,6 +444,12 @@ export const verifyOtp = async (req: Request, res: Response) => {
     user = await prisma.user.findUnique({ where: { phone: `91${normalized}` } });
   }
 
+  if (isTestBypassPhone(normalized) && (!user || !user.profileCompleted)) {
+    user = await getOrCreateTestReviewUser(normalized);
+    const token = signAuthToken({ userId: user.id, phone: user.phone || normalized });
+    return res.json({ verified: true, exists: true, token, user });
+  }
+
   if (user) {
     if (!user.isRegistered) {
       user = await prisma.user.update({
@@ -368,6 +458,9 @@ export const verifyOtp = async (req: Request, res: Response) => {
       });
     }
     if (user.profileCompleted) {
+      await syncPendingRelationsForUser(user.id, user.phone || normalized).catch((err) => {
+        console.error('Error syncing pending relations for user on login:', err);
+      });
       const token = signAuthToken({ userId: user.id, phone: user.phone || normalized });
       return res.json({ verified: true, exists: true, token, user });
     }

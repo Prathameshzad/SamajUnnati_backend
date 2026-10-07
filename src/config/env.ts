@@ -101,6 +101,14 @@ const schema = z.object({
   /** Wrong guesses allowed against a single issued code before it is discarded. */
   OTP_MAX_VERIFY_ATTEMPTS: intFromString(5, 1, 20),
 
+  /**
+   * Phone number(s) and static OTP configured to bypass SMS and OTP verification
+   * (e.g. for Google Play / App Store app review test accounts).
+   * Comma-separated phone numbers.
+   */
+  TEST_BYPASS_PHONE: z.string().optional(),
+  TEST_BYPASS_OTP: z.string().default('1234'),
+
   /** User IDs permitted to call maintenance/admin endpoints. */
   ADMIN_USER_IDS: z.string().optional(),
 
@@ -365,6 +373,32 @@ export const config = {
     peid: raw.SMS_PEID,
     baseUrl: raw.SMS_BASE_URL.replace(/\/$/, ''),
   },
+
+  testBypass: {
+    phones: csv(raw.TEST_BYPASS_PHONE).map((p) => p.replace(/\D/g, '')).filter((p) => p.length > 0),
+    otp: (raw.TEST_BYPASS_OTP || '1234').trim(),
+  },
 } as const;
 
 export type AppConfig = typeof config;
+
+/**
+ * Checks if the supplied phone number matches any of the configured
+ * TEST_BYPASS_PHONE values (supporting matching with or without +91 prefix).
+ */
+export function isTestBypassPhone(phone?: string | null): boolean {
+  if (!phone) return false;
+  const list = config.testBypass.phones;
+  if (!list || list.length === 0) return false;
+
+  const digits = phone.replace(/\D/g, '');
+  if (!digits) return false;
+
+  return list.some((target) => {
+    if (!target) return false;
+    if (digits === target) return true;
+    const s1 = digits.length >= 10 ? digits.slice(-10) : digits;
+    const s2 = target.length >= 10 ? target.slice(-10) : target;
+    return s1 === s2;
+  });
+}

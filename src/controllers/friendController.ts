@@ -787,19 +787,16 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
     throw badRequest('Cannot add yourself or the source as a friend');
   }
 
-  const { relation, scoreUpdate, isRecreating } = await prisma.$transaction(async (tx) => {
+  const { relation, scoreUpdate, isRecreating, hasPriorApproval } = await prisma.$transaction(async (tx) => {
     await lockScoreOwnerInTransaction(tx, userId);
 
-    // Block adding the same friend with the exact same relation type if an active relation already exists
+    // Block adding the same friend with the exact same relation type if an active relation already exists in THIS user's tree
     const existingActiveRelation = await tx.relation.findFirst({
       where: {
         category: 'FRIEND',
         relationTypeCode,
-        OR: [
-          { fromUserId, toUserId: relatedUser.id },
-          { fromUserId: relatedUser.id, toUserId: fromUserId },
-          { createdById: userId, toUserId: relatedUser.id },
-        ],
+        createdById: userId,
+        toUserId: relatedUser.id,
         status: { in: ['CONFIRMED', 'PENDING'] },
         NOT: { hiddenByUserIds: { has: userId } },
       },
@@ -809,6 +806,27 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
       const displayLabel = resolveLabel(relType, lang);
       throw badRequest(`This person is already added with relation: ${displayLabel}`);
     }
+
+    // Check if a confirmed approval already exists between these users (e.g. they approved an incoming friend request)
+    const hasPriorApproval = Boolean(
+      await tx.relation.findFirst({
+        where: {
+          category: 'FRIEND',
+          status: 'CONFIRMED',
+          OR: [
+            { fromUserId: userId, toUserId: relatedUser.id },
+            { fromUserId: relatedUser.id, toUserId: userId },
+            { createdById: relatedUser.id, toUserId: userId },
+            { createdById: relatedUser.id, fromUserId: userId },
+            { createdById: userId, toUserId: relatedUser.id },
+            { createdById: userId, fromUserId: relatedUser.id },
+          ],
+        },
+      })
+    );
+
+    const targetStatus = (!isPersonAlive || hasPriorApproval) ? 'CONFIRMED' : 'PENDING';
+    const targetApprovedAt = (!isPersonAlive || hasPriorApproval) ? new Date() : null;
 
     const existing = await tx.relation.findUnique({
       where: {
@@ -837,9 +855,10 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
         ...(customName ? { customName } : {}),
         ...(customPhotoUrl ? { customPhotoUrl } : {}),
         visualSide: normalizeVisualSide(visualSide),
-        ...(isRecreating
+        ...(isRecreating || hasPriorApproval
           ? {
-              status: isPersonAlive ? 'PENDING' : 'CONFIRMED',
+              status: targetStatus,
+              approvedAt: targetApprovedAt,
               createdById: userId,
               hiddenByUserIds: [],
             }
@@ -850,7 +869,8 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
         toUserId: relatedUser.id,
         relationTypeCode,
         category: 'FRIEND',
-        status: isPersonAlive ? 'PENDING' : 'CONFIRMED',
+        status: targetStatus,
+        approvedAt: targetApprovedAt,
         customName: customName || null,
         customPhotoUrl: customPhotoUrl || null,
         visualSide: normalizeVisualSide(visualSide),
@@ -867,12 +887,13 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
       savedRelation.id,
       `relation:${savedRelation.id}:add`
     );
-    return { relation: savedRelation, scoreUpdate: score, isRecreating };
+    return { relation: savedRelation, scoreUpdate: score, isRecreating, hasPriorApproval };
   });
   const displayLabel = resolveLabel(relType, lang);
   const authUser = await prisma.user.findUnique({ where: { id: userId } });
 
-  if (isPersonAlive && (scoreUpdate.applied || isRecreating)) {
+  // Only send pending notifications if alive and not already approved
+  if (isPersonAlive && !hasPriorApproval && (scoreUpdate.applied || isRecreating)) {
     // Notify the recipient of the friend request (if they have a phone = real registered user)
     if (relatedUser.phone) {
       await createNotification({

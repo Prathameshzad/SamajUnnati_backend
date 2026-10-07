@@ -2,6 +2,7 @@ import { Router } from 'express';
 import {
   getMe,
   updateMe,
+  deleteMyAccount,
   getUserById,
   requestChangePhoneOtp,
   verifyChangePhoneOtp,
@@ -24,6 +25,13 @@ router.put(
   ...uploadProfileImage,
   validate(updateMeSchema),
   asyncHandler(updateMe)
+);
+
+router.delete(
+  '/me',
+  authMiddleware,
+  writeLimiter,
+  asyncHandler(deleteMyAccount)
 );
 
 router.post(

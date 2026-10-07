@@ -20,6 +20,7 @@ import {
   getRelationTypeRegistry,
   type RelationTypeRegistry,
 } from '../services/relationTypeRegistry';
+import { syncPendingRelationsForUser } from '../services/relationReconnectService';
 import { badRequest, forbidden, notFound, unauthenticated } from '../lib/errors';
 import { createLogger } from '../lib/logger';
 
@@ -220,6 +221,11 @@ export const listRelations = async (req: AuthRequest, res: Response) => {
           phone: logicalFromUser.phone,
           area: logicalFromUser.area,
           isAlive: logicalFromUser.isAlive,
+          dateOfBirth: logicalFromUser.dateOfBirth,
+          dateOfDeath: logicalFromUser.dateOfDeath,
+          bloodGroup: logicalFromUser.bloodGroup,
+          profileCompleted: logicalFromUser.profileCompleted,
+          isRegistered: logicalFromUser.isRegistered,
         } : null,
         toUser: finalToUser ? {
           id: finalToUser.id,
@@ -230,6 +236,11 @@ export const listRelations = async (req: AuthRequest, res: Response) => {
           phone: finalToUser.phone,
           area: finalToUser.area,
           isAlive: finalToUser.isAlive,
+          dateOfBirth: finalToUser.dateOfBirth,
+          dateOfDeath: finalToUser.dateOfDeath,
+          bloodGroup: finalToUser.bloodGroup,
+          profileCompleted: finalToUser.profileCompleted,
+          isRegistered: finalToUser.isRegistered,
         } : null,
         relationType: { label: view.label, code: view.code }
       };
@@ -338,6 +349,13 @@ export const getRequests = async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;
   const lang = (req.query.lang as string) || 'mr';
   if (!userId) throw unauthenticated();
+
+  // Ensure any placeholder relations added by other users for this phone are claimed and notified
+  if (req.user?.phone) {
+    await syncPendingRelationsForUser(userId, req.user.phone).catch((err) => {
+      log.warn({ userId, err }, 'Failed to sync pending relations in getRequests');
+    });
+  }
 
   const registry = await getRelationTypeRegistry();
 
@@ -496,89 +514,6 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
     : null;
 
   {
-    const existingRelation = matchedExistingUser
-      ? await prisma.relation.findFirst({
-          where: {
-            toUserId: userId,
-            fromUserId: matchedExistingUser.id,
-            category: 'FAMILY',
-            status: 'CONFIRMED',
-            hiddenByUserIds: { isEmpty: true }
-          },
-          include: {
-            relationType: { include: { translations: true } },
-            fromUser: true
-          }
-        })
-      : null;
-
-    if (existingRelation && isPersonAlive) {
-      const reciprocalCode = existingRelation.relationType?.reciprocalCode || existingRelation.relationTypeCode;
-
-      // Only handle reciprocal auto-fill if the relation being added matches the reciprocal relation
-      if (relationTypeCode === reciprocalCode) {
-        const displayLabel = resolveLabel(existingRelation.relationType, lang);
-
-        const alreadyInTree = await prisma.relation.findFirst({
-          where: {
-            category: 'FAMILY',
-            relationTypeCode: reciprocalCode,
-            OR: [
-              { fromUserId: userId, toUserId: existingRelation.fromUserId },
-              { fromUserId: existingRelation.fromUserId, toUserId: userId },
-              { createdById: userId, toUserId: existingRelation.fromUserId },
-            ],
-            status: { in: ['CONFIRMED', 'PENDING'] },
-            NOT: { hiddenByUserIds: { has: userId } },
-          },
-        });
-
-        if (alreadyInTree) {
-          throw badRequest(`This person is already added with relation: ${displayLabel}`);
-        }
-
-        // Create the reciprocal relation to add them to the tree manually
-        const { reciprocalRelation, scoreUpdate } = await prisma.$transaction(async (tx) => {
-          await lockScoreOwnerInTransaction(tx, userId);
-          const saved = await tx.relation.upsert({
-            where: {
-              fromUserId_toUserId_relationTypeCode: {
-                fromUserId: userId,
-                toUserId: existingRelation.fromUserId,
-                relationTypeCode: reciprocalCode,
-              },
-            },
-            // Idempotent retry: never rewrite a terminal state or its owner.
-            update: {},
-            create: {
-              fromUserId: userId,
-              toUserId: existingRelation.fromUserId,
-              relationTypeCode: reciprocalCode,
-              category: 'FAMILY',
-              status: 'CONFIRMED',
-              createdById: userId,
-            },
-          });
-          const score = await awardPointsInTransaction(
-            tx,
-            userId,
-            'ADD_ALIVE',
-            saved.id,
-            `relation:${saved.id}:add`
-          );
-          return { reciprocalRelation: saved, scoreUpdate: score };
-        });
-        await TreeCacheService.invalidateUserTree(userId, existingRelation.fromUserId);
-        emitScoreUpdate(scoreUpdate);
-
-        return res.status(200).json({
-          alreadyAccepted: true,
-          message: `You have already accepted this person's request previously and this person was telling you ${displayLabel}. They are now added to your tree.`,
-          relation: reciprocalRelation
-        });
-      }
-    }
-
     const relType = await prisma.relationType.findUnique({
       where: { code: relationTypeCode },
       include: { translations: true }
@@ -658,19 +593,20 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
       throw badRequest('Cannot create relation with yourself');
     }
 
-    const { relation, scoreUpdate, isRecreating } = await prisma.$transaction(async (tx) => {
+    const { relation, scoreUpdate, isRecreating, hasPriorApproval } = await prisma.$transaction(async (tx) => {
       await lockScoreOwnerInTransaction(tx, userId);
 
-      // Block adding the same person with the exact same relation type if an active relation already exists
+      // Block adding the same person with the exact same relation type if an active relation already exists in THIS user's tree
       const existingActiveRelation = await tx.relation.findFirst({
         where: {
           category: 'FAMILY',
           relationTypeCode,
           OR: [
-            { fromUserId, toUserId: relatedUser.id },
-            { fromUserId: relatedUser.id, toUserId: fromUserId },
-            { createdById: userId, toUserId: relatedUser.id },
+            { createdById: userId },
+            { fromUserId: userId },
           ],
+          fromUserId,
+          toUserId: relatedUser.id,
           status: { in: ['CONFIRMED', 'PENDING'] },
           NOT: { hiddenByUserIds: { has: userId } },
         },
@@ -680,6 +616,27 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
         const displayLabel = resolveLabel(relType, lang);
         throw badRequest(`This person is already added with relation: ${displayLabel}`);
       }
+
+      // Check if a confirmed approval already exists between these users (e.g. they approved an incoming request)
+      const hasPriorApproval = Boolean(
+        await tx.relation.findFirst({
+          where: {
+            category: 'FAMILY',
+            status: 'CONFIRMED',
+            OR: [
+              { fromUserId: userId, toUserId: relatedUser.id },
+              { fromUserId: relatedUser.id, toUserId: userId },
+              { createdById: relatedUser.id, toUserId: userId },
+              { createdById: relatedUser.id, fromUserId: userId },
+              { createdById: userId, toUserId: relatedUser.id },
+              { createdById: userId, fromUserId: relatedUser.id },
+            ],
+          },
+        })
+      );
+
+      const targetStatus = (!isPersonAlive || hasPriorApproval) ? 'CONFIRMED' : 'PENDING';
+      const targetApprovedAt = (!isPersonAlive || hasPriorApproval) ? new Date() : null;
 
       const existing = await tx.relation.findUnique({
         where: {
@@ -708,9 +665,10 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
           ...(customName ? { customName } : {}),
           ...(customPhotoUrl ? { customPhotoUrl } : {}),
           visualSide: normalizeVisualSide(visualSide),
-          ...(isRecreating
+          ...(isRecreating || hasPriorApproval
             ? {
-                status: isPersonAlive ? 'PENDING' : 'CONFIRMED',
+                status: targetStatus,
+                approvedAt: targetApprovedAt,
                 createdById: userId,
                 hiddenByUserIds: [],
               }
@@ -721,7 +679,8 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
           toUserId: relatedUser.id,
           relationTypeCode,
           category: 'FAMILY',
-          status: isPersonAlive ? 'PENDING' : 'CONFIRMED',
+          status: targetStatus,
+          approvedAt: targetApprovedAt,
           customName: customName || null,
           customPhotoUrl: customPhotoUrl || null,
           visualSide: normalizeVisualSide(visualSide),
@@ -739,14 +698,14 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
         savedRelation.id,
         `relation:${savedRelation.id}:add`
       );
-      return { relation: savedRelation, scoreUpdate: score, isRecreating };
+      return { relation: savedRelation, scoreUpdate: score, isRecreating, hasPriorApproval };
     });
 
     const displayLabel = resolveLabel(relType, lang);
     const authUser = await prisma.user.findUnique({ where: { id: userId } });
 
-    // Send notifications for alive relatives if points were awarded or if this is a re-created request
-    if (isPersonAlive && (scoreUpdate.applied || isRecreating)) {
+    // Send notifications for alive relatives if points were awarded or if this is a re-created request and not already approved
+    if (isPersonAlive && !hasPriorApproval && (scoreUpdate.applied || isRecreating)) {
       if (relatedUser.phone) {
         await createNotification({
           userId: relatedUser.id,
@@ -1288,32 +1247,8 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
           hiddenByUserIds: true,
           createdAt: true,
           updatedAt: true,
-          fromUser: {
-            select: {
-              id: true,
-              phone: true,
-              firstName: true,
-              lastName: true,
-              photoUrl: true,
-              gender: true,
-              isAlive: true,
-              profileCompleted: true,
-              isRegistered: true,
-            }
-          },
-          toUser: {
-            select: {
-              id: true,
-              phone: true,
-              firstName: true,
-              lastName: true,
-              photoUrl: true,
-              gender: true,
-              isAlive: true,
-              profileCompleted: true,
-              isRegistered: true,
-            }
-          },
+          fromUser: { select: RELATION_USER_SELECT },
+          toUser: { select: RELATION_USER_SELECT },
           // `relationType: true` removed: treeSide/treeLevel/reciprocalCode now come
           // from the cached registry, so this join no longer runs per hop.
         } as const;

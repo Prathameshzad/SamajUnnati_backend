@@ -745,3 +745,48 @@ enum InterestStatus {
   SUPER_INTERESTED
   REJECTED
 }
+
+model DeletedUser {
+  id                String    @id @default(uuid())
+  originalUserId    String
+  phone             String?
+  email             String?
+  photoUrl          String?
+  bannerUrl         String?
+  address           String?
+  pincode           String?
+  designation       String?
+  dateOfBirth       DateTime?
+  dateOfDeath       DateTime?
+  gender            Gender?
+  area              String?
+  bloodGroup        String?
+  community         String?
+  caste             String?
+  subcaste          String?
+  education         String?
+  firstName         String?
+  lastName          String?
+  middleName        String?
+  maritalStatus     String?
+  matrimonialStatus String?
+  occupation        String?
+  occupationDetails String?
+  religion          String?
+  whatsapp          String?
+  bio               String?
+  appLanguage       String?   @default("en")
+  relationLanguage  String?   @default("en")
+  worldX            Float?
+  worldY            Float?
+  userCreatedAt     DateTime?
+  userUpdatedAt     DateTime?
+  reason            String?
+  metadata          Json?
+  deletedAt         DateTime  @default(now())
+
+  @@index([phone])
+  @@index([deletedAt])
+  @@index([originalUserId])
+}
+
