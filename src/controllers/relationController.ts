@@ -14,6 +14,8 @@ import {
   emitScoreUpdate,
   lockScoreOwnerInTransaction,
   reverseRelationPointsInTransaction,
+  type ScoreReason,
+  type ScoreAwardResult,
 } from '../services/scoreService';
 import { getUserBadgeData } from '../services/badgeService';
 import {
@@ -292,6 +294,16 @@ export const getTree = async (req: AuthRequest, res: Response) => {
         address: true,
       },
     });
+    const userBlocks = await prisma.userBlock.findMany({
+      where: {
+        OR: [{ blockerId: userId }, { blockedId: userId }],
+      },
+      select: { blockerId: true, blockedId: true },
+    });
+    const blockedUserIds = new Set<string>(
+      userBlocks.map((b) => (b.blockerId === userId ? b.blockedId : b.blockerId))
+    );
+
     const raw = await prisma.relation.findMany({
       where: {
         OR: [
@@ -316,6 +328,7 @@ export const getTree = async (req: AuthRequest, res: Response) => {
         customPhotoUrl: true,
         visualSide: true,
         createdById: true,
+        hiddenByUserIds: true,
         createdAt: true,
         updatedAt: true,
         fromUser: { select: RELATION_USER_SELECT },
@@ -325,7 +338,13 @@ export const getTree = async (req: AuthRequest, res: Response) => {
       orderBy: { createdAt: 'asc' },
     });
 
-    const relations = raw.map(rel => {
+    const relations = raw
+      .filter((rel) => {
+        if (rel.hiddenByUserIds?.includes(userId)) return false;
+        if (blockedUserIds.has(rel.fromUserId) || blockedUserIds.has(rel.toUserId)) return false;
+        return true;
+      })
+      .map(rel => {
       const view = resolveRelationForViewer(registry, rel, userId, lang);
       const isMyRelation = rel.createdById === userId;
       let finalToUser = rel.toUser;
@@ -397,11 +416,22 @@ export const getRequests = async (req: AuthRequest, res: Response) => {
       };
     });
 
+    const userBlocks = await prisma.userBlock.findMany({
+      where: {
+        OR: [{ blockerId: userId }, { blockedId: userId }],
+      },
+      select: { blockerId: true, blockedId: true },
+    });
+    const blockedUserIds = new Set<string>(
+      userBlocks.map((b) => (b.blockerId === userId ? b.blockedId : b.blockerId))
+    );
+
     const filteredPending = pending.filter(rel => {
       const sender = rel.fromUser;
       if (!sender) return false;
       if (sender.isAlive === false) return false;
       if (!sender.phone || !String(sender.phone).trim()) return false;
+      if (blockedUserIds.has(rel.fromUserId) || (rel.createdById && blockedUserIds.has(rel.createdById))) return false;
       return true;
     });
 
@@ -593,7 +623,7 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
       throw badRequest('Cannot create relation with yourself');
     }
 
-    const { relation, scoreUpdate, isRecreating, hasPriorApproval } = await prisma.$transaction(async (tx) => {
+    const { relation, scoreUpdate, isRecreating, hasPriorApproval, isBlocked } = await prisma.$transaction(async (tx) => {
       await lockScoreOwnerInTransaction(tx, userId);
 
       // Block adding the same person with the exact same relation type if an active relation already exists in THIS user's tree
@@ -617,26 +647,41 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
         throw badRequest(`This person is already added with relation: ${displayLabel}`);
       }
 
-      // Check if a confirmed approval already exists between these users (e.g. they approved an incoming request)
-      const hasPriorApproval = Boolean(
+      // Check if a confirmed approval already exists from relatedUser (i.e. relatedUser previously approved or created a confirmed relation with userId)
+      const hasPriorApproval = isPersonAlive && Boolean(
         await tx.relation.findFirst({
           where: {
             category: 'FAMILY',
             status: 'CONFIRMED',
+            approvedAt: { not: null },
             OR: [
-              { fromUserId: userId, toUserId: relatedUser.id },
               { fromUserId: relatedUser.id, toUserId: userId },
               { createdById: relatedUser.id, toUserId: userId },
-              { createdById: relatedUser.id, fromUserId: userId },
-              { createdById: userId, toUserId: relatedUser.id },
-              { createdById: userId, fromUserId: relatedUser.id },
             ],
           },
         })
       );
 
-      const targetStatus = (!isPersonAlive || hasPriorApproval) ? 'CONFIRMED' : 'PENDING';
-      const targetApprovedAt = (!isPersonAlive || hasPriorApproval) ? new Date() : null;
+      // Check if either party has blocked the other
+      const blockExists = await tx.userBlock.findFirst({
+        where: {
+          OR: [
+            { blockerId: relatedUser.id, blockedId: userId },
+            { blockerId: userId, blockedId: relatedUser.id },
+          ],
+        },
+      });
+      const isBlocked = Boolean(blockExists);
+
+      let targetStatus = !isPersonAlive ? 'CONFIRMED' : (hasPriorApproval ? 'CONFIRMED' : 'PENDING');
+      let targetApprovedAt = (isPersonAlive && hasPriorApproval) ? new Date() : null;
+
+      if (isBlocked) {
+        targetStatus = 'REJECTED';
+        targetApprovedAt = null;
+      }
+
+      const hiddenList = isBlocked ? [relatedUser.id] : [];
 
       const existing = await tx.relation.findUnique({
         where: {
@@ -665,12 +710,11 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
           ...(customName ? { customName } : {}),
           ...(customPhotoUrl ? { customPhotoUrl } : {}),
           visualSide: normalizeVisualSide(visualSide),
-          ...(isRecreating || hasPriorApproval
+          ...(isRecreating || hasPriorApproval || isBlocked
             ? {
-                status: targetStatus,
+                status: targetStatus as any,
                 approvedAt: targetApprovedAt,
-                createdById: userId,
-                hiddenByUserIds: [],
+                hiddenByUserIds: hiddenList,
               }
             : {}),
         },
@@ -679,33 +723,35 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
           toUserId: relatedUser.id,
           relationTypeCode,
           category: 'FAMILY',
-          status: targetStatus,
+          status: targetStatus as any,
           approvedAt: targetApprovedAt,
           customName: customName || null,
           customPhotoUrl: customPhotoUrl || null,
           visualSide: normalizeVisualSide(visualSide),
           createdById: userId,
-          hiddenByUserIds: [],
+          hiddenByUserIds: hiddenList,
         },
         include: { toUser: true, fromUser: true },
       });
 
-      const addReason = savedRelation.toUser.isAlive === false ? 'ADD_DECEASED' : 'ADD_ALIVE';
-      const score = await awardPointsInTransaction(
-        tx,
-        savedRelation.createdById ?? userId,
-        addReason,
-        savedRelation.id,
-        `relation:${savedRelation.id}:add`
-      );
-      return { relation: savedRelation, scoreUpdate: score, isRecreating, hasPriorApproval };
+      const addReason: ScoreReason = relatedUser.isAlive === false ? 'ADD_DECEASED' : 'ADD_ALIVE';
+      const score: ScoreAwardResult = isBlocked
+        ? { applied: false, delta: 0, userId, reason: addReason, total: 0, level: 0, leveledUp: false }
+        : await awardPointsInTransaction(
+            tx,
+            savedRelation.createdById ?? userId,
+            addReason,
+            savedRelation.id,
+            `relation:${savedRelation.id}:add`
+          );
+      return { relation: savedRelation, scoreUpdate: score, isRecreating, hasPriorApproval, isBlocked };
     });
 
     const displayLabel = resolveLabel(relType, lang);
     const authUser = await prisma.user.findUnique({ where: { id: userId } });
 
     // Send notifications for alive relatives if points were awarded or if this is a re-created request and not already approved
-    if (isPersonAlive && !hasPriorApproval && (scoreUpdate.applied || isRecreating)) {
+    if (!isBlocked && isPersonAlive && !hasPriorApproval && (scoreUpdate.applied || isRecreating)) {
       if (relatedUser.phone) {
         await createNotification({
           userId: relatedUser.id,
@@ -1227,6 +1273,16 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
       return out;
     };
 
+    const userBlocks = await prisma.userBlock.findMany({
+      where: {
+        OR: [{ blockerId: userId }, { blockedId: userId }],
+      },
+      select: { blockerId: true, blockedId: true },
+    });
+    const blockedUserIds = new Set<string>(
+      userBlocks.map((b) => (b.blockerId === userId ? b.blockedId : b.blockerId))
+    );
+
     let hop = 0;
     while (queue.length > 0 && hop < maxDepth) {
       const nextQueue = new Set<string>();
@@ -1275,6 +1331,7 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
 
       for (const rel of rawRelations) {
         if (processedRelations.has(rel.id)) continue;
+        if (blockedUserIds.has(rel.fromUserId) || blockedUserIds.has(rel.toUserId)) continue;
         // Unfollowing is directional: hide this edge only from the caller's tree.
         // The confirmed relation row remains available to the other participant.
         if (rel.hiddenByUserIds?.includes(userId)) continue;

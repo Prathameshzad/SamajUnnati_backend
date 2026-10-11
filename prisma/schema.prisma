@@ -71,6 +71,11 @@ model User {
   blockedByUsers                      UserBlock[]          @relation("Blocked")
   blockedUsers                        UserBlock[]          @relation("BlockedBy")
   userScore                           UserScore?
+  postReports                         PostReport[]         @relation("PostReports")
+  messageReports                      MessageReport[]      @relation("MessageReports")
+  reportedMessages                    MessageReport[]      @relation("ReportedUserMessages")
+  userReportsMade                     UserReport[]         @relation("UserReportsReporter")
+  userReportsReceived                 UserReport[]         @relation("UserReportsTarget")
   // phone already has @unique (which implies an index), so authController's
   // findUnique({ where: { phone } }) on every login was already covered.
 
@@ -233,6 +238,7 @@ model Post {
   likes             PostLike[]
   media             PostMedia[]
   shares            PostShare[]
+  reports           PostReport[]
 
   @@index([userId, createdAt])
   @@index([createdAt])
@@ -358,6 +364,7 @@ model Conversation {
   updatedAt   DateTime             @updatedAt
   members     ConversationMember[]
   messages    Message[]
+  reports     MessageReport[]
 
   /**
    * Group permission flags ("Member capabilities" screen). All default to the
@@ -439,6 +446,7 @@ model Message {
   conversation   Conversation  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   sender         User          @relation("MessageSender", fields: [senderId], references: [id])
   reads          MessageRead[]
+  reports        MessageReport[]
 
   @@index([conversationId, createdAt])
   @@index([senderId])
@@ -467,6 +475,64 @@ model UserBlock {
   @@unique([blockerId, blockedId])
   @@index([blockerId])
   @@index([blockedId])
+}
+
+model PostReport {
+  id         String   @id @default(uuid())
+  postId     String
+  reporterId String
+  reason     String
+  details    String?
+  status     String   @default("PENDING")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  post       Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  reporter   User     @relation("PostReports", fields: [reporterId], references: [id], onDelete: Cascade)
+
+  @@unique([postId, reporterId])
+  @@index([postId])
+  @@index([reporterId])
+  @@index([status])
+}
+
+model MessageReport {
+  id             String        @id @default(uuid())
+  messageId      String?
+  conversationId String?
+  reporterId     String
+  reportedUserId String?
+  reason         String
+  details        String?
+  status         String        @default("PENDING")
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  message        Message?      @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  conversation   Conversation? @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  reporter       User          @relation("MessageReports", fields: [reporterId], references: [id], onDelete: Cascade)
+  reportedUser   User?         @relation("ReportedUserMessages", fields: [reportedUserId], references: [id], onDelete: SetNull)
+
+  @@index([messageId])
+  @@index([conversationId])
+  @@index([reporterId])
+  @@index([reportedUserId])
+  @@index([status])
+}
+
+model UserReport {
+  id           String   @id @default(uuid())
+  targetUserId String
+  reporterId   String
+  reason       String
+  details      String?
+  status       String   @default("PENDING")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  targetUser   User     @relation("UserReportsTarget", fields: [targetUserId], references: [id], onDelete: Cascade)
+  reporter     User     @relation("UserReportsReporter", fields: [reporterId], references: [id], onDelete: Cascade)
+
+  @@index([targetUserId])
+  @@index([reporterId])
+  @@index([status])
 }
 
 model MatrimonyProfile {

@@ -5,7 +5,6 @@ import { AuthRequest } from '../middleware/authMiddleware';
 import { uploadMedia } from '../lib/mediaUpload';
 import { badRequest, notFound, unauthenticated } from '../lib/errors';
 import type { ValidatedFile } from '../lib/fileValidation';
-import { awardPoints } from '../services/scoreService';
 import { emitToUser } from '../lib/socket';
 
 // POST /api/stories
@@ -72,9 +71,6 @@ export const createStory = async (req: AuthRequest, res: Response): Promise<Resp
       _count: { select: { views: true } },
     },
   });
-
-  // Award XP for creating a story (+15 XP)
-  awardPoints(userId, 'STORY_CREATE').catch(() => {});
 
   // Real-time story announcement to user and kinship/followers
   (async () => {

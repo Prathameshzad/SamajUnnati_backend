@@ -8,7 +8,6 @@ import { uploadMedia } from '../lib/mediaUpload';
 import type { ValidatedFile } from '../lib/fileValidation';
 import { badRequest, forbidden, notFound, unauthenticated } from '../lib/errors';
 import { createLogger } from '../lib/logger';
-import { awardPoints } from '../services/scoreService';
 import { getUserBadgeData } from '../services/badgeService';
 
 const log = createLogger('posts');
@@ -179,9 +178,6 @@ export const createPost = async (req: AuthRequest, res: Response): Promise<Respo
       _count: { select: { likes: true, comments: true, shares: true } },
     },
   });
-
-  // Award XP for creating post (+15 XP)
-  awardPoints(userId, 'POST_CREATE').catch(() => {});
 
   return res.status(201).json({ ...post, isLiked: false, likeCount: 0, commentCount: 0, shareCount: 0 });
 };
@@ -647,4 +643,48 @@ export const sharePost = async (req: AuthRequest, res: Response): Promise<Respon
 
   const shareCount = await prisma.postShare.count({ where: { postId } });
   return res.json({ shareCount });
+};
+
+// POST /api/posts/:id/report
+export const reportPost = async (req: AuthRequest, res: Response): Promise<Response> => {
+  const userId = req.user?.id;
+  if (!userId) throw unauthenticated();
+
+  const { id: postId } = req.params;
+  const { reason, details } = req.body;
+
+  if (!reason || typeof reason !== 'string') {
+    throw badRequest('Report reason is required');
+  }
+
+  const post = await prisma.post.findFirst({
+    where: { id: postId, deletedAt: null },
+    select: { id: true, userId: true },
+  });
+  if (!post) throw notFound('Post not found');
+
+  const report = await prisma.postReport.upsert({
+    where: {
+      postId_reporterId: {
+        postId,
+        reporterId: userId,
+      },
+    },
+    create: {
+      postId,
+      reporterId: userId,
+      reason: String(reason).trim(),
+      details: details ? String(details).trim() : null,
+      status: 'PENDING',
+    },
+    update: {
+      reason: String(reason).trim(),
+      details: details ? String(details).trim() : null,
+      status: 'PENDING',
+      updatedAt: new Date(),
+    },
+  });
+
+  log.info({ reportId: report.id, postId, reporterId: userId, reason }, 'Post reported');
+  return res.json({ message: 'Post reported successfully. Our team will review it.', reportId: report.id });
 };

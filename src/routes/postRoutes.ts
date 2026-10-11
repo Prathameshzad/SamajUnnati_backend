@@ -17,6 +17,7 @@ import {
   getComments,
   deleteComment,
   sharePost,
+  reportPost,
 } from '../controllers/postController';
 import {
   addCommentSchema,
@@ -63,5 +64,6 @@ router.delete(
 );
 
 router.post('/:id/share', writeLimiter, validate(sharePostSchema), asyncHandler(sharePost));
+router.post('/:id/report', writeLimiter, validate(postIdSchema), asyncHandler(reportPost));
 
 export default router;

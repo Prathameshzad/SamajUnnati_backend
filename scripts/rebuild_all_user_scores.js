@@ -133,64 +133,8 @@ async function main() {
     console.log(`  Added ${addEventsCreated} missing ADD relation event(s).`);
     console.log(`  Added ${approvalEventsCreated} missing RELATION_APPROVED event(s).\n`);
 
-    // 3. Scan posts for missing post creation awards (+15 pts per post)
-    console.log('Step 3: Checking posts and stories awards...');
-    const userPosts = await client.query(`
-      SELECT p."userId", COUNT(*)::int AS "postCount", us.id AS "userScoreId"
-      FROM "Post" p
-      JOIN "UserScore" us ON us."userId" = p."userId"
-      WHERE p."deletedAt" IS NULL
-      GROUP BY p."userId", us.id
-    `);
-
-    let postEventsCreated = 0;
-    for (const row of userPosts.rows) {
-      const opKey = `score-rebuild:${row.userId}:posts`;
-      const existing = await client.query(`
-        SELECT id FROM "ScoreEvent" WHERE "operationKey" = $1 LIMIT 1
-      `, [opKey]);
-
-      if (existing.rows.length === 0 && row.postCount > 0) {
-        const points = row.postCount * 15;
-        await client.query(`
-          INSERT INTO "ScoreEvent" (id, "userId", points, reason, "operationKey", "createdAt")
-          VALUES ($1, $2, $3, 'POST_CREATE'::"ScoreReason", $4, NOW())
-          ON CONFLICT ("operationKey") DO NOTHING
-        `, [randomUUID(), row.userScoreId, points, opKey]);
-        postEventsCreated++;
-      }
-    }
-
-    // 4. Scan stories for missing story creation awards (+15 pts per story)
-    const userStories = await client.query(`
-      SELECT s."userId", COUNT(*)::int AS "storyCount", us.id AS "userScoreId"
-      FROM "Story" s
-      JOIN "UserScore" us ON us."userId" = s."userId"
-      WHERE s."deletedAt" IS NULL
-      GROUP BY s."userId", us.id
-    `);
-
-    let storyEventsCreated = 0;
-    for (const row of userStories.rows) {
-      const opKey = `score-rebuild:${row.userId}:stories`;
-      const existing = await client.query(`
-        SELECT id FROM "ScoreEvent" WHERE "operationKey" = $1 LIMIT 1
-      `, [opKey]);
-
-      if (existing.rows.length === 0 && row.storyCount > 0) {
-        const points = row.storyCount * 15;
-        await client.query(`
-          INSERT INTO "ScoreEvent" (id, "userId", points, reason, "operationKey", "createdAt")
-          VALUES ($1, $2, $3, 'STORY_CREATE'::"ScoreReason", $4, NOW())
-          ON CONFLICT ("operationKey") DO NOTHING
-        `, [randomUUID(), row.userScoreId, points, opKey]);
-        storyEventsCreated++;
-      }
-    }
-    console.log(`  Added ${postEventsCreated} post event batch(es) and ${storyEventsCreated} story event batch(es).\n`);
-
-    // 5. Recalculate totals and levels for all UserScore rows based on the ledger
-    console.log('Step 4: Recalculating totals & levels for all user scorecards...');
+    // 3. Recalculate totals and levels for all UserScore rows based on the ledger
+    console.log('Step 3: Recalculating totals & levels for all user scorecards...');
     const balances = await client.query(`
       SELECT us.id, us."userId", GREATEST(0, COALESCE(SUM(se.points), 0))::int AS "ledgerTotal"
       FROM "UserScore" us

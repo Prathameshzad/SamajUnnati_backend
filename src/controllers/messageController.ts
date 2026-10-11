@@ -9,6 +9,8 @@ import { uploadMedia } from '../lib/mediaUpload';
 import { badRequest, conflict, forbidden, notFound, unauthenticated } from '../lib/errors';
 import { createLogger } from '../lib/logger';
 import type { ValidatedFile } from '../lib/fileValidation';
+import { TreeCacheService } from '../services/treeCacheService';
+import { reverseRelationPointsInTransaction } from '../services/scoreService';
 
 const log = createLogger('messages');
 
@@ -44,39 +46,62 @@ const MESSAGE_SENDER_SELECT = {
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
-/** Returns confirmed relation user IDs for the calling user (phones must exist = real users) */
+/** Returns approved relation user IDs for the calling user (both users confirmed/approved, registered, alive) */
 async function getEligibleContactIds(userId: string, category?: 'FAMILY' | 'FRIEND' | 'MATRIMONY'): Promise<string[]> {
-  // Fetch all CONFIRMED rows where the user is either side
-  // This covers both normal rows (fromUserId=user) and reciprocal rows (toUserId=user)
+  // Fetch all CONFIRMED rows where an explicit approval has occurred (approvedAt is not null)
+  // and the relation has not been hidden/unfollowed by the user
   const relations = await prisma.relation.findMany({
     where: {
       status: 'CONFIRMED',
+      approvedAt: { not: null },
+      NOT: { hiddenByUserIds: { has: userId } },
       ...(category ? { category } : {}),
       OR: [
         { fromUserId: userId },
         { toUserId: userId },
-        { createdById: userId }, // covers cases where user created but fromUserId differs
+        { createdById: userId },
       ],
     },
-    // Narrowed from a bare `findMany` (every column of every matching relation)
-    // to the only two fields this function actually reads.
-    select: { fromUserId: true, toUserId: true },
+    select: { fromUserId: true, toUserId: true, createdById: true },
   });
 
   const ids = new Set<string>();
   for (const rel of relations) {
-    if (rel.fromUserId !== userId) ids.add(rel.fromUserId);
-    if (rel.toUserId !== userId) ids.add(rel.toUserId);
-    // If user is the creator but neither fromUser nor toUser, createdById link won't help
-    // (already covered by fromUserId/toUserId above)
+    if (rel.fromUserId === userId && rel.toUserId && rel.toUserId !== userId) {
+      ids.add(rel.toUserId);
+    }
+    if (rel.toUserId === userId) {
+      if (rel.createdById && rel.createdById !== userId) ids.add(rel.createdById);
+      if (rel.fromUserId && rel.fromUserId !== userId) ids.add(rel.fromUserId);
+    }
+    if (rel.createdById === userId && rel.toUserId && rel.toUserId !== userId) {
+      ids.add(rel.toUserId);
+    }
   }
   // Remove self just in case
   ids.delete(userId);
 
+  if (ids.size === 0) return [];
+
+  // Exclude blocked users
+  const blocks = await prisma.userBlock.findMany({
+    where: { OR: [{ blockerId: userId }, { blockedId: userId }] },
+    select: { blockerId: true, blockedId: true },
+  });
+  for (const b of blocks) {
+    ids.delete(b.blockerId === userId ? b.blockedId : b.blockerId);
+  }
+
+  // Must be living, registered app users with phone
   const users = await prisma.user.findMany({
     where: {
       id: { in: Array.from(ids) },
+      isAlive: true,
       phone: { not: null },
+      OR: [
+        { isRegistered: true },
+        { profileCompleted: true },
+      ],
     },
     select: { id: true },
   });
@@ -194,7 +219,16 @@ export const listConversations = async (req: AuthRequest, res: Response) => {
     orderBy: { updatedAt: 'desc' },
   });
 
-  const conversations = await Promise.all(raw.map((c) => formatConversation(c, userId)));
+  const eligibleIds = await getEligibleContactIds(userId, category);
+  const eligibleSet = new Set(eligibleIds);
+
+  const validRaw = raw.filter((c) => {
+    if (c.isGroup) return true;
+    const other = c.members.find((m) => m.userId !== userId);
+    return other && eligibleSet.has(other.userId);
+  });
+
+  const conversations = await Promise.all(validRaw.map((c) => formatConversation(c, userId)));
   return res.json(conversations);
 };
 
@@ -466,6 +500,19 @@ export const sendMessage = async (req: AuthRequest, res: Response) => {
     !membership.conversation.allowMembersSendMessages
   ) {
     throw forbidden('Only admins can send messages in this group');
+  }
+
+  if (!membership.conversation.isGroup) {
+    const otherMember = await prisma.conversationMember.findFirst({
+      where: { conversationId, userId: { not: userId } },
+      select: { userId: true },
+    });
+    if (otherMember) {
+      const eligibleIds = await getEligibleContactIds(userId);
+      if (!eligibleIds.includes(otherMember.userId)) {
+        throw forbidden('You can only message approved contacts');
+      }
+    }
   }
 
   const file = (req as any).file as Express.Multer.File | undefined;
@@ -816,18 +863,71 @@ export const blockUser = async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;
   const { targetUserId } = req.body;
   if (!userId) throw unauthenticated();
-  // blockUserSchema validates shape (a UUID string) but has no access to the
-  // authenticated user id — `validate()` only parses req.body/query/params, so
-  // "not equal to self" cannot be expressed as a schema-level `.refine()` here.
-  // Kept as a controller-level business check.
   if (targetUserId === userId) throw badRequest('Cannot block yourself');
 
-  await prisma.userBlock.upsert({
-    where: { blockerId_blockedId: { blockerId: userId, blockedId: targetUserId } },
-    create: { blockerId: userId, blockedId: targetUserId },
-    update: {},
+  await prisma.$transaction(async (tx) => {
+    await tx.userBlock.upsert({
+      where: { blockerId_blockedId: { blockerId: userId, blockedId: targetUserId } },
+      create: { blockerId: userId, blockedId: targetUserId },
+      update: {},
+    });
+
+    const relations = await tx.relation.findMany({
+      where: {
+        OR: [
+          { fromUserId: userId, toUserId: targetUserId },
+          { fromUserId: targetUserId, toUserId: userId },
+          { createdById: userId, toUserId: targetUserId },
+          { createdById: userId, fromUserId: targetUserId },
+          { createdById: targetUserId, toUserId: userId },
+          { createdById: targetUserId, fromUserId: userId },
+        ],
+      },
+      select: {
+        id: true,
+        createdById: true,
+        fromUserId: true,
+        toUserId: true,
+        status: true,
+        hiddenByUserIds: true,
+      },
+    });
+
+    for (const rel of relations) {
+      const hidden = new Set(rel.hiddenByUserIds || []);
+      hidden.add(userId);
+
+      await tx.relation.update({
+        where: { id: rel.id },
+        data: {
+          status: 'REJECTED',
+          hiddenByUserIds: Array.from(hidden),
+        },
+      });
+
+      await tx.notification.deleteMany({
+        where: { relationId: rel.id },
+      });
+
+      if (rel.status === 'CONFIRMED') {
+        const creatorId = rel.createdById ?? rel.fromUserId;
+        await reverseRelationPointsInTransaction(tx, creatorId, rel.id, 'ALL').catch(() => {});
+      }
+    }
+
+    await tx.follow.deleteMany({
+      where: {
+        OR: [
+          { followerId: userId, followingId: targetUserId },
+          { followerId: targetUserId, followingId: userId },
+        ],
+      },
+    });
   });
-  return res.json({ blocked: true, message: 'User blocked' });
+
+  await TreeCacheService.invalidateUserTree(userId, targetUserId).catch(() => {});
+
+  return res.json({ blocked: true, message: 'User blocked and removed from tree' });
 };
 
 export const unblockUser = async (req: AuthRequest, res: Response) => {
@@ -1303,4 +1403,78 @@ export const resolveJoinRequest = async (req: AuthRequest, res: Response) => {
 
   emitToUser(request.userId, 'group:joinRequestResolved', { conversationId, approved: approve });
   return res.json({ message: approve ? 'Request approved' : 'Request rejected' });
+};
+
+// POST /api/messages/report or POST /api/messages/:id/report
+export const reportMessage = async (req: AuthRequest, res: Response): Promise<Response> => {
+  const userId = req.user?.id;
+  if (!userId) throw unauthenticated();
+
+  const messageId = req.params.id || req.body.messageId;
+  const { conversationId, reportedUserId, reason, details } = req.body;
+
+  if (!reason || typeof reason !== 'string') {
+    throw badRequest('Report reason is required');
+  }
+
+  let finalReportedUserId = reportedUserId;
+  let finalConversationId = conversationId;
+
+  if (messageId) {
+    const msg = await prisma.message.findUnique({
+      where: { id: messageId },
+      select: { senderId: true, conversationId: true },
+    });
+    if (msg) {
+      if (!finalReportedUserId) finalReportedUserId = msg.senderId;
+      if (!finalConversationId) finalConversationId = msg.conversationId;
+    }
+  }
+
+  const report = await prisma.messageReport.create({
+    data: {
+      messageId: messageId || null,
+      conversationId: finalConversationId || null,
+      reportedUserId: finalReportedUserId || null,
+      reporterId: userId,
+      reason: String(reason).trim(),
+      details: details ? String(details).trim() : null,
+      status: 'PENDING',
+    },
+  });
+
+  log.info({ reportId: report.id, messageId, reporterId: userId, reason }, 'Message/Chat reported');
+  return res.json({ message: 'Report submitted successfully. Our safety team will review it.', reportId: report.id });
+};
+
+// POST /api/messages/report-user
+export const reportUser = async (req: AuthRequest, res: Response): Promise<Response> => {
+  const userId = req.user?.id;
+  if (!userId) throw unauthenticated();
+
+  const targetUserId = req.params.id || req.body.targetUserId;
+  const { reason, details } = req.body;
+
+  if (!targetUserId) throw badRequest('Target user ID is required');
+  if (targetUserId === userId) throw badRequest('Cannot report yourself');
+  if (!reason || typeof reason !== 'string') throw badRequest('Report reason is required');
+
+  const target = await prisma.user.findUnique({
+    where: { id: targetUserId },
+    select: { id: true },
+  });
+  if (!target) throw notFound('User not found');
+
+  const report = await prisma.userReport.create({
+    data: {
+      targetUserId,
+      reporterId: userId,
+      reason: String(reason).trim(),
+      details: details ? String(details).trim() : null,
+      status: 'PENDING',
+    },
+  });
+
+  log.info({ reportId: report.id, targetUserId, reporterId: userId, reason }, 'User reported');
+  return res.json({ message: 'User report submitted successfully. Our safety team will review it.', reportId: report.id });
 };

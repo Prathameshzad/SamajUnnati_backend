@@ -39,8 +39,8 @@ export const SCORE_POINTS: Record<ScoreReason, number> = {
   REMOVE_ALIVE: -5,
   REMOVE_DECEASED: -2,
   REMOVE_RELATION: -5,
-  POST_CREATE: 15,
-  STORY_CREATE: 15,
+  POST_CREATE: 0,
+  STORY_CREATE: 0,
 };
 
 /** Human-readable labels, previously duplicated in both ScoreWidget components. */

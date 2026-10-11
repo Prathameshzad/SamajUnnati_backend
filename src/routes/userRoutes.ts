@@ -7,6 +7,7 @@ import {
   requestChangePhoneOtp,
   verifyChangePhoneOtp,
 } from '../controllers/userController';
+import { reportUser } from '../controllers/messageController';
 import { authMiddleware } from '../middleware/authMiddleware';
 import { uploadProfileImage } from '../middleware/uploadMiddleware';
 import { validate } from '../middleware/validate';
@@ -59,6 +60,14 @@ router.get(
   readLimiter,
   validate(userIdParamSchema),
   asyncHandler(getUserById)
+);
+
+router.post(
+  '/:id/report',
+  authMiddleware,
+  writeLimiter,
+  validate(userIdParamSchema),
+  asyncHandler(reportUser)
 );
 
 export default router;

@@ -8,6 +8,8 @@ import {
   emitScoreUpdate,
   lockScoreOwnerInTransaction,
   reverseRelationPointsInTransaction,
+  type ScoreReason,
+  type ScoreAwardResult,
 } from '../services/scoreService';
 import { getRelationTypeRegistry, type RelationTypeRegistry } from '../services/relationTypeRegistry';
 import { badRequest, forbidden, notFound, unauthenticated } from '../lib/errors';
@@ -154,6 +156,16 @@ export const getFriendTree = async (req: AuthRequest, res: Response) => {
   const nodesByLevel = new Map<number, any[]>();
   nodesByLevel.set(0, [{ user: rootUser, relation: null }]);
 
+  const userBlocks = await prisma.userBlock.findMany({
+    where: {
+      OR: [{ blockerId: userId }, { blockedId: userId }],
+    },
+    select: { blockerId: true, blockedId: true },
+  });
+  const blockedUserIds = new Set<string>(
+    userBlocks.map((b) => (b.blockerId === userId ? b.blockedId : b.blockerId))
+  );
+
   let queue: string[] = [userId];
   let currentLevel = 0;
 
@@ -161,9 +173,10 @@ export const getFriendTree = async (req: AuthRequest, res: Response) => {
     const nextQueue: string[] = [];
     const currentLevelParents = new Set(queue);
     // Find relations where one of the participants is in our current level's queue
-    const childRelations = allRelations.filter(rel =>
-      (currentLevelParents.has(rel.fromUserId)) || (currentLevelParents.has(rel.toUserId))
-    );
+    const childRelations = allRelations.filter(rel => {
+      if (blockedUserIds.has(rel.fromUserId) || blockedUserIds.has(rel.toUserId)) return false;
+      return (currentLevelParents.has(rel.fromUserId)) || (currentLevelParents.has(rel.toUserId));
+    });
 
     for (const rel of childRelations) {
       let sourceUserId;
@@ -416,12 +429,23 @@ export const getFriendRequests = async (req: AuthRequest, res: Response) => {
     };
   });
 
-  // Filter out requests from deceased/phoneless users (same as family pattern)
+  const userBlocks = await prisma.userBlock.findMany({
+    where: {
+      OR: [{ blockerId: userId }, { blockedId: userId }],
+    },
+    select: { blockerId: true, blockedId: true },
+  });
+  const blockedUserIds = new Set<string>(
+    userBlocks.map((b) => (b.blockerId === userId ? b.blockedId : b.blockerId))
+  );
+
+  // Filter out requests from deceased/phoneless/blocked users
   const filteredPending = pending.filter(rel => {
     const sender = rel.fromUser;
     if (!sender) return false;
     if (sender.isAlive === false) return false;
     if (!sender.phone || !String(sender.phone).trim()) return false;
+    if (blockedUserIds.has(rel.fromUserId) || (rel.createdById && blockedUserIds.has(rel.createdById))) return false;
     return true;
   });
 
@@ -787,7 +811,7 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
     throw badRequest('Cannot add yourself or the source as a friend');
   }
 
-  const { relation, scoreUpdate, isRecreating, hasPriorApproval } = await prisma.$transaction(async (tx) => {
+  const { relation, scoreUpdate, isRecreating, hasPriorApproval, isBlocked } = await prisma.$transaction(async (tx) => {
     await lockScoreOwnerInTransaction(tx, userId);
 
     // Block adding the same friend with the exact same relation type if an active relation already exists in THIS user's tree
@@ -807,26 +831,41 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
       throw badRequest(`This person is already added with relation: ${displayLabel}`);
     }
 
-    // Check if a confirmed approval already exists between these users (e.g. they approved an incoming friend request)
-    const hasPriorApproval = Boolean(
+    // Check if a confirmed approval already exists from relatedUser (i.e. relatedUser previously approved or created a confirmed friend relation with userId)
+    const hasPriorApproval = isPersonAlive && Boolean(
       await tx.relation.findFirst({
         where: {
           category: 'FRIEND',
           status: 'CONFIRMED',
+          approvedAt: { not: null },
           OR: [
-            { fromUserId: userId, toUserId: relatedUser.id },
             { fromUserId: relatedUser.id, toUserId: userId },
             { createdById: relatedUser.id, toUserId: userId },
-            { createdById: relatedUser.id, fromUserId: userId },
-            { createdById: userId, toUserId: relatedUser.id },
-            { createdById: userId, fromUserId: relatedUser.id },
           ],
         },
       })
     );
 
-    const targetStatus = (!isPersonAlive || hasPriorApproval) ? 'CONFIRMED' : 'PENDING';
-    const targetApprovedAt = (!isPersonAlive || hasPriorApproval) ? new Date() : null;
+    // Check if either party has blocked the other
+    const blockExists = await tx.userBlock.findFirst({
+      where: {
+        OR: [
+          { blockerId: relatedUser.id, blockedId: userId },
+          { blockerId: userId, blockedId: relatedUser.id },
+        ],
+      },
+    });
+    const isBlocked = Boolean(blockExists);
+
+    let targetStatus = !isPersonAlive ? 'CONFIRMED' : (hasPriorApproval ? 'CONFIRMED' : 'PENDING');
+    let targetApprovedAt = (isPersonAlive && hasPriorApproval) ? new Date() : null;
+
+    if (isBlocked) {
+      targetStatus = 'REJECTED';
+      targetApprovedAt = null;
+    }
+
+    const hiddenList = isBlocked ? [relatedUser.id] : [];
 
     const existing = await tx.relation.findUnique({
       where: {
@@ -855,12 +894,11 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
         ...(customName ? { customName } : {}),
         ...(customPhotoUrl ? { customPhotoUrl } : {}),
         visualSide: normalizeVisualSide(visualSide),
-        ...(isRecreating || hasPriorApproval
+        ...(isRecreating || hasPriorApproval || isBlocked
           ? {
-              status: targetStatus,
+              status: targetStatus as any,
               approvedAt: targetApprovedAt,
-              createdById: userId,
-              hiddenByUserIds: [],
+              hiddenByUserIds: hiddenList,
             }
           : {}),
       },
@@ -869,31 +907,33 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
         toUserId: relatedUser.id,
         relationTypeCode,
         category: 'FRIEND',
-        status: targetStatus,
+        status: targetStatus as any,
         approvedAt: targetApprovedAt,
         customName: customName || null,
         customPhotoUrl: customPhotoUrl || null,
         visualSide: normalizeVisualSide(visualSide),
         createdById: userId,
-        hiddenByUserIds: [],
+        hiddenByUserIds: hiddenList,
       },
       include: { toUser: true, fromUser: true },
     });
-    const addReason = savedRelation.toUser.isAlive === false ? 'ADD_DECEASED' : 'ADD_ALIVE';
-    const score = await awardPointsInTransaction(
-      tx,
-      savedRelation.createdById ?? userId,
-      addReason,
-      savedRelation.id,
-      `relation:${savedRelation.id}:add`
-    );
-    return { relation: savedRelation, scoreUpdate: score, isRecreating, hasPriorApproval };
+    const addReason: ScoreReason = relatedUser.isAlive === false ? 'ADD_DECEASED' : 'ADD_ALIVE';
+    const score: ScoreAwardResult = isBlocked
+      ? { applied: false, delta: 0, userId, reason: addReason, total: 0, level: 0, leveledUp: false }
+      : await awardPointsInTransaction(
+          tx,
+          savedRelation.createdById ?? userId,
+          addReason,
+          savedRelation.id,
+          `relation:${savedRelation.id}:add`
+        );
+    return { relation: savedRelation, scoreUpdate: score, isRecreating, hasPriorApproval, isBlocked };
   });
   const displayLabel = resolveLabel(relType, lang);
   const authUser = await prisma.user.findUnique({ where: { id: userId } });
 
-  // Only send pending notifications if alive and not already approved
-  if (isPersonAlive && !hasPriorApproval && (scoreUpdate.applied || isRecreating)) {
+  // Only send pending notifications if alive, not blocked, and not already approved
+  if (!isBlocked && isPersonAlive && !hasPriorApproval && (scoreUpdate.applied || isRecreating)) {
     // Notify the recipient of the friend request (if they have a phone = real registered user)
     if (relatedUser.phone) {
       await createNotification({
