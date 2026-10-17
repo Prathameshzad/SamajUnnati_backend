@@ -224,7 +224,7 @@ export async function reverseRelationPointsInTransaction(
   };
 }
 
-/** Standalone award API retained for posts/stories and other non-relation calls. */
+/** Standalone award API for tree relation scoring. */
 export async function awardPoints(
   userId: string,
   reason: ScoreReason,

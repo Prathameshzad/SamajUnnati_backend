@@ -113,6 +113,7 @@ export const updateMe = async (
 
     // address
     address,
+    societyName,
     pincode,
     area,
 
@@ -148,6 +149,7 @@ export const updateMe = async (
     matrimonialStatus?: string;
 
     address?: string;
+    societyName?: string;
     pincode?: string;
     area?: string;
 
@@ -233,6 +235,7 @@ export const updateMe = async (
 
       // address
       address,
+      societyName,
       pincode,
       area,
 

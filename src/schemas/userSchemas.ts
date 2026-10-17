@@ -70,6 +70,7 @@ export const updateMeSchema = {
       matrimonialStatus: boundedText(TEXT_LIMITS.shortField),
 
       address: boundedText(TEXT_LIMITS.address),
+      societyName: boundedText(TEXT_LIMITS.shortField),
       pincode: boundedText(16),
       area: boundedText(TEXT_LIMITS.shortField),
 

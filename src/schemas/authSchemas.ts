@@ -53,7 +53,10 @@ export const registerSchema = {
       occupation: boundedText(TEXT_LIMITS.shortField),
       appLanguage: z.string().trim().max(10).optional(),
       relationLanguage: z.string().trim().max(10).optional(),
-      // Location fields
+      // Address & Location fields
+      address: boundedText(TEXT_LIMITS.address),
+      societyName: boundedText(TEXT_LIMITS.shortField),
+      society: boundedText(TEXT_LIMITS.shortField),
       pincode: z.string().trim().max(20).optional(),
       area: boundedText(TEXT_LIMITS.shortField),
       latitude: z.string().trim().optional(),

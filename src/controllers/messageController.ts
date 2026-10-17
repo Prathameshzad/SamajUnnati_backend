@@ -843,7 +843,7 @@ export const getConversationInfo = async (req: AuthRequest, res: Response) => {
     take: 100,
   });
 
-  // Check if current user has blocked the other person
+  // Check if current user has blocked the other person and resolve relation
   const other = conv.members.find((m) => m.userId !== userId);
   let isBlocked = false;
   let isBlockedBy = false;
@@ -852,6 +852,37 @@ export const getConversationInfo = async (req: AuthRequest, res: Response) => {
     const blockB = await prisma.userBlock.findUnique({ where: { blockerId_blockedId: { blockerId: other.userId, blockedId: userId } } });
     isBlocked = !!blockA;
     isBlockedBy = !!blockB;
+
+    const relation = await prisma.relation.findFirst({
+      where: {
+        OR: [
+          { fromUserId: userId, toUserId: other.userId },
+          { fromUserId: other.userId, toUserId: userId },
+        ],
+        deletedAt: null,
+      },
+      include: {
+        relationType: {
+          include: {
+            translations: {
+              where: { languageCode: 'en' },
+            },
+          },
+        },
+      },
+    });
+
+    if (relation) {
+      (other as any).relation = {
+        relationTypeCode: relation.relationTypeCode,
+        relationLabel: relation.relationType?.translations?.[0]?.label || relation.relationTypeCode,
+        customName: relation.customName,
+        customPhotoUrl: relation.customPhotoUrl,
+      };
+      if (!other.user.photoUrl && relation.customPhotoUrl) {
+        other.user.photoUrl = relation.customPhotoUrl;
+      }
+    }
   }
 
   return res.json({ conversation: conv, mediaMessages, isBlocked, isBlockedBy });

@@ -13,6 +13,7 @@ model User {
   photoUrl                            String?
   bannerUrl                           String?
   address                             String?
+  societyName                         String?
   pincode                             String?
   designation                         String?
   dateOfBirth                         DateTime?
@@ -734,8 +735,6 @@ enum ScoreReason {
   REMOVE_ALIVE
   REMOVE_DECEASED
   REMOVE_RELATION
-  POST_CREATE
-  STORY_CREATE
 }
 
 enum Gender {

@@ -236,6 +236,9 @@ export const registerUser = async (
     fullName,
     appLanguage,
     relationLanguage,
+    address,
+    societyName,
+    society,
     pincode,
     area,
     latitude,
@@ -258,6 +261,9 @@ export const registerUser = async (
     occupation?: string;
     appLanguage?: string;
     relationLanguage?: string;
+    address?: string;
+    societyName?: string;
+    society?: string;
     pincode?: string;
     area?: string;
     latitude?: string;
@@ -333,9 +339,11 @@ export const registerUser = async (
       privacyVersion: CURRENT_PRIVACY_VERSION,
       worldX: (Math.random() - 0.5) * 100000,
       worldY: (Math.random() - 0.5) * 100000,
-      // Location fields from the new registration step
+      // Address & Location fields
+      address: address?.trim() ?? null,
+      societyName: societyName?.trim() ?? society?.trim() ?? null,
       pincode: pincode?.trim() ?? null,
-      area: area?.trim() ?? null,
+      area: area?.trim() ?? (societyName?.trim() || society?.trim() || null),
     };
 
     if (existing) {
