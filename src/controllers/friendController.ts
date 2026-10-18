@@ -775,7 +775,12 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
   let relatedUser = null;
   if (cleanPhone) {
     relatedUser = await prisma.user.findFirst({
-      where: { phone: { in: phoneLookupVariants(cleanPhone) } },
+      where: {
+        OR: [
+          { phone: { in: phoneLookupVariants(cleanPhone) } },
+          { secondaryPhone: { in: phoneLookupVariants(cleanPhone) } },
+        ],
+      },
       // Prefer the real account if legacy 10/12-digit duplicates exist.
       orderBy: [
         { profileCompleted: 'desc' },

@@ -9,6 +9,7 @@ datasource db {
 model User {
   id                                  String               @id @default(uuid())
   phone                               String?              @unique
+  secondaryPhone                      String?              @unique
   email                               String?              @unique
   photoUrl                            String?
   bannerUrl                           String?
@@ -815,6 +816,7 @@ model DeletedUser {
   id                String    @id @default(uuid())
   originalUserId    String
   phone             String?
+  secondaryPhone    String?
   email             String?
   photoUrl          String?
   bannerUrl         String?
@@ -851,6 +853,7 @@ model DeletedUser {
   deletedAt         DateTime  @default(now())
 
   @@index([phone])
+  @@index([secondaryPhone])
   @@index([deletedAt])
   @@index([originalUserId])
 }

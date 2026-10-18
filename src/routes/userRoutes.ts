@@ -6,6 +6,7 @@ import {
   getUserById,
   requestChangePhoneOtp,
   verifyChangePhoneOtp,
+  removeSecondaryPhone,
 } from '../controllers/userController';
 import { reportUser } from '../controllers/messageController';
 import { authMiddleware } from '../middleware/authMiddleware';
@@ -33,6 +34,13 @@ router.delete(
   authMiddleware,
   writeLimiter,
   asyncHandler(deleteMyAccount)
+);
+
+router.delete(
+  '/me/secondary-phone',
+  authMiddleware,
+  writeLimiter,
+  asyncHandler(removeSecondaryPhone)
 );
 
 router.post(

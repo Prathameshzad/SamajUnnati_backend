@@ -10,6 +10,7 @@ import { notFound, unauthenticated, badRequest } from '../lib/errors';
 import { OtpService } from '../services/otpService';
 import { signAuthToken } from '../lib/jwt';
 import { createLogger } from '../lib/logger';
+import { syncPendingRelationsForUser } from '../services/relationReconnectService';
 
 const log = createLogger('users');
 
@@ -50,6 +51,7 @@ const PUBLIC_SAFE_SELECT = {
 const OWNER_SAFE_SELECT = {
   ...PUBLIC_SAFE_SELECT,
   phone: true,
+  secondaryPhone: true,
   email: true,
 } as const;
 
@@ -83,6 +85,7 @@ export const updateMe = async (
     // OTP-verified flow. See schemas/userSchemas.ts for the same rationale.
     whatsapp,
     email,
+    secondaryPhone,
 
     // name
     firstName,
@@ -125,6 +128,7 @@ export const updateMe = async (
   } = req.body as {
     whatsapp?: string;
     email?: string;
+    secondaryPhone?: string | null;
 
     firstName?: string;
     middleName?: string;
@@ -196,6 +200,38 @@ export const updateMe = async (
     finalBannerUrl = (req.body as any).bannerUrl;
   }
 
+  let cleanSecondary: string | null | undefined = undefined;
+  if (secondaryPhone !== undefined) {
+    if (secondaryPhone === null || secondaryPhone === '') {
+      cleanSecondary = null;
+    } else {
+      const norm = normalizeDigitsPhone(secondaryPhone);
+      if (!norm || norm.length < 8 || norm.length > 15) {
+        throw badRequest('Invalid secondary phone number format');
+      }
+      const currentUser = await prisma.user.findUnique({
+        where: { id: req.user.id },
+        select: { phone: true },
+      });
+      if (currentUser?.phone === norm) {
+        throw badRequest('Secondary phone cannot be identical to primary phone');
+      }
+      const existing = await prisma.user.findFirst({
+        where: {
+          OR: [
+            { phone: norm },
+            { secondaryPhone: norm },
+          ],
+          id: { not: req.user.id },
+        },
+      });
+      if (existing) {
+        throw badRequest('This secondary phone number is already registered with another account');
+      }
+      cleanSecondary = norm;
+    }
+  }
+
   const user = await prisma.user.update({
     where: { id: req.user.id },
     data: {
@@ -204,6 +240,7 @@ export const updateMe = async (
       // contact
       whatsapp,
       email,
+      secondaryPhone: cleanSecondary !== undefined ? cleanSecondary : undefined,
 
       // name
       firstName,
@@ -246,6 +283,12 @@ export const updateMe = async (
       designation,
     },
   });
+
+  if (cleanSecondary) {
+    await syncPendingRelationsForUser(user.id, cleanSecondary).catch((err) => {
+      log.warn({ err }, 'Failed to sync pending relations for new secondary phone');
+    });
+  }
 
   // Invalidate tree cache for this user and all connected users
   const connectedRelations = await prisma.relation.findMany({
@@ -307,7 +350,7 @@ export const requestChangePhoneOtp = async (
   res: Response
 ): Promise<Response | void> => {
   if (!req.user?.id) throw unauthenticated();
-  const { newPhone } = req.body as { newPhone?: string };
+  const { newPhone, isSecondary } = req.body as { newPhone?: string; isSecondary?: boolean };
   if (!newPhone) throw badRequest('New phone number is required');
 
   const normalized = normalizeDigitsPhone(newPhone);
@@ -317,15 +360,33 @@ export const requestChangePhoneOtp = async (
 
   const currentUser = await prisma.user.findUnique({
     where: { id: req.user.id },
-    select: { phone: true },
+    select: { phone: true, secondaryPhone: true },
   });
 
-  if (currentUser?.phone === normalized) {
-    throw badRequest('New phone number cannot be the same as your current phone number');
+  if (isSecondary) {
+    if (currentUser?.phone === normalized) {
+      throw badRequest('Secondary phone number cannot be the same as your primary phone number');
+    }
+    if (currentUser?.secondaryPhone === normalized) {
+      throw badRequest('Secondary phone number cannot be the same as your current secondary number');
+    }
+  } else {
+    if (currentUser?.phone === normalized) {
+      throw badRequest('New phone number cannot be the same as your current phone number');
+    }
+    if (currentUser?.secondaryPhone === normalized) {
+      throw badRequest('Primary phone number cannot be the same as your secondary phone number');
+    }
   }
 
-  const existing = await prisma.user.findUnique({
-    where: { phone: normalized },
+  const existing = await prisma.user.findFirst({
+    where: {
+      OR: [
+        { phone: normalized },
+        { secondaryPhone: normalized },
+      ],
+      id: { not: req.user.id },
+    },
   });
   if (existing) {
     throw badRequest('This phone number is already registered with another account');
@@ -344,7 +405,7 @@ export const requestChangePhoneOtp = async (
   }
 
   return res.json({
-    message: 'OTP sent to new phone number',
+    message: isSecondary ? 'OTP sent to second phone number' : 'OTP sent to new phone number',
   });
 };
 
@@ -353,7 +414,7 @@ export const verifyChangePhoneOtp = async (
   res: Response
 ): Promise<Response | void> => {
   if (!req.user?.id) throw unauthenticated();
-  const { newPhone, code } = req.body as { newPhone?: string; code?: string };
+  const { newPhone, code, isSecondary } = req.body as { newPhone?: string; code?: string; isSecondary?: boolean };
   if (!newPhone || !code) throw badRequest('Phone number and OTP code are required');
 
   const normalized = normalizeDigitsPhone(newPhone);
@@ -364,12 +425,35 @@ export const verifyChangePhoneOtp = async (
     return res.status(400).json({ message: 'Invalid or expired OTP' });
   }
 
-  // Conflict re-check
-  const existing = await prisma.user.findUnique({
-    where: { phone: normalized },
+  // Conflict re-check across both fields
+  const existing = await prisma.user.findFirst({
+    where: {
+      OR: [
+        { phone: normalized },
+        { secondaryPhone: normalized },
+      ],
+      id: { not: req.user.id },
+    },
   });
-  if (existing && existing.id !== req.user.id) {
+  if (existing) {
     throw badRequest('This phone number is already registered with another account');
+  }
+
+  if (isSecondary) {
+    const updatedUser = await prisma.user.update({
+      where: { id: req.user.id },
+      data: { secondaryPhone: normalized },
+      select: OWNER_SAFE_SELECT,
+    });
+
+    await syncPendingRelationsForUser(updatedUser.id, normalized).catch((err) => {
+      log.warn({ err }, 'Failed to sync pending relations for new secondary phone');
+    });
+
+    return res.json({
+      message: 'Secondary phone number updated successfully',
+      user: updatedUser,
+    });
   }
 
   const updatedUser = await prisma.user.update({
@@ -380,6 +464,10 @@ export const verifyChangePhoneOtp = async (
 
   await invalidateAccountStatus(req.user.id);
 
+  await syncPendingRelationsForUser(updatedUser.id, normalized).catch((err) => {
+    log.warn({ err }, 'Failed to sync pending relations for new primary phone');
+  });
+
   const token = signAuthToken({
     userId: updatedUser.id,
     phone: updatedUser.phone!,
@@ -388,6 +476,24 @@ export const verifyChangePhoneOtp = async (
   return res.json({
     message: 'Phone number updated successfully',
     token,
+    user: updatedUser,
+  });
+};
+
+export const removeSecondaryPhone = async (
+  req: AuthRequest,
+  res: Response
+): Promise<Response | void> => {
+  if (!req.user?.id) throw unauthenticated();
+
+  const updatedUser = await prisma.user.update({
+    where: { id: req.user.id },
+    data: { secondaryPhone: null },
+    select: OWNER_SAFE_SELECT,
+  });
+
+  return res.json({
+    message: 'Secondary phone number removed successfully',
     user: updatedUser,
   });
 };

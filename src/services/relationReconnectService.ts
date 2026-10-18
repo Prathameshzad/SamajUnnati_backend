@@ -52,15 +52,21 @@ function resolveLabel(relationType: any, lang: string = 'mr'): string {
 export async function syncPendingRelationsForUser(userId: string, rawPhone?: string | null): Promise<number> {
   const user = await prisma.user.findUnique({
     where: { id: userId },
-    select: { id: true, firstName: true, lastName: true, phone: true, appLanguage: true },
+    select: { id: true, firstName: true, lastName: true, phone: true, secondaryPhone: true, appLanguage: true },
   });
   if (!user) return 0;
 
-  const phone = rawPhone || user.phone;
-  if (!phone) return 0;
+  const phoneList: string[] = [];
+  if (rawPhone) {
+    phoneList.push(rawPhone);
+  } else {
+    if (user.phone) phoneList.push(user.phone);
+    if (user.secondaryPhone) phoneList.push(user.secondaryPhone);
+  }
+  if (phoneList.length === 0) return 0;
 
-  const variants = phoneLookupVariants(phone);
-  log.info({ userId, phone, variants }, 'Syncing pending relation requests for user');
+  const variants = Array.from(new Set(phoneList.flatMap((p) => phoneLookupVariants(p))));
+  log.info({ userId, phones: phoneList, variants }, 'Syncing pending relation requests for user');
 
   let processedCount = 0;
 
@@ -70,6 +76,7 @@ export async function syncPendingRelationsForUser(userId: string, rawPhone?: str
       OR: [
         { phone: { in: variants } },
         { whatsapp: { in: variants } },
+        { secondaryPhone: { in: variants } },
       ],
       id: { not: userId },
       profileCompleted: false,
@@ -108,7 +115,10 @@ export async function syncPendingRelationsForUser(userId: string, rawPhone?: str
   // ─── 2. RECONNECT RELATIONS FROM DELETEDUSER ARCHIVES (FOR RE-REGISTERING USERS) ───
   const deletedRecords = await prisma.deletedUser.findMany({
     where: {
-      phone: { in: variants },
+      OR: [
+        { phone: { in: variants } },
+        { secondaryPhone: { in: variants } },
+      ],
     },
     orderBy: { deletedAt: 'desc' },
   });

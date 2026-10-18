@@ -128,8 +128,8 @@ export const TEXT_LIMITS = {
   storyCaption: 200,
   name: 100,
   bio: 500,
-  address: 300,
-  location: 120,
-  shortField: 100,
+  address: 1000,
+  location: 200,
+  shortField: 200,
   url: 2048,
 } as const;

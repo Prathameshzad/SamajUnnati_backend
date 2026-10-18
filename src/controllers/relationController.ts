@@ -533,7 +533,12 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
 
   const matchedExistingUser = cleanPhone
     ? await prisma.user.findFirst({
-        where: { phone: { in: phoneLookupVariants(cleanPhone) } },
+        where: {
+          OR: [
+            { phone: { in: phoneLookupVariants(cleanPhone) } },
+            { secondaryPhone: { in: phoneLookupVariants(cleanPhone) } },
+          ],
+        },
         // Prefer the actual account when both a legacy-prefixed user and a
         // placeholder exist for the same national number.
         orderBy: [
@@ -1859,7 +1864,12 @@ export const checkAcceptedByPhone = async (req: AuthRequest, res: Response) => {
   const existingRelation = await prisma.relation.findFirst({
     where: {
       toUserId: userId,
-      fromUser: { phone: cleanPhone },
+      fromUser: {
+        OR: [
+          { phone: cleanPhone },
+          { secondaryPhone: cleanPhone },
+        ],
+      },
       status: 'CONFIRMED'
     },
     select: {
