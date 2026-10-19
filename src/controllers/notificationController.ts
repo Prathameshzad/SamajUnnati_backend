@@ -10,6 +10,7 @@ import {
   sendToUser,
   PUSH_CHANNELS,
 } from '../services/pushService';
+import { syncPendingRelationsForUser } from '../services/relationReconnectService';
 
 /**
  * Field set for the participants embedded in a notification's relation.
@@ -35,6 +36,13 @@ export const listNotifications = async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;
   const lang = (req.query.lang as string) || 'mr';
   if (!userId) throw unauthenticated();
+
+  // Ensure any placeholder relations added by other users for this phone or previous account are claimed and notified
+  if (req.user?.id) {
+    await syncPendingRelationsForUser(userId, req.user?.phone).catch((err) => {
+      console.error('Failed to sync pending relations in listNotifications:', err);
+    });
+  }
 
   // Already validated/capped by listNotificationsSchema (limit default 50, max 100).
   const stateQuery = (req.query.state as string | undefined)?.toUpperCase();

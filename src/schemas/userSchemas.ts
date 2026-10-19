@@ -46,6 +46,12 @@ export const updateMeSchema = {
         .transform((value) => (value.length === 0 ? undefined : value))
         .optional(),
       email: z.string().trim().toLowerCase().email('must be a valid email').max(255).optional(),
+      secondaryPhone: z
+        .string()
+        .trim()
+        .transform((val) => (val === '' ? null : val))
+        .nullable()
+        .optional(),
 
       firstName: boundedText(TEXT_LIMITS.name),
       middleName: boundedText(TEXT_LIMITS.name),
@@ -70,6 +76,7 @@ export const updateMeSchema = {
       matrimonialStatus: boundedText(TEXT_LIMITS.shortField),
 
       address: boundedText(TEXT_LIMITS.address),
+      societyName: boundedText(TEXT_LIMITS.shortField),
       pincode: boundedText(16),
       area: boundedText(TEXT_LIMITS.shortField),
 

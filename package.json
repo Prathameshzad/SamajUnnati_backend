@@ -16,6 +16,7 @@
     "seed:dense": "ts-node scripts/stress_seeder.ts seed:dense",
     "seed:huge": "ts-node scripts/stress_seeder.ts seed:huge",
     "seed:clear": "ts-node scripts/stress_seeder.ts seed:clear",
+    "clean:stress": "node scripts/clean_stress_seed_data.js",
     "seed:screenshot-demo": "node scripts/seed_screenshot_demo.js",
     "db:baseline-deploy": "node scripts/baseline_and_deploy.js",
     "db:deploy": "prisma migrate deploy",

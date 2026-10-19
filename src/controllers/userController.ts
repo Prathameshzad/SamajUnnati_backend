@@ -10,6 +10,7 @@ import { notFound, unauthenticated, badRequest } from '../lib/errors';
 import { OtpService } from '../services/otpService';
 import { signAuthToken } from '../lib/jwt';
 import { createLogger } from '../lib/logger';
+import { syncPendingRelationsForUser } from '../services/relationReconnectService';
 
 const log = createLogger('users');
 
@@ -41,6 +42,8 @@ const PUBLIC_SAFE_SELECT = {
   education: true,
   designation: true,
   area: true,
+  profileCompleted: true,
+  isRegistered: true,
   createdAt: true,
 } as const;
 
@@ -48,6 +51,7 @@ const PUBLIC_SAFE_SELECT = {
 const OWNER_SAFE_SELECT = {
   ...PUBLIC_SAFE_SELECT,
   phone: true,
+  secondaryPhone: true,
   email: true,
 } as const;
 
@@ -81,6 +85,7 @@ export const updateMe = async (
     // OTP-verified flow. See schemas/userSchemas.ts for the same rationale.
     whatsapp,
     email,
+    secondaryPhone,
 
     // name
     firstName,
@@ -111,6 +116,7 @@ export const updateMe = async (
 
     // address
     address,
+    societyName,
     pincode,
     area,
 
@@ -122,6 +128,7 @@ export const updateMe = async (
   } = req.body as {
     whatsapp?: string;
     email?: string;
+    secondaryPhone?: string | null;
 
     firstName?: string;
     middleName?: string;
@@ -146,6 +153,7 @@ export const updateMe = async (
     matrimonialStatus?: string;
 
     address?: string;
+    societyName?: string;
     pincode?: string;
     area?: string;
 
@@ -192,6 +200,38 @@ export const updateMe = async (
     finalBannerUrl = (req.body as any).bannerUrl;
   }
 
+  let cleanSecondary: string | null | undefined = undefined;
+  if (secondaryPhone !== undefined) {
+    if (secondaryPhone === null || secondaryPhone === '') {
+      cleanSecondary = null;
+    } else {
+      const norm = normalizeDigitsPhone(secondaryPhone);
+      if (!norm || norm.length < 8 || norm.length > 15) {
+        throw badRequest('Invalid secondary phone number format');
+      }
+      const currentUser = await prisma.user.findUnique({
+        where: { id: req.user.id },
+        select: { phone: true },
+      });
+      if (currentUser?.phone === norm) {
+        throw badRequest('Secondary phone cannot be identical to primary phone');
+      }
+      const existing = await prisma.user.findFirst({
+        where: {
+          OR: [
+            { phone: norm },
+            { secondaryPhone: norm },
+          ],
+          id: { not: req.user.id },
+        },
+      });
+      if (existing) {
+        throw badRequest('This secondary phone number is already registered with another account');
+      }
+      cleanSecondary = norm;
+    }
+  }
+
   const user = await prisma.user.update({
     where: { id: req.user.id },
     data: {
@@ -200,6 +240,7 @@ export const updateMe = async (
       // contact
       whatsapp,
       email,
+      secondaryPhone: cleanSecondary !== undefined ? cleanSecondary : undefined,
 
       // name
       firstName,
@@ -231,6 +272,7 @@ export const updateMe = async (
 
       // address
       address,
+      societyName,
       pincode,
       area,
 
@@ -241,6 +283,12 @@ export const updateMe = async (
       designation,
     },
   });
+
+  if (cleanSecondary) {
+    await syncPendingRelationsForUser(user.id, cleanSecondary).catch((err) => {
+      log.warn({ err }, 'Failed to sync pending relations for new secondary phone');
+    });
+  }
 
   // Invalidate tree cache for this user and all connected users
   const connectedRelations = await prisma.relation.findMany({
@@ -302,7 +350,7 @@ export const requestChangePhoneOtp = async (
   res: Response
 ): Promise<Response | void> => {
   if (!req.user?.id) throw unauthenticated();
-  const { newPhone } = req.body as { newPhone?: string };
+  const { newPhone, isSecondary } = req.body as { newPhone?: string; isSecondary?: boolean };
   if (!newPhone) throw badRequest('New phone number is required');
 
   const normalized = normalizeDigitsPhone(newPhone);
@@ -312,15 +360,33 @@ export const requestChangePhoneOtp = async (
 
   const currentUser = await prisma.user.findUnique({
     where: { id: req.user.id },
-    select: { phone: true },
+    select: { phone: true, secondaryPhone: true },
   });
 
-  if (currentUser?.phone === normalized) {
-    throw badRequest('New phone number cannot be the same as your current phone number');
+  if (isSecondary) {
+    if (currentUser?.phone === normalized) {
+      throw badRequest('Secondary phone number cannot be the same as your primary phone number');
+    }
+    if (currentUser?.secondaryPhone === normalized) {
+      throw badRequest('Secondary phone number cannot be the same as your current secondary number');
+    }
+  } else {
+    if (currentUser?.phone === normalized) {
+      throw badRequest('New phone number cannot be the same as your current phone number');
+    }
+    if (currentUser?.secondaryPhone === normalized) {
+      throw badRequest('Primary phone number cannot be the same as your secondary phone number');
+    }
   }
 
-  const existing = await prisma.user.findUnique({
-    where: { phone: normalized },
+  const existing = await prisma.user.findFirst({
+    where: {
+      OR: [
+        { phone: normalized },
+        { secondaryPhone: normalized },
+      ],
+      id: { not: req.user.id },
+    },
   });
   if (existing) {
     throw badRequest('This phone number is already registered with another account');
@@ -339,7 +405,7 @@ export const requestChangePhoneOtp = async (
   }
 
   return res.json({
-    message: 'OTP sent to new phone number',
+    message: isSecondary ? 'OTP sent to second phone number' : 'OTP sent to new phone number',
   });
 };
 
@@ -348,7 +414,7 @@ export const verifyChangePhoneOtp = async (
   res: Response
 ): Promise<Response | void> => {
   if (!req.user?.id) throw unauthenticated();
-  const { newPhone, code } = req.body as { newPhone?: string; code?: string };
+  const { newPhone, code, isSecondary } = req.body as { newPhone?: string; code?: string; isSecondary?: boolean };
   if (!newPhone || !code) throw badRequest('Phone number and OTP code are required');
 
   const normalized = normalizeDigitsPhone(newPhone);
@@ -359,12 +425,35 @@ export const verifyChangePhoneOtp = async (
     return res.status(400).json({ message: 'Invalid or expired OTP' });
   }
 
-  // Conflict re-check
-  const existing = await prisma.user.findUnique({
-    where: { phone: normalized },
+  // Conflict re-check across both fields
+  const existing = await prisma.user.findFirst({
+    where: {
+      OR: [
+        { phone: normalized },
+        { secondaryPhone: normalized },
+      ],
+      id: { not: req.user.id },
+    },
   });
-  if (existing && existing.id !== req.user.id) {
+  if (existing) {
     throw badRequest('This phone number is already registered with another account');
+  }
+
+  if (isSecondary) {
+    const updatedUser = await prisma.user.update({
+      where: { id: req.user.id },
+      data: { secondaryPhone: normalized },
+      select: OWNER_SAFE_SELECT,
+    });
+
+    await syncPendingRelationsForUser(updatedUser.id, normalized).catch((err) => {
+      log.warn({ err }, 'Failed to sync pending relations for new secondary phone');
+    });
+
+    return res.json({
+      message: 'Secondary phone number updated successfully',
+      user: updatedUser,
+    });
   }
 
   const updatedUser = await prisma.user.update({
@@ -375,6 +464,10 @@ export const verifyChangePhoneOtp = async (
 
   await invalidateAccountStatus(req.user.id);
 
+  await syncPendingRelationsForUser(updatedUser.id, normalized).catch((err) => {
+    log.warn({ err }, 'Failed to sync pending relations for new primary phone');
+  });
+
   const token = signAuthToken({
     userId: updatedUser.id,
     phone: updatedUser.phone!,
@@ -384,5 +477,285 @@ export const verifyChangePhoneOtp = async (
     message: 'Phone number updated successfully',
     token,
     user: updatedUser,
+  });
+};
+
+export const removeSecondaryPhone = async (
+  req: AuthRequest,
+  res: Response
+): Promise<Response | void> => {
+  if (!req.user?.id) throw unauthenticated();
+
+  const updatedUser = await prisma.user.update({
+    where: { id: req.user.id },
+    data: { secondaryPhone: null },
+    select: OWNER_SAFE_SELECT,
+  });
+
+  return res.json({
+    message: 'Secondary phone number removed successfully',
+    user: updatedUser,
+  });
+};
+
+/**
+ * DELETE /api/users/me
+ * Permanently deletes the user account from the `User` table, archives their
+ * profile and analytics metadata in `DeletedUser`, and updates any connected
+ * relations in other users' trees so the tree node remains intact with its
+ * approved status removed.
+ */
+export const deleteMyAccount = async (
+  req: AuthRequest,
+  res: Response
+): Promise<Response | void> => {
+  const userId = req.user?.id;
+  if (!userId) throw unauthenticated();
+
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+  });
+  if (!user) throw notFound('User not found');
+
+  const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : null;
+
+  // Track owners of other trees that need cache invalidation
+  const affectedTreeOwnerIds = new Set<string>();
+
+  await prisma.$transaction(async (tx) => {
+    // 1. Handle relationships connected to this user:
+    // "also you have to handle the relationship connect with that user so if there are approved user with this user
+    // then when this user delete the account in there tree the approved status will get remove
+    // note that the user will not get delete from the tree just the approved status we get removed."
+    const unlinkedRelations: Array<{
+      relationId: string;
+      stubUserId: string;
+      treeOwnerId: string;
+      relationTypeCode: string;
+      wasApproved: boolean;
+      customName?: string | null;
+    }> = [];
+
+    // Incoming relations where toUserId === userId
+    const incomingRelations = await tx.relation.findMany({
+      where: { toUserId: userId },
+    });
+
+    for (const rel of incomingRelations) {
+      if (rel.createdById !== userId && rel.fromUserId !== userId) {
+        // This relation belongs to another user's tree.
+        // We preserve the node in their tree, but disconnect it from the deleting user's row
+        // and remove its approved status (status -> PENDING, approvedAt -> null).
+        const treeOwnerId = rel.createdById || rel.fromUserId;
+        affectedTreeOwnerIds.add(treeOwnerId);
+
+        const wasApproved = rel.status === 'CONFIRMED' || !!rel.approvedAt;
+
+        // Create an unapproved stub user representing the retained node in the other user's tree
+        const stubUser = await tx.user.create({
+          data: {
+            phone: null,
+            whatsapp: user.phone || user.whatsapp || null,
+            firstName: rel.customName || user.firstName || 'Family Member',
+            lastName: user.lastName || null,
+            gender: user.gender,
+            dateOfBirth: user.dateOfBirth,
+            dateOfDeath: user.dateOfDeath,
+            isAlive: user.isAlive,
+            bloodGroup: user.bloodGroup,
+            profileCompleted: false,
+            isRegistered: false,
+            worldX: user.worldX,
+            worldY: user.worldY,
+          },
+        });
+
+        // Any sub-relations branching out from this node in the other user's tree
+        await tx.relation.updateMany({
+          where: { fromUserId: userId, createdById: rel.createdById },
+          data: { fromUserId: stubUser.id },
+        });
+
+        // Update the incoming relation to point to the stub user and clear approval
+        await tx.relation.update({
+          where: { id: rel.id },
+          data: {
+            toUserId: stubUser.id,
+            status: 'PENDING',
+            approvedAt: null,
+          },
+        });
+
+        // Clean up old notifications for this relation so stale notifications are removed
+        await tx.notification.deleteMany({ where: { relationId: rel.id } });
+
+        unlinkedRelations.push({
+          relationId: rel.id,
+          stubUserId: stubUser.id,
+          treeOwnerId,
+          relationTypeCode: rel.relationTypeCode,
+          wasApproved,
+          customName: rel.customName,
+        });
+      } else {
+        // Belongs to the user's own tree -> remove relation & associated notifications
+        await tx.notification.deleteMany({ where: { relationId: rel.id } });
+        await tx.relation.delete({ where: { id: rel.id } });
+      }
+    }
+
+    // 2. Archive user data into DeletedUser table for future analytics and reconnection
+    await tx.deletedUser.create({
+      data: {
+        originalUserId: user.id,
+        phone: user.phone,
+        email: user.email,
+        photoUrl: user.photoUrl,
+        bannerUrl: user.bannerUrl,
+        address: user.address,
+        pincode: user.pincode,
+        designation: user.designation,
+        dateOfBirth: user.dateOfBirth,
+        dateOfDeath: user.dateOfDeath,
+        gender: user.gender,
+        area: user.area,
+        bloodGroup: user.bloodGroup,
+        community: user.community,
+        caste: user.caste,
+        subcaste: user.subcaste,
+        education: user.education,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        middleName: user.middleName,
+        maritalStatus: user.maritalStatus,
+        matrimonialStatus: user.matrimonialStatus,
+        occupation: user.occupation,
+        occupationDetails: user.occupationDetails,
+        religion: user.religion,
+        whatsapp: user.whatsapp,
+        bio: user.bio,
+        appLanguage: user.appLanguage,
+        relationLanguage: user.relationLanguage,
+        worldX: user.worldX,
+        worldY: user.worldY,
+        userCreatedAt: user.createdAt,
+        userUpdatedAt: user.updatedAt,
+        reason,
+        metadata: {
+          ip: req.ip,
+          userAgent: req.headers['user-agent'],
+          unlinkedRelations,
+        },
+      },
+    });
+
+
+
+    // Outgoing relations where fromUserId === userId and created by this user
+    const outgoingRelations = await tx.relation.findMany({
+      where: {
+        OR: [
+          { fromUserId: userId },
+          { createdById: userId },
+        ],
+      },
+      select: { id: true, toUserId: true, fromUserId: true, createdById: true },
+    });
+
+    for (const rel of outgoingRelations) {
+      if (rel.createdById && rel.createdById !== userId) {
+        // Belongs to another user's tree sub-branch; already repointed above
+        continue;
+      }
+      affectedTreeOwnerIds.add(rel.toUserId);
+      await tx.notification.deleteMany({ where: { relationId: rel.id } });
+      await tx.relation.delete({ where: { id: rel.id } });
+    }
+
+    // Cleanup any lingering relations created by or referencing this user
+    const leftoverRels = await tx.relation.findMany({
+      where: {
+        OR: [
+          { fromUserId: userId },
+          { toUserId: userId },
+          { createdById: userId },
+        ],
+      },
+      select: { id: true },
+    });
+    if (leftoverRels.length > 0) {
+      const leftoverIds = leftoverRels.map((r) => r.id);
+      await tx.notification.deleteMany({ where: { relationId: { in: leftoverIds } } });
+      await tx.relation.deleteMany({ where: { id: { in: leftoverIds } } });
+    }
+
+    // 3. Clean up other foreign key relations to this user
+    await tx.notification.deleteMany({ where: { userId } });
+    await tx.pushToken.deleteMany({ where: { userId } });
+    await tx.userBlock.deleteMany({
+      where: { OR: [{ blockerId: userId }, { blockedId: userId }] },
+    });
+    await tx.follow.deleteMany({
+      where: { OR: [{ followerId: userId }, { followingId: userId }] },
+    });
+
+    const userScore = await tx.userScore.findUnique({ where: { userId } });
+    if (userScore) {
+      await tx.scoreEvent.deleteMany({ where: { userId: userScore.id } });
+      await tx.userScore.delete({ where: { id: userScore.id } });
+    }
+
+    const userPosts = await tx.post.findMany({
+      where: { userId },
+      select: { id: true },
+    });
+    if (userPosts.length > 0) {
+      const postIds = userPosts.map((p) => p.id);
+      await tx.notification.deleteMany({ where: { postId: { in: postIds } } });
+      await tx.postComment.deleteMany({ where: { postId: { in: postIds } } });
+      await tx.postLike.deleteMany({ where: { postId: { in: postIds } } });
+      await tx.postShare.deleteMany({ where: { postId: { in: postIds } } });
+      await tx.postMedia.deleteMany({ where: { postId: { in: postIds } } });
+      await tx.post.deleteMany({ where: { userId } });
+    }
+
+    await tx.postLike.deleteMany({ where: { userId } });
+    await tx.postComment.deleteMany({ where: { userId } });
+    await tx.postShare.deleteMany({ where: { userId } });
+
+    await tx.storyView.deleteMany({ where: { userId } });
+    await tx.story.deleteMany({ where: { userId } });
+
+    await tx.messageRead.deleteMany({ where: { userId } });
+    await tx.message.deleteMany({ where: { senderId: userId } });
+    await tx.conversationMember.deleteMany({ where: { userId } });
+    await tx.groupJoinRequest.deleteMany({
+      where: { OR: [{ userId }, { resolvedById: userId }] },
+    });
+
+    await tx.matrimonyProfile.updateMany({
+      where: { managedByUserId: userId },
+      data: { managedByUserId: null },
+    });
+    const userMatrimony = await tx.matrimonyProfile.findUnique({ where: { userId } });
+    if (userMatrimony) {
+      await tx.matrimonyProfile.delete({ where: { id: userMatrimony.id } });
+    }
+
+    // 4. Actually delete the record from the User table
+    await tx.user.delete({
+      where: { id: userId },
+    });
+  });
+
+  // 5. Invalidate auth status & tree caches
+  await invalidateAccountStatus(userId);
+  await TreeCacheService.invalidateUserTree(userId, ...Array.from(affectedTreeOwnerIds));
+
+  log.info({ userId }, 'User account successfully deleted and archived');
+
+  return res.json({
+    success: true,
+    message: 'Your account has been permanently deleted.',
   });
 };

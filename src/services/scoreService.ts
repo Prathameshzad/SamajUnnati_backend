@@ -224,7 +224,7 @@ export async function reverseRelationPointsInTransaction(
   };
 }
 
-/** Standalone award API retained for posts/stories and other non-relation calls. */
+/** Standalone award API for tree relation scoring. */
 export async function awardPoints(
   userId: string,
   reason: ScoreReason,
@@ -310,29 +310,25 @@ export async function getUserScore(userId: string): Promise<UserScoreData> {
       const existing = await tx.userScore.findUnique({ where: { userId }, select: selection });
       if (existing) return existing;
 
-      const [relations, postCount, storyCount] = await Promise.all([
-        tx.relation.findMany({
-          where: {
-            deletedAt: null,
-            category: { in: ['FAMILY', 'FRIEND'] },
-            OR: [
-              { createdById: userId },
-              { createdById: null, fromUserId: userId },
-            ],
-          },
-          select: {
-            id: true,
-            status: true,
-            approvedAt: true,
-            hiddenByUserIds: true,
-            toUser: { select: { isAlive: true } },
-          },
-        }),
-        tx.post.count({ where: { userId, deletedAt: null } }),
-        tx.story.count({ where: { userId, deletedAt: null } }),
-      ]);
+      const relations = await tx.relation.findMany({
+        where: {
+          deletedAt: null,
+          category: { in: ['FAMILY', 'FRIEND'] },
+          OR: [
+            { createdById: userId },
+            { createdById: null, fromUserId: userId },
+          ],
+        },
+        select: {
+          id: true,
+          status: true,
+          approvedAt: true,
+          hiddenByUserIds: true,
+          toUser: { select: { isAlive: true } },
+        },
+      });
 
-      if (relations.length === 0 && postCount === 0 && storyCount === 0) return null;
+      if (relations.length === 0) return null;
 
       const initialEvents: {
         points: number;
@@ -366,21 +362,6 @@ export async function getUserScore(userId: string): Promise<UserScoreData> {
             operationKey: `relation:${relation.id}:approved`,
           });
         }
-      }
-
-      if (postCount > 0) {
-        initialEvents.push({
-          points: postCount * SCORE_POINTS.POST_CREATE,
-          reason: 'POST_CREATE',
-          operationKey: `score-rebuild:${userId}:posts`,
-        });
-      }
-      if (storyCount > 0) {
-        initialEvents.push({
-          points: storyCount * SCORE_POINTS.STORY_CREATE,
-          reason: 'STORY_CREATE',
-          operationKey: `score-rebuild:${userId}:stories`,
-        });
       }
 
       const created = await tx.userScore.create({ data: { userId, total: 0, level: 1 } });

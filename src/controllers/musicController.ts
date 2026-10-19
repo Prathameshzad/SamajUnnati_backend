@@ -11,6 +11,7 @@
  */
 import { Request, Response } from 'express';
 import { config } from '../config/env';
+import prisma from '../lib/prisma';
 
 const YT_BASE = 'https://www.googleapis.com/youtube/v3';
 
@@ -88,12 +89,10 @@ function toTrack(item: YTVideoItem, detailsMap?: Map<string, { duration: string;
 const previewCache = new Map<string, string>();
 
 const FALLBACK_PREVIEWS = [
-  'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview125/v4/80/7e/11/807e112d-944d-db11-0941-8f55da2eb6d1/mzaf_10014022872658933220.plus.aac.p.m4a',
-  'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview116/v4/4a/12/36/4a1236ea-1d60-7a87-fae3-a60216503c7e/mzaf_16881958641916327663.plus.aac.p.m4a',
-  'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview115/v4/31/76/85/31768565-5c1a-8c54-79fa-35804ef050b1/mzaf_16422780783515086580.plus.aac.p.m4a',
-  'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview115/v4/b9/8b/6d/b98b6ddb-b9f4-3ea3-6f81-2a62a74c2ae7/mzaf_11942738747444154425.plus.aac.p.m4a',
-  'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview125/v4/a4/bc/99/a4bc99bc-ee33-e99d-16f5-ef8a1cb5b187/mzaf_17290945899478144214.plus.aac.p.m4a',
-  'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview115/v4/ee/c1/34/eec134c4-7fa0-4828-b0a6-c852445853b0/mzaf_9954005183889148443.plus.aac.p.m4a',
+  'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview221/v4/a6/e8/37/a6e837ce-3dc5-3f1a-6228-b0305719c8f2/mzaf_9002670426001196919.plus.aac.p.m4a',
+  'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/e5/c2/0a/e5c20a8d-f1b4-5d95-2ac1-e2e9efa502bb/mzaf_11124996926999296098.plus.aac.p.m4a',
+  'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/38/4c/5c/384c5c8f-3ff8-e457-b2f7-3158ce108649/mzaf_12389299033886433185.plus.aac.p.m4a',
+  'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/cf/5f/ef/cf5fef49-8ab0-0d0b-f17a-d820cdca1d88/mzaf_3693019759359818051.plus.aac.p.m4a',
 ];
 
 function getFallbackPreview(key: string): string {
@@ -106,39 +105,16 @@ function getFallbackPreview(key: string): string {
   return FALLBACK_PREVIEWS[index];
 }
 
-async function resolveAudioPreview(videoId: string, title: string, artist?: string): Promise<string> {
-  if (previewCache.has(videoId)) {
+async function resolveAudioPreview(videoId: string, title?: string, artist?: string): Promise<string> {
+  if (videoId && previewCache.has(videoId)) {
     return previewCache.get(videoId)!;
   }
 
-  const parts = title
-    .split(/[\|:\-–—]/)
-    .map((p) => p.replace(/[\(\[\{].*?[\)\]\}]/g, '').trim())
-    .filter(Boolean);
-
-  const candidates: string[] = [];
-  if (parts.length > 0) {
-    candidates.push(parts[0]);
-    if (parts.length > 1) {
-      candidates.push(`${parts[0]} ${parts[1]}`);
-    }
-  }
-  const cleanedFull = title
-    .replace(/[\(\[\{].*?[\)\]\}]/g, ' ')
-    .replace(/[\|:\-–—_#]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  if (cleanedFull) {
-    candidates.push(cleanedFull.slice(0, 60));
-  }
-
-  for (const q of [...new Set(candidates)]) {
+  // 1. If videoId is numeric (an iTunes track ID), query iTunes lookup directly
+  if (videoId && /^\d+$/.test(videoId)) {
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 1800);
-      const itunesUrl = `https://itunes.apple.com/search?term=${encodeURIComponent(q)}&entity=song&limit=1`;
-      const itRes = await fetch(itunesUrl, { signal: controller.signal });
-      clearTimeout(timeoutId);
+      const itUrl = `https://itunes.apple.com/lookup?id=${encodeURIComponent(videoId)}`;
+      const itRes = await fetch(itUrl);
       if (itRes.ok) {
         const data = (await itRes.json()) as any;
         const preview = data.results?.[0]?.previewUrl;
@@ -147,13 +123,55 @@ async function resolveAudioPreview(videoId: string, title: string, artist?: stri
           return preview;
         }
       }
-    } catch {
-      // Continue to next candidate or fallback
+    } catch {}
+  }
+
+  // 2. Build search candidate queries from title and artist
+  const candidates: string[] = [];
+  if (title) {
+    if (artist) {
+      candidates.push(`${artist} ${title}`);
+    }
+    const parts = title
+      .split(/[\|:\-–—]/)
+      .map((p) => p.replace(/[\(\[\{].*?[\)\]\}]/g, '').trim())
+      .filter(Boolean);
+    if (parts.length > 0) {
+      candidates.push(parts[0]);
+      if (parts.length > 1) {
+        candidates.push(`${parts[0]} ${parts[1]}`);
+      }
+    }
+    const cleanedFull = title
+      .replace(/[\(\[\{].*?[\)\]\}]/g, ' ')
+      .replace(/[\|:\-–—_#]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (cleanedFull) {
+      candidates.push(cleanedFull.slice(0, 60));
     }
   }
 
-  const fallback = getFallbackPreview(videoId || title);
-  previewCache.set(videoId, fallback);
+  for (const q of [...new Set(candidates)]) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 2000);
+      const itunesUrl = `https://itunes.apple.com/search?term=${encodeURIComponent(q)}&entity=song&limit=1`;
+      const itRes = await fetch(itunesUrl, { signal: controller.signal });
+      clearTimeout(timeoutId);
+      if (itRes.ok) {
+        const data = (await itRes.json()) as any;
+        const preview = data.results?.[0]?.previewUrl;
+        if (preview && typeof preview === 'string') {
+          if (videoId) previewCache.set(videoId, preview);
+          return preview;
+        }
+      }
+    } catch {}
+  }
+
+  const fallback = getFallbackPreview(videoId || title || 'default');
+  if (videoId) previewCache.set(videoId, fallback);
   return fallback;
 }
 
@@ -189,33 +207,70 @@ async function attachAudioPreviews(tracks: Array<any>, req?: Request): Promise<A
 }
 
 /**
- * GET /api/music/stream/:id.mp4?url=...
+ * GET /api/music/stream/:id.mp4?url=...&title=...&artist=...
  *
  * Streams MP4 audio directly to mobile clients with HTTP 206 Partial Content (Range requests).
  * Solves Android ExoPlayer MIME type parsing issues with remote CDNs and ensures instant local streaming.
  */
 export const streamAudio = async (req: Request, res: Response): Promise<void> => {
   const paramId = (Array.isArray(req.params.id) ? req.params.id[0] : req.params.id) as string | undefined;
-  const remoteUrl =
+  const queryTitle = (req.query.title as string | undefined)?.trim();
+  const queryArtist = (req.query.artist as string | undefined)?.trim();
+
+  let remoteUrl =
     (req.query.url as string | undefined)?.trim() ||
     (paramId ? previewCache.get(paramId) : undefined);
 
+  if (!remoteUrl && paramId) {
+    if (queryTitle) {
+      remoteUrl = await resolveAudioPreview(paramId, queryTitle, queryArtist);
+    } else {
+      // Check database if paramId is a post id or musicVideoId
+      try {
+        const post = await prisma.post.findFirst({
+          where: {
+            OR: [{ musicVideoId: paramId }, { id: paramId }],
+          },
+          select: { musicVideoId: true, musicTitle: true, musicArtist: true },
+        });
+        if (post?.musicTitle) {
+          remoteUrl = await resolveAudioPreview(post.musicVideoId || paramId, post.musicTitle, post.musicArtist || undefined);
+        }
+      } catch {}
+
+      if (!remoteUrl) {
+        remoteUrl = await resolveAudioPreview(paramId, '');
+      }
+    }
+  }
+
   if (!remoteUrl) {
-    res.status(400).send('Missing audio URL');
-    return;
+    remoteUrl = getFallbackPreview(paramId || 'stream');
   }
 
   try {
     let buffer = audioBufferCache.get(remoteUrl);
 
     if (!buffer) {
-      const audioRes = await fetch(remoteUrl, {
+      let audioRes = await fetch(remoteUrl, {
         headers: {
           'User-Agent':
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
           Accept: '*/*',
         },
       });
+
+      if (!audioRes.ok) {
+        // Fallback to verified working preview if remote URL failed
+        const fallbackUrl = getFallbackPreview(paramId || remoteUrl);
+        audioRes = await fetch(fallbackUrl, {
+          headers: {
+            'User-Agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            Accept: '*/*',
+          },
+        });
+      }
 
       if (!audioRes.ok) {
         res.status(audioRes.status).send('Failed to fetch audio stream');

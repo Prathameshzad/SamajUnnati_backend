@@ -396,12 +396,13 @@ async function main() {
 
   const relDefs = await getRelationDefs();
   
-  let root = await prisma.user.findFirst({ where: { phone: '9999999999' } });
+  // Do NOT target 9999999999 (the review/bypass test user)
+  let root = await prisma.user.findFirst({ where: { phone: '0000000000' } });
   if (!root) {
     root = await createFakeUser({
       firstName: 'Graph',
       lastName: 'Root',
-      phone: '9999999999',
+      phone: '0000000000',
       worldX: 0,
       worldY: 0
     });

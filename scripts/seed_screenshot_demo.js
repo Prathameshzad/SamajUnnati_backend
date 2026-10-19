@@ -503,7 +503,7 @@ async function seed() {
     );
     const scoreId = scoreResult.rows[0].id;
     const scoreEvents = [
-      ['ADD_ALIVE', 40], ['RELATION_APPROVED', 40], ['POST_CREATE', 35], ['STORY_CREATE', 25], ['POST_CREATE', 40],
+      ['ADD_ALIVE', 40], ['RELATION_APPROVED', 40], ['ADD_DECEASED', 20], ['ADD_ALIVE', 30], ['RELATION_APPROVED', 50],
     ];
     for (let index = 0; index < scoreEvents.length; index += 1) {
       const [reason, points] = scoreEvents[index];

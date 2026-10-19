@@ -81,7 +81,9 @@ export function validate(schemas: RequestSchemas): RequestHandler {
     }
 
     if (issues.length > 0) {
-      next(validationFailed('Request validation failed', issues));
+      const fieldDetails = issues.map((i) => `${i.field}: ${i.message}`).join(', ');
+      console.warn(`[ValidationFailed] ${req.method} ${req.path}: ${fieldDetails}`);
+      next(validationFailed(`Request validation failed: ${fieldDetails}`, issues));
       return;
     }
 

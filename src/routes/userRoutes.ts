@@ -2,10 +2,13 @@ import { Router } from 'express';
 import {
   getMe,
   updateMe,
+  deleteMyAccount,
   getUserById,
   requestChangePhoneOtp,
   verifyChangePhoneOtp,
+  removeSecondaryPhone,
 } from '../controllers/userController';
+import { reportUser } from '../controllers/messageController';
 import { authMiddleware } from '../middleware/authMiddleware';
 import { uploadProfileImage } from '../middleware/uploadMiddleware';
 import { validate } from '../middleware/validate';
@@ -24,6 +27,20 @@ router.put(
   ...uploadProfileImage,
   validate(updateMeSchema),
   asyncHandler(updateMe)
+);
+
+router.delete(
+  '/me',
+  authMiddleware,
+  writeLimiter,
+  asyncHandler(deleteMyAccount)
+);
+
+router.delete(
+  '/me/secondary-phone',
+  authMiddleware,
+  writeLimiter,
+  asyncHandler(removeSecondaryPhone)
 );
 
 router.post(
@@ -51,6 +68,14 @@ router.get(
   readLimiter,
   validate(userIdParamSchema),
   asyncHandler(getUserById)
+);
+
+router.post(
+  '/:id/report',
+  authMiddleware,
+  writeLimiter,
+  validate(userIdParamSchema),
+  asyncHandler(reportUser)
 );
 
 export default router;

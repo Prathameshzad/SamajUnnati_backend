@@ -5,8 +5,9 @@ import prisma from '../lib/prisma';
 import { signAuthToken } from '../lib/jwt';
 import { uploadProfileImageToR2 } from '../lib/r2';
 import { OtpService } from '../services/otpService';
-import { config } from '../config/env';
+import { config, isTestBypassPhone } from '../config/env';
 import { CURRENT_PRIVACY_VERSION, CURRENT_TERMS_VERSION } from '../constants/legal';
+import { syncPendingRelationsForUser, reconnectDeletedUserRelations } from '../services/relationReconnectService';
 
 type GenderValue = 'MALE' | 'FEMALE';
 
@@ -15,6 +16,59 @@ function normalizeGender(gender?: string | null): GenderValue | null {
   const g = gender.toUpperCase();
   if (g === 'MALE' || g === 'FEMALE') return g;
   return null;
+}
+
+/**
+ * Normalizes or creates a complete review test user in the database so that
+ * reviewers bypass onboarding friction and can test all authenticated features.
+ */
+async function getOrCreateTestReviewUser(phone: string) {
+  const normalized = phone.replace(/\D/g, '');
+  const tenDigit = normalized.length >= 10 ? normalized.slice(-10) : normalized;
+
+  let user = await prisma.user.findFirst({
+    where: {
+      OR: [
+        { phone: normalized },
+        { phone: tenDigit },
+        { phone: `91${tenDigit}` },
+      ],
+    },
+  });
+
+  if (!user) {
+    user = await prisma.user.create({
+      data: {
+        phone: normalized,
+        firstName: 'Google',
+        lastName: 'Reviewer',
+        gender: 'MALE',
+        religion: 'Hindu',
+        community: 'General',
+        appLanguage: 'en',
+        relationLanguage: 'en',
+        profileCompleted: true,
+        isRegistered: true,
+        termsPrivacyAcceptedAt: new Date(),
+        termsVersion: CURRENT_TERMS_VERSION,
+        privacyVersion: CURRENT_PRIVACY_VERSION,
+        worldX: 0,
+        worldY: 0,
+      },
+    });
+  } else if (!user.profileCompleted) {
+    user = await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        firstName: user.firstName || 'Google',
+        lastName: user.lastName || 'Reviewer',
+        profileCompleted: true,
+        isRegistered: true,
+      },
+    });
+  }
+
+  return user;
 }
 
 /**
@@ -52,31 +106,37 @@ export const checkPhone = async (
   }
 
   try {
-    // First, try with normalized phone (new standard)
-    let user = await prisma.user.findUnique({
-      where: { phone: normalized },
+    const phoneVariants = [normalized];
+    if (normalized.length === 12 && normalized.startsWith('91')) {
+      phoneVariants.push(normalized.slice(2));
+    }
+    if (normalized.length === 10) {
+      phoneVariants.push(`91${normalized}`);
+    }
+    if (normalized !== phone) {
+      phoneVariants.push(phone);
+    }
+
+    let user = await prisma.user.findFirst({
+      where: {
+        OR: [
+          { phone: { in: phoneVariants } },
+          { secondaryPhone: { in: phoneVariants } },
+        ],
+      },
+      orderBy: [
+        { profileCompleted: 'desc' },
+        { isRegistered: 'desc' },
+      ],
     });
 
-    // Fallback: Indian numbers with/without 91 prefix
-    if (!user && normalized.length === 12 && normalized.startsWith('91')) {
-      user = await prisma.user.findUnique({
-        where: { phone: normalized.slice(2) },
-      });
-    }
-    if (!user && normalized.length === 10) {
-      user = await prisma.user.findUnique({
-        where: { phone: `91${normalized}` },
-      });
-    }
+    const isBypass = config.isDevelopment || isTestBypassPhone(normalized);
 
-    // Fallback: if not found and normalized !== phone, try raw phone
-    if (!user && normalized !== phone) {
-      user = await prisma.user.findUnique({
-        where: { phone },
-      });
-    }
+    if (isBypass) {
+      if (isTestBypassPhone(normalized) && (!user || !user.profileCompleted)) {
+        user = await getOrCreateTestReviewUser(normalized);
+      }
 
-    if (config.isDevelopment) {
       if (user && user.profileCompleted) {
         const token = signAuthToken({ userId: user.id, phone: user.phone || normalized });
         return res.json({
@@ -84,7 +144,7 @@ export const checkPhone = async (
           bypass: true,
           token,
           user,
-          message: 'Development login bypass',
+          message: isTestBypassPhone(normalized) ? 'Test review account login bypass' : 'Development login bypass',
         });
       }
       return res.json({
@@ -93,7 +153,7 @@ export const checkPhone = async (
         verified: true,
         phone: normalized,
         user: user || undefined,
-        message: 'Development register bypass',
+        message: isTestBypassPhone(normalized) ? 'Test review account register bypass' : 'Development register bypass',
       });
     }
 
@@ -161,6 +221,7 @@ export const registerUser = async (
 ): Promise<Response | void> => {
   const {
     phone,
+    secondaryPhone,
     email,
     firstName,
     middleName,
@@ -171,11 +232,12 @@ export const registerUser = async (
     subcaste,
     dateOfBirth,
     gender,
-    bloodGroup,
-    occupation,
     fullName,
     appLanguage,
     relationLanguage,
+    address,
+    societyName,
+    society,
     pincode,
     area,
     latitude,
@@ -183,6 +245,7 @@ export const registerUser = async (
     acceptedTermsAndPrivacy,
   } = req.body as {
     phone?: string;
+    secondaryPhone?: string;
     email?: string;
     firstName?: string;
     middleName?: string;
@@ -194,10 +257,11 @@ export const registerUser = async (
     subcaste?: string;
     dateOfBirth?: string;
     gender?: string;
-    bloodGroup?: string;
-    occupation?: string;
     appLanguage?: string;
     relationLanguage?: string;
+    address?: string;
+    societyName?: string;
+    society?: string;
     pincode?: string;
     area?: string;
     latitude?: string;
@@ -234,11 +298,73 @@ export const registerUser = async (
     return res.status(400).json({ message: 'Invalid phone number' });
   }
 
+  let normalizedSecondaryPhone: string | null = null;
+  if (secondaryPhone && String(secondaryPhone).trim()) {
+    normalizedSecondaryPhone = normalizePhone(secondaryPhone);
+    if (!normalizedSecondaryPhone || normalizedSecondaryPhone.length < 10) {
+      return res.status(400).json({ message: 'Invalid secondary phone number' });
+    }
+    if (normalizedSecondaryPhone === normalizedPhone) {
+      return res.status(400).json({ message: 'Secondary phone cannot be the same as primary phone' });
+    }
+  }
+
   try {
-    // We treat normalizedPhone as canonical
-    const existing = await prisma.user.findUnique({
+    // We treat normalizedPhone as canonical, with fallback variants to match placeholder stubs
+    let existing = await prisma.user.findUnique({
       where: { phone: normalizedPhone },
     });
+    if (!existing && normalizedPhone.length === 12 && normalizedPhone.startsWith('91')) {
+      existing = await prisma.user.findUnique({
+        where: { phone: normalizedPhone.slice(2) },
+      });
+    }
+    if (!existing && normalizedPhone.length === 10) {
+      existing = await prisma.user.findUnique({
+        where: { phone: `91${normalizedPhone}` },
+      });
+    }
+
+    // Validate secondary phone uniqueness against existing registered accounts
+    if (normalizedSecondaryPhone) {
+      const existingSec = await prisma.user.findFirst({
+        where: {
+          OR: [
+            { phone: normalizedSecondaryPhone },
+            { secondaryPhone: normalizedSecondaryPhone },
+          ],
+          profileCompleted: true,
+          id: { not: existing?.id || 'none' },
+        },
+      });
+      if (existingSec) {
+        return res.status(409).json({ message: 'Secondary phone is already registered to another account' });
+      }
+
+      // If a placeholder user exists with this secondaryPhone, delete it so unique constraint succeeds
+      const placeholderWithSecPhone = await prisma.user.findFirst({
+        where: {
+          phone: normalizedSecondaryPhone,
+          profileCompleted: false,
+          id: { not: existing?.id || 'none' },
+        },
+      });
+      if (placeholderWithSecPhone) {
+        // Re-link incoming relations to existing or new user
+        const targetUserId = existing?.id;
+        if (targetUserId) {
+          await prisma.relation.updateMany({
+            where: { toUserId: placeholderWithSecPhone.id },
+            data: { toUserId: targetUserId },
+          });
+          await prisma.relation.updateMany({
+            where: { fromUserId: placeholderWithSecPhone.id },
+            data: { fromUserId: targetUserId },
+          });
+        }
+        await prisma.user.delete({ where: { id: placeholderWithSecPhone.id } }).catch(() => {});
+      }
+    }
 
     const acceptedAt = new Date();
     const userData = {
@@ -252,8 +378,7 @@ export const registerUser = async (
       subcaste: subcaste ?? null,
       dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : null,
       gender: normalizeGender(gender),
-      bloodGroup: bloodGroup ?? null,
-      occupation: occupation ?? null,
+      secondaryPhone: normalizedSecondaryPhone ?? null,
       appLanguage: appLanguage ?? 'en',
       relationLanguage: relationLanguage ?? 'en',
       profileCompleted: true,
@@ -263,9 +388,11 @@ export const registerUser = async (
       privacyVersion: CURRENT_PRIVACY_VERSION,
       worldX: (Math.random() - 0.5) * 100000,
       worldY: (Math.random() - 0.5) * 100000,
-      // Location fields from the new registration step
+      // Address & Location fields
+      address: address?.trim() ?? null,
+      societyName: societyName?.trim() ?? society?.trim() ?? null,
       pincode: pincode?.trim() ?? null,
-      area: area?.trim() ?? null,
+      area: area?.trim() ?? (societyName?.trim() || society?.trim() || null),
     };
 
     if (existing) {
@@ -281,6 +408,16 @@ export const registerUser = async (
         data: userData,
       });
 
+      // Sync & claim pending relations and notify user for approval on both numbers
+      await syncPendingRelationsForUser(user.id, user.phone || normalizedPhone).catch((err) => {
+        console.error('Error syncing pending relations for user:', err);
+      });
+      if (normalizedSecondaryPhone) {
+        await syncPendingRelationsForUser(user.id, normalizedSecondaryPhone).catch((err) => {
+          console.error('Error syncing pending relations for secondary phone:', err);
+        });
+      }
+
       const token = signAuthToken({ userId: user.id, phone: user.phone || normalizedPhone });
       return res.status(200).json({ token, user });
     }
@@ -291,6 +428,16 @@ export const registerUser = async (
         ...userData,
       },
     });
+
+    // Sync & claim pending relations and notify user for approval on both numbers
+    await syncPendingRelationsForUser(user.id, user.phone || normalizedPhone).catch((err) => {
+      console.error('Error syncing pending relations for user:', err);
+    });
+    if (normalizedSecondaryPhone) {
+      await syncPendingRelationsForUser(user.id, normalizedSecondaryPhone).catch((err) => {
+        console.error('Error syncing pending relations for secondary phone:', err);
+      });
+    }
 
     const token = signAuthToken({ userId: user.id, phone: user.phone || normalizedPhone });
 
@@ -311,11 +458,11 @@ export const requestOtp = async (req: Request, res: Response) => {
   const normalized = normalizePhone(phone);
   if (!normalized) return res.status(400).json({ message: 'Invalid phone' });
 
-  if (config.isDevelopment) {
+  if (config.isDevelopment || isTestBypassPhone(normalized)) {
     return res.json({
-      message: 'OTP bypassed in development',
+      message: isTestBypassPhone(normalized) ? 'Test review account OTP bypassed' : 'OTP bypassed in development',
       bypass: true,
-      developmentOtp: '1111',
+      developmentOtp: config.testBypass.otp,
     });
   }
 
@@ -344,20 +491,58 @@ export const requestOtp = async (req: Request, res: Response) => {
  * Body: { phone, code }
  */
 export const verifyOtp = async (req: Request, res: Response) => {
-  const { phone, code } = req.body;
+  const { phone, code, isSecondary } = req.body;
   const normalized = normalizePhone(phone);
   if (!normalized) return res.status(400).json({ message: 'Invalid phone' });
 
-  const isValid = await OtpService.verifyOtp(normalized, code);
+  const isBypass = config.isDevelopment || isTestBypassPhone(normalized);
+  const isValid = isBypass
+    ? (config.isDevelopment || code === config.testBypass.otp || code === '1234' || code === '1111')
+    : await OtpService.verifyOtp(normalized, code);
+
   if (!isValid) return res.status(401).json({ message: 'Invalid OTP code' });
 
-  // If valid, ensure user exists and is marked as registered (verified phone)
-  let user = await prisma.user.findUnique({ where: { phone: normalized } });
-  if (!user && normalized.length === 12 && normalized.startsWith('91')) {
-    user = await prisma.user.findUnique({ where: { phone: normalized.slice(2) } });
+  if (isSecondary) {
+    const existingCompleted = await prisma.user.findFirst({
+      where: {
+        OR: [
+          { phone: normalized },
+          { secondaryPhone: normalized },
+        ],
+        profileCompleted: true,
+      },
+    });
+    if (existingCompleted) {
+      return res.status(409).json({ message: 'This phone number is already registered to another account' });
+    }
+    return res.json({ verified: true, isSecondary: true, phone: normalized });
   }
-  if (!user && normalized.length === 10) {
-    user = await prisma.user.findUnique({ where: { phone: `91${normalized}` } });
+
+  const phoneVariants = [normalized];
+  if (normalized.length === 12 && normalized.startsWith('91')) {
+    phoneVariants.push(normalized.slice(2));
+  }
+  if (normalized.length === 10) {
+    phoneVariants.push(`91${normalized}`);
+  }
+
+  let user = await prisma.user.findFirst({
+    where: {
+      OR: [
+        { phone: { in: phoneVariants } },
+        { secondaryPhone: { in: phoneVariants } },
+      ],
+    },
+    orderBy: [
+      { profileCompleted: 'desc' },
+      { isRegistered: 'desc' },
+    ],
+  });
+
+  if (isTestBypassPhone(normalized) && (!user || !user.profileCompleted)) {
+    user = await getOrCreateTestReviewUser(normalized);
+    const token = signAuthToken({ userId: user.id, phone: user.phone || normalized });
+    return res.json({ verified: true, exists: true, token, user });
   }
 
   if (user) {
@@ -368,6 +553,9 @@ export const verifyOtp = async (req: Request, res: Response) => {
       });
     }
     if (user.profileCompleted) {
+      await syncPendingRelationsForUser(user.id, user.phone || normalized).catch((err) => {
+        console.error('Error syncing pending relations for user on login:', err);
+      });
       const token = signAuthToken({ userId: user.id, phone: user.phone || normalized });
       return res.json({ verified: true, exists: true, token, user });
     }
@@ -396,14 +584,196 @@ export const verifyOtp = async (req: Request, res: Response) => {
  * No auth required — called during the registration flow before the user has a token.
  */
 export const geocodeLocation = async (req: Request, res: Response): Promise<Response | void> => {
-  const { pincode, lat, lng } = req.query as {
+  const { pincode, lat, lng, address } = req.query as {
     pincode?: string;
     lat?: string;
     lng?: string;
+    address?: string;
   };
 
   const apiKey = config.google.mapsApiKey;
-  if (!apiKey) {
+
+  // ─── Free-form Address Validation (Google Geocoding API + Robust Fallbacks) ───
+  if (address) {
+    const cleanAddress = address.trim();
+    if (cleanAddress.length < 3) {
+      return res.status(400).json({
+        isValid: false,
+        message: 'Please provide at least 3 characters for the address',
+      });
+    }
+
+    const pinMatch = cleanAddress.match(/\b\d{6}\b/)?.[0];
+
+    try {
+      let googleData: any = null;
+      if (apiKey) {
+        try {
+          const gUrl = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(cleanAddress)}&region=IN&key=${apiKey}`;
+          const gRes = await fetch(gUrl);
+          googleData = await gRes.json();
+        } catch (gErr) {
+          console.warn('Google geocode error:', gErr);
+        }
+      }
+
+      // Check if Google explicitly returned ZERO_RESULTS
+      if (googleData && googleData.status === 'ZERO_RESULTS') {
+        return res.json({
+          isValid: false,
+          provider: 'google',
+          message: 'Google Maps could not verify this address. Please check your street, area, city, and 6-digit pincode.',
+        });
+      }
+
+      // If Google returned OK with valid results
+      if (googleData && googleData.status === 'OK' && Array.isArray(googleData.results) && googleData.results.length > 0) {
+        const result = googleData.results[0];
+        const components: { long_name: string; short_name: string; types: string[] }[] =
+          result.address_components ?? [];
+
+        const get = (type: string): string | null =>
+          components.find((c) => c.types.includes(type))?.long_name ?? null;
+
+        const sublocality =
+          get('sublocality_level_1') ||
+          get('sublocality_level_2') ||
+          get('sublocality') ||
+          get('neighborhood');
+
+        const city =
+          get('locality') ||
+          get('administrative_area_level_2') ||
+          get('administrative_area_level_3');
+
+        const district =
+          get('administrative_area_level_2') ||
+          get('administrative_area_level_3') ||
+          city;
+
+        const state = get('administrative_area_level_1');
+        const country = get('country') || 'India';
+        const postalCode = get('postal_code') || pinMatch || null;
+
+        const primaryLocality = sublocality || city;
+        const areaParts: string[] = [];
+        if (primaryLocality) areaParts.push(primaryLocality);
+        if (city && city !== primaryLocality) areaParts.push(city);
+        if (state && state !== city && state !== primaryLocality) areaParts.push(state);
+
+        const area = areaParts.join(', ') || result.formatted_address;
+
+        return res.json({
+          isValid: true,
+          provider: 'google',
+          formattedAddress: result.formatted_address,
+          area,
+          locality: primaryLocality,
+          city,
+          district,
+          state,
+          country,
+          postalCode,
+          lat: result.geometry?.location?.lat ?? null,
+          lng: result.geometry?.location?.lng ?? null,
+          locationType: result.geometry?.location_type ?? null,
+        });
+      }
+
+      // Fallback: If Google was restricted or offline, query Nominatim Geocoding API
+      try {
+        const nomUrl = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(cleanAddress)}&format=json&addressdetails=1&countrycodes=in&limit=1`;
+        const nomRes = await fetch(nomUrl, {
+          headers: { 'User-Agent': 'SamajUnati/1.0' },
+        });
+        const nomData = (await nomRes.json()) as any[];
+
+        if (Array.isArray(nomData) && nomData.length > 0 && nomData[0].address) {
+          const item = nomData[0];
+          const addr = item.address;
+          const locality =
+            addr.suburb ||
+            addr.neighbourhood ||
+            addr.city_district ||
+            addr.residential ||
+            addr.town ||
+            addr.village ||
+            addr.city;
+          const city = addr.city || addr.town || addr.village || addr.county;
+          const district = addr.county || addr.state_district || city;
+          const state = addr.state;
+          const country = addr.country || 'India';
+          const postalCode = addr.postcode || pinMatch || null;
+
+          const areaParts = [locality, city, state].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i);
+          const area = areaParts.join(', ') || item.display_name;
+
+          return res.json({
+            isValid: true,
+            provider: 'nominatim',
+            formattedAddress: item.display_name,
+            area,
+            locality: locality || city,
+            city,
+            district,
+            state,
+            country,
+            postalCode,
+            lat: parseFloat(item.lat),
+            lng: parseFloat(item.lon),
+          });
+        }
+      } catch (nomErr) {
+        console.warn('Nominatim fallback error:', nomErr);
+      }
+
+      // Fallback: India Post validation if pincode is embedded in the address
+      if (pinMatch) {
+        try {
+          const pinRes = await fetch(`https://api.postalpincode.in/pincode/${pinMatch}`).then((r) => r.json());
+          if (Array.isArray(pinRes) && pinRes[0]?.Status === 'Success' && Array.isArray(pinRes[0]?.PostOffice) && pinRes[0].PostOffice.length > 0) {
+            const po = pinRes[0].PostOffice[0];
+            const primaryLocality = po.Name.replace(/\s+(S\.O|B\.O|H\.O)$/i, '').trim();
+            const district = po.District;
+            const state = po.State;
+            const country = po.Country || 'India';
+            const area = `${primaryLocality}, ${district}, ${state}`;
+
+            return res.json({
+              isValid: true,
+              provider: 'postalpincode',
+              formattedAddress: `${cleanAddress}, ${district}, ${state} - ${pinMatch}`,
+              area,
+              locality: primaryLocality,
+              city: district,
+              district,
+              state,
+              country,
+              postalCode: pinMatch,
+              lat: null,
+              lng: null,
+            });
+          }
+        } catch (pinErr) {
+          console.warn('India Post fallback error:', pinErr);
+        }
+      }
+
+      return res.json({
+        isValid: false,
+        provider: apiKey ? 'google' : 'fallback',
+        message: 'Could not verify this address with Google Maps. Please ensure locality, city, and 6-digit pincode are accurate.',
+      });
+    } catch (err: any) {
+      console.error('address validation error', err);
+      return res.status(500).json({
+        isValid: false,
+        message: 'Failed to validate address due to server error',
+      });
+    }
+  }
+
+  if (!apiKey && !pincode && !(lat && lng)) {
     return res.status(503).json({ message: 'Geocoding is not configured on this server' });
   }
 
@@ -414,16 +784,20 @@ export const geocodeLocation = async (req: Request, res: Response): Promise<Resp
     if (cleaned.length < 4 || cleaned.length > 10) {
       return res.status(400).json({ message: 'Please enter a valid pincode (4–10 digits)' });
     }
-    geocodeUrl = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(cleaned)}&region=IN&key=${apiKey}`;
+    if (apiKey) {
+      geocodeUrl = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(cleaned)}&region=IN&key=${apiKey}`;
+    }
   } else if (lat && lng) {
     const latNum = parseFloat(lat);
     const lngNum = parseFloat(lng);
     if (isNaN(latNum) || isNaN(lngNum)) {
       return res.status(400).json({ message: 'Invalid coordinates' });
     }
-    geocodeUrl = `https://maps.googleapis.com/maps/api/geocode/json?latlng=${latNum},${lngNum}&key=${apiKey}`;
+    if (apiKey) {
+      geocodeUrl = `https://maps.googleapis.com/maps/api/geocode/json?latlng=${latNum},${lngNum}&key=${apiKey}`;
+    }
   } else {
-    return res.status(400).json({ message: 'Provide either ?pincode= or ?lat=&lng=' });
+    return res.status(400).json({ message: 'Provide either ?address=, ?pincode=, or ?lat=&lng=' });
   }
 
   try {

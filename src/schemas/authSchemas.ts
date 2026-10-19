@@ -17,12 +17,50 @@ export const requestOtpSchema = {
 };
 
 export const verifyOtpSchema = {
-  body: z.object({ phone: phoneField, code: otpCodeField }).strip(),
+  body: z.object({
+    phone: phoneField,
+    code: otpCodeField,
+    isSecondary: z.boolean().optional(),
+  }).strip(),
 };
 
 const requiredLegalConsent = z
-  .union([z.literal(true), z.literal('true')])
+  .union([z.literal(true), z.literal('true'), z.literal(1), z.literal('1')])
   .transform(() => true as const);
+
+const optionalSecondaryPhone = z
+  .union([phoneField, z.literal(''), z.null(), z.undefined()])
+  .transform((val) => (val && typeof val === 'string' && val.trim().length > 0 ? val.trim() : undefined))
+  .optional();
+
+const optionalEmail = z
+  .union([
+    z.string().trim().toLowerCase().email('must be a valid email').max(255),
+    z.literal(''),
+    z.null(),
+    z.undefined(),
+  ])
+  .transform((v) => (v && typeof v === 'string' && v.trim() ? v.trim() : undefined))
+  .optional();
+
+const optionalGender = z
+  .union([
+    z.enum(['MALE', 'FEMALE', 'male', 'female', 'OTHER', 'other']),
+    z.literal(''),
+    z.null(),
+    z.undefined(),
+  ])
+  .transform((v) => {
+    if (!v || typeof v !== 'string') return undefined;
+    const upper = v.trim().toUpperCase();
+    return upper === 'MALE' || upper === 'FEMALE' ? upper : undefined;
+  })
+  .optional();
+
+const optionalCoord = z
+  .union([z.string().trim(), z.number(), z.null(), z.undefined()])
+  .transform((v) => (v !== undefined && v !== null && String(v).trim().length > 0 ? String(v).trim() : undefined))
+  .optional();
 
 /**
  * Registration is multipart (an optional profile photo is attached), so every
@@ -37,27 +75,31 @@ export const registerSchema = {
   body: z
     .object({
       phone: phoneField,
+      secondaryPhone: optionalSecondaryPhone,
       acceptedTermsAndPrivacy: requiredLegalConsent,
       firstName: requiredText(TEXT_LIMITS.name),
       middleName: boundedText(TEXT_LIMITS.name),
       lastName: boundedText(TEXT_LIMITS.name),
       fullName: boundedText(TEXT_LIMITS.name),
-      email: z.string().trim().toLowerCase().email('must be a valid email').max(255).optional(),
+      email: optionalEmail,
       religion: boundedText(TEXT_LIMITS.shortField),
       community: boundedText(TEXT_LIMITS.shortField),
       caste: boundedText(TEXT_LIMITS.shortField),
       subcaste: boundedText(TEXT_LIMITS.shortField),
       dateOfBirth: dateStringField,
-      gender: z.enum(['MALE', 'FEMALE', 'male', 'female']).optional(),
+      gender: optionalGender,
       bloodGroup: boundedText(TEXT_LIMITS.shortField),
       occupation: boundedText(TEXT_LIMITS.shortField),
       appLanguage: z.string().trim().max(10).optional(),
       relationLanguage: z.string().trim().max(10).optional(),
-      // Location fields
-      pincode: z.string().trim().max(20).optional(),
+      // Address & Location fields
+      address: boundedText(TEXT_LIMITS.address),
+      societyName: boundedText(TEXT_LIMITS.shortField),
+      society: boundedText(TEXT_LIMITS.shortField),
+      pincode: z.string().trim().max(30).optional(),
       area: boundedText(TEXT_LIMITS.shortField),
-      latitude: z.string().trim().optional(),
-      longitude: z.string().trim().optional(),
+      latitude: optionalCoord,
+      longitude: optionalCoord,
     })
     .strip(),
 };

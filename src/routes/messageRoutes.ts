@@ -29,6 +29,8 @@ import {
   joinViaInvite,
   listJoinRequests,
   resolveJoinRequest,
+  reportMessage,
+  reportUser,
 } from '../controllers/messageController';
 import {
   addGroupMemberSchema,
@@ -59,6 +61,11 @@ router.get('/contacts', readLimiter, validate(contactsSchema), asyncHandler(getM
 router.post('/block', writeLimiter, validate(blockUserSchema), asyncHandler(blockUser));
 router.post('/unblock', writeLimiter, validate(blockUserSchema), asyncHandler(unblockUser));
 router.get('/blocked', readLimiter, asyncHandler(getBlockedUsers));
+
+// Reporting
+router.post('/report', writeLimiter, asyncHandler(reportMessage));
+router.post('/report-user', writeLimiter, asyncHandler(reportUser));
+router.post('/:id/report', writeLimiter, asyncHandler(reportMessage));
 
 // Conversations
 router.get(

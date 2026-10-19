@@ -27,11 +27,9 @@ export type ScoreReason =
   | 'RELATION_APPROVED'
   | 'REMOVE_ALIVE'
   | 'REMOVE_DECEASED'
-  | 'REMOVE_RELATION'
-  | 'POST_CREATE'
-  | 'STORY_CREATE';
+  | 'REMOVE_RELATION';
 
-/** Points awarded per reason. Unchanged from the original SCORE_POINTS map. */
+/** Points awarded per reason. Only relations from the family tree award points. */
 export const SCORE_POINTS: Record<ScoreReason, number> = {
   ADD_ALIVE: 5,
   ADD_DECEASED: 2,
@@ -39,8 +37,6 @@ export const SCORE_POINTS: Record<ScoreReason, number> = {
   REMOVE_ALIVE: -5,
   REMOVE_DECEASED: -2,
   REMOVE_RELATION: -5,
-  POST_CREATE: 15,
-  STORY_CREATE: 15,
 };
 
 /** Human-readable labels, previously duplicated in both ScoreWidget components. */
@@ -51,8 +47,6 @@ export const SCORE_REASON_LABELS: Record<ScoreReason, string> = {
   REMOVE_DECEASED: 'Removed Ancestor',
   REMOVE_ALIVE: 'Removed Family Member',
   REMOVE_RELATION: 'Removed Connection',
-  POST_CREATE: 'Shared Memory to Tree',
-  STORY_CREATE: 'Added Story',
 };
 
 /** Cumulative XP required to reach each level. Unchanged. */
