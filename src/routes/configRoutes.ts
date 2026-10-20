@@ -7,6 +7,7 @@ import {
   getReligionCasteConfig,
   getCastesByReligion,
   getMatrimonyConfig,
+  getAppVersionConfig,
 } from '../controllers/configController';
 
 const router = Router();
@@ -22,6 +23,7 @@ router.get('/countries', readLimiter, getCountriesConfig);
 router.get('/religion-caste', readLimiter, getReligionCasteConfig);
 router.get('/castes', readLimiter, getCastesByReligion);
 router.get('/matrimony', readLimiter, getMatrimonyConfig);
+router.get('/version', readLimiter, getAppVersionConfig);
 
 export default router;
 

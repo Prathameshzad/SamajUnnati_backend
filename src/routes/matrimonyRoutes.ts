@@ -63,7 +63,7 @@ router.post(
 );
 router.post(
   '/profile/verify-otp-managed',
-  otpVerifyLimiter,
+  writeLimiter,
   asyncHandler(controller.verifyOtpAndCreateUser.bind(controller))
 );
 

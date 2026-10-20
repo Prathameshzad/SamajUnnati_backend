@@ -366,9 +366,27 @@ export const registerUser = async (
       }
     }
 
+    const normalizedEmail =
+      typeof email === 'string' && email.trim().length > 0
+        ? email.trim().toLowerCase()
+        : null;
+
+    if (normalizedEmail) {
+      const existingEmail = await prisma.user.findFirst({
+        where: {
+          email: normalizedEmail,
+          profileCompleted: true,
+          id: { not: existing?.id || 'none' },
+        },
+      });
+      if (existingEmail) {
+        return res.status(409).json({ message: 'Email is already registered to another account' });
+      }
+    }
+
     const acceptedAt = new Date();
     const userData = {
-      email: email ?? null,
+      email: normalizedEmail,
       firstName: derivedFirstName ?? null,
       middleName: middleName?.trim() ?? null,
       lastName: derivedLastName ?? null,

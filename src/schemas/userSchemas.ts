@@ -45,7 +45,14 @@ export const updateMeSchema = {
         .regex(/^[0-9+\-()\s]*$/, 'whatsapp contains invalid characters')
         .transform((value) => (value.length === 0 ? undefined : value))
         .optional(),
-      email: z.string().trim().toLowerCase().email('must be a valid email').max(255).optional(),
+      email: z
+        .union([
+          z.string().trim().toLowerCase().email('must be a valid email').max(255),
+          z.literal(''),
+          z.null(),
+        ])
+        .transform((val) => (val && typeof val === 'string' && val.trim() ? val.trim() : null))
+        .optional(),
       secondaryPhone: z
         .string()
         .trim()

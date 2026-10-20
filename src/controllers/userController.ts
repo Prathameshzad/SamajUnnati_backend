@@ -232,6 +232,25 @@ export const updateMe = async (
     }
   }
 
+  let cleanEmail: string | null | undefined = undefined;
+  if (email !== undefined) {
+    if (email === null || (typeof email === 'string' && email.trim() === '')) {
+      cleanEmail = null;
+    } else {
+      const normEmail = email.trim().toLowerCase();
+      const existingEmail = await prisma.user.findFirst({
+        where: {
+          email: normEmail,
+          id: { not: req.user.id },
+        },
+      });
+      if (existingEmail) {
+        throw badRequest('This email is already registered with another account');
+      }
+      cleanEmail = normEmail;
+    }
+  }
+
   const user = await prisma.user.update({
     where: { id: req.user.id },
     data: {
@@ -239,7 +258,7 @@ export const updateMe = async (
       bannerUrl: finalBannerUrl !== undefined ? finalBannerUrl : undefined,
       // contact
       whatsapp,
-      email,
+      email: cleanEmail !== undefined ? cleanEmail : undefined,
       secondaryPhone: cleanSecondary !== undefined ? cleanSecondary : undefined,
 
       // name

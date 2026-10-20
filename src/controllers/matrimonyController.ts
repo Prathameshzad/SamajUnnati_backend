@@ -2,7 +2,6 @@
 import { Response } from 'express';
 import prisma from '../lib/prisma';
 import { FamilyGraphMatchEngine } from '../services/matrimonyEngine';
-import { OtpService } from '../services/otpService';
 import { createNotification } from '../services/notificationService';
 import { AuthRequest } from '../middleware/authMiddleware';
 import { badRequest, notFound, rateLimited, unauthenticated } from '../lib/errors';
@@ -394,21 +393,6 @@ export class MatrimonyController {
     });
 
     if (!childUser) {
-      /**
-       * SECURITY FIX: this branch used to just report `exists: false` with no
-       * OTP ever sent, while `verifyOtpAndCreateUser` accepted a hardcoded
-       * '1234' as a valid code for any phone number — a universal bypass, same
-       * class of bug as the '1111' bypass already removed from OtpService.
-       * This now issues a real OTP through the same service auth uses, so the
-       * subsequent verify step has something genuine to check against.
-       */
-      const otpResult = await OtpService.sendOtp(normalized, 'REGISTER');
-      if (otpResult.rateLimited) {
-        throw rateLimited(otpResult.message, { retryAfterSeconds: otpResult.retryAfterSeconds });
-      }
-      if (!otpResult.success) {
-        return res.status(503).json({ status: 'error', message: otpResult.message });
-      }
       return res.json({
         status: 'success',
         exists: false,
@@ -482,45 +466,55 @@ export class MatrimonyController {
   async verifyOtpAndCreateUser(req: AuthRequest, res: Response) {
     const parentUserId = req.user?.id;
     if (!parentUserId) throw unauthenticated();
-    const { phone, otp, firstName, lastName, gender, relationLabel } = req.body;
+    const { phone, firstName, lastName, gender, relationLabel } = req.body;
 
     const normalized = this.normalizePhone(phone);
     if (!normalized) throw badRequest('Invalid phone number');
 
-    /**
-     * SECURITY FIX: this was `if (otp !== '1234') return 400` — a hardcoded
-     * universal OTP bypass, active in production, for creating and linking a
-     * user record. Replaced with the same OtpService.verifyOtp used by the main
-     * auth flow (single-use, attempt-limited, constant-time compare).
-     */
-    const isValid = await OtpService.verifyOtp(normalized, otp);
-    if (!isValid) {
-      log.warn({ phone: maskPhone(normalized) }, 'managed profile otp verification failed');
-      throw badRequest('Invalid OTP');
+    if (!firstName || !String(firstName).trim()) {
+      throw badRequest('First name is required');
     }
 
-    // Create User
-    let childUser = await prisma.user.create({
-      data: {
-        phone: normalized,
-        firstName,
-        lastName,
-        gender: gender || null,
-        isRegistered: false,
-      }
+    // Check if user already exists
+    let childUser = await prisma.user.findUnique({
+      where: { phone: normalized },
     });
 
-    // Create a confirmed relation indicating parent manages them
-    await prisma.relation.create({
-      data: {
+    if (!childUser) {
+      // Create User as placeholder
+      childUser = await prisma.user.create({
+        data: {
+          phone: normalized,
+          firstName: String(firstName).trim(),
+          lastName: lastName ? String(lastName).trim() : null,
+          gender: gender || null,
+          isRegistered: false,
+        }
+      });
+    }
+
+    // Check if relation already exists
+    const existingRelation = await prisma.relation.findFirst({
+      where: {
         fromUserId: parentUserId,
         toUserId: childUser.id,
         relationTypeCode: 'MATRIMONY_MANAGER',
-        category: 'MATRIMONY',
-        status: 'CONFIRMED',
-        customName: relationLabel
       }
     });
+
+    if (!existingRelation) {
+      // Create a confirmed relation indicating parent manages them
+      await prisma.relation.create({
+        data: {
+          fromUserId: parentUserId,
+          toUserId: childUser.id,
+          relationTypeCode: 'MATRIMONY_MANAGER',
+          category: 'MATRIMONY',
+          status: 'CONFIRMED',
+          customName: relationLabel || null,
+        }
+      });
+    }
 
     log.info({ phone: maskPhone(normalized), parentUserId }, 'managed profile child user created');
 

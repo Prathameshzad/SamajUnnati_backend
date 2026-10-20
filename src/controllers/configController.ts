@@ -90,3 +90,17 @@ export const getMatrimonyConfig = (_req: Request, res: Response): void => {
   });
 };
 
+/**
+ * GET /api/config/version
+ *
+ * Serves app version metadata (latest version, minimum supported version,
+ * force-update flag, store download URLs, and release notes) to mobile clients.
+ */
+export const getAppVersionConfig = (_req: Request, res: Response): void => {
+  res.set('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { getAppVersionData } = require('../constants/appVersionData');
+  res.json(getAppVersionData());
+};
+
+
