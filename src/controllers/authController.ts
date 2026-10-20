@@ -130,6 +130,18 @@ export const checkPhone = async (
       ],
     });
 
+    const isRegisteredUser = Boolean(user && (user.profileCompleted || user.isRegistered));
+
+    // If caller is already authenticated (e.g. looking up a relative from within the app),
+    // return existence status immediately without triggering any OTP SMS!
+    if (req.headers.authorization) {
+      return res.json({
+        exists: isRegisteredUser,
+        isRegistered: isRegisteredUser,
+        message: isRegisteredUser ? 'User is registered' : 'User is not registered',
+      });
+    }
+
     const isBypass = config.isDevelopment || isTestBypassPhone(normalized);
 
     if (isBypass) {
@@ -157,7 +169,7 @@ export const checkPhone = async (
       });
     }
 
-    if (!user) {
+    if (!isRegisteredUser) {
       const otpResult = await OtpService.sendOtp(normalized, 'REGISTER');
       if (otpResult.rateLimited) {
         return res.status(429).json({
