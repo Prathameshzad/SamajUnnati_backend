@@ -781,7 +781,8 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
 
     return res.status(201).json({
       ...relation,
-      relationType: { code: relationTypeCode, label: displayLabel }
+      relationType: { code: relationTypeCode, label: displayLabel },
+      score: scoreUpdate,
     });
   }
 };
@@ -890,7 +891,10 @@ export const approveRelation = async (req: AuthRequest, res: Response) => {
     userId
   );
   emitScoreUpdate(outcome.scoreUpdate);
-  return res.json(outcome.relation);
+  return res.json({
+    ...outcome.relation,
+    score: outcome.scoreUpdate,
+  });
 };
 
 export const rejectRelation = async (req: AuthRequest, res: Response) => {
@@ -1019,7 +1023,11 @@ export const unfollowRelation = async (req: AuthRequest, res: Response) => {
   );
   emitScoreUpdate(outcome.scoreUpdate);
 
-  return res.json({ status: 'UNFOLLOWED', changed: outcome.changed });
+  return res.json({
+    status: 'UNFOLLOWED',
+    changed: outcome.changed,
+    score: outcome.scoreUpdate,
+  });
 };
 
 export const updateRelation = async (req: AuthRequest, res: Response) => {
@@ -1805,7 +1813,10 @@ export const deleteRelation = async (req: AuthRequest, res: Response) => {
     }
   }
 
-  return res.json({ message: 'Relation deleted' });
+  return res.json({
+    message: 'Relation deleted',
+    score: outcome.scoreUpdate,
+  });
 };
 
 export const getAcceptedRequests = async (req: AuthRequest, res: Response) => {

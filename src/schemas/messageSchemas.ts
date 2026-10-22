@@ -99,7 +99,12 @@ export const getMessagesSchema = {
 
 export const sendMessageSchema = {
   params: z.object({ conversationId: uuidString }).strip(),
-  body: z.object({ content: boundedText(TEXT_LIMITS.message) }).strip(),
+  body: z
+    .object({
+      content: boundedText(TEXT_LIMITS.message),
+      replyToId: uuidString.optional(),
+    })
+    .strip(),
 };
 
 export const messageIdSchema = {

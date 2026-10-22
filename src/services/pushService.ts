@@ -159,6 +159,8 @@ function buildMessage(tokens: string[], payload: PushPayload): MulticastMessage 
       ...(payload.collapseKey ? { collapseKey: payload.collapseKey } : {}),
       notification: {
         channelId: channel,
+        icon: 'notification_icon',
+        color: '#1E5FA8',
         sound: 'default',
         defaultVibrateTimings: true,
         priority: 'high',

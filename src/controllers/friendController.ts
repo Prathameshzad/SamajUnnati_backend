@@ -556,7 +556,10 @@ export const approveFriend = async (req: AuthRequest, res: Response) => {
     userId
   );
   emitScoreUpdate(outcome.scoreUpdate);
-  return res.json(outcome.relation);
+  return res.json({
+    ...outcome.relation,
+    score: outcome.scoreUpdate,
+  });
 };
 
 /**
@@ -720,7 +723,10 @@ export const deleteFriend = async (req: AuthRequest, res: Response) => {
     }
   }
 
-  return res.json({ message: 'Friend removed' });
+  return res.json({
+    message: 'Friend removed',
+    score: outcome.scoreUpdate,
+  });
 };
 
 export const createFriend = async (req: AuthRequest, res: Response) => {
@@ -965,6 +971,7 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
 
   return res.status(201).json({
     ...relation,
-    relationType: { code: relationTypeCode, label: displayLabel }
+    relationType: { code: relationTypeCode, label: displayLabel },
+    score: scoreUpdate,
   });
 };

@@ -442,6 +442,9 @@ model Message {
   mediaUrl       String?
   mediaType      MediaType?
   type           MessageType   @default(TEXT)
+  replyToId      String?
+  replyTo        Message?      @relation("MessageReplies", fields: [replyToId], references: [id], onDelete: SetNull)
+  replies        Message[]     @relation("MessageReplies")
   deletedAt      DateTime?
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
@@ -452,6 +455,7 @@ model Message {
 
   @@index([conversationId, createdAt])
   @@index([senderId])
+  @@index([replyToId])
 }
 
 model MessageRead {
