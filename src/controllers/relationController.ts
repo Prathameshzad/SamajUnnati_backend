@@ -23,6 +23,12 @@ import {
   type RelationTypeRegistry,
 } from '../services/relationTypeRegistry';
 import { syncPendingRelationsForUser } from '../services/relationReconnectService';
+import {
+  findUserByAnyPhone,
+  normalizeRelativePhones,
+  placeholderPhoneFields,
+  placeholderPhoneUpdates,
+} from '../services/relativePhoneService';
 import { badRequest, forbidden, notFound, unauthenticated } from '../lib/errors';
 import { createLogger } from '../lib/logger';
 
@@ -149,117 +155,117 @@ export const listRelations = async (req: AuthRequest, res: Response) => {
   // 2. CONFIRMED rows where they are toUserId (reciprocal rows created by the other party pointing back to them)
   // 3. REJECTED rows where they are toUserId (so they can see rejections)
   const raw = await prisma.relation.findMany({
-      where: {
-        OR: [
-          { createdById: userId },
-          { toUserId: userId, status: 'CONFIRMED' },
-          { toUserId: userId, status: 'REJECTED', createdById: { not: userId } },
-        ],
-      },
-      // `relationType` is no longer joined: labels come from the cached registry,
-      // which removes a join and the nested translations rows from every request.
-      select: {
-        id: true,
-        fromUserId: true,
-        toUserId: true,
-        status: true,
-        relationTypeCode: true,
-        category: true,
-        customName: true,
-        customPhotoUrl: true,
-        createdById: true,
-        createdAt: true,
-        fromUser: { select: RELATION_USER_SELECT },
-        toUser: { select: RELATION_USER_SELECT },
-        User_Relation_createdByIdToUser: { select: RELATION_USER_SELECT },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+    where: {
+      OR: [
+        { createdById: userId },
+        { toUserId: userId, status: 'CONFIRMED' },
+        { toUserId: userId, status: 'REJECTED', createdById: { not: userId } },
+      ],
+    },
+    // `relationType` is no longer joined: labels come from the cached registry,
+    // which removes a join and the nested translations rows from every request.
+    select: {
+      id: true,
+      fromUserId: true,
+      toUserId: true,
+      status: true,
+      relationTypeCode: true,
+      category: true,
+      customName: true,
+      customPhotoUrl: true,
+      createdById: true,
+      createdAt: true,
+      fromUser: { select: RELATION_USER_SELECT },
+      toUser: { select: RELATION_USER_SELECT },
+      User_Relation_createdByIdToUser: { select: RELATION_USER_SELECT },
+    },
+    orderBy: { createdAt: 'desc' },
+  });
 
-    // De-duplicate: for a confirmed connection, both the original row AND a reciprocal row
-    // may appear. Always prefer the CONFIRMED row. Key by sorted user-pair + relation type.
-    const deduped = new Map<string, typeof raw[0]>();
-    for (const rel of raw) {
-      const pair = [rel.fromUserId, rel.toUserId].sort().join(':') + ':' + rel.relationTypeCode;
-      const existing = deduped.get(pair);
-      if (!existing || (rel.status === 'CONFIRMED' && existing.status !== 'CONFIRMED')) {
-        deduped.set(pair, rel);
-      }
+  // De-duplicate: for a confirmed connection, both the original row AND a reciprocal row
+  // may appear. Always prefer the CONFIRMED row. Key by sorted user-pair + relation type.
+  const deduped = new Map<string, typeof raw[0]>();
+  for (const rel of raw) {
+    const pair = [rel.fromUserId, rel.toUserId].sort().join(':') + ':' + rel.relationTypeCode;
+    const existing = deduped.get(pair);
+    if (!existing || (rel.status === 'CONFIRMED' && existing.status !== 'CONFIRMED')) {
+      deduped.set(pair, rel);
+    }
+  }
+
+  // No longer `Promise.all(async ...)`: label resolution is synchronous now,
+  // so this is a plain map with zero database access.
+  const relations = Array.from(deduped.values()).map(rel => {
+    const view = resolveRelationForViewer(registry, rel, userId, lang);
+    const isMyRelation = rel.createdById === userId;
+
+    // Use createdById as the primary 'from' identifier for the relations list.
+    // This ensures that if Root added KAKA from VADIL's node, both Root and KAKA see Root as the logical sender.
+    const logicalFromUser = (rel as any).User_Relation_createdByIdToUser || rel.fromUser;
+    const logicalFromUserId = rel.createdById || rel.fromUserId;
+
+    let finalToUser = rel.toUser;
+    if (logicalFromUserId === userId) {
+      finalToUser = resolveNodeForViewer(rel.toUser, rel, userId);
     }
 
-    // No longer `Promise.all(async ...)`: label resolution is synchronous now,
-    // so this is a plain map with zero database access.
-    const relations = Array.from(deduped.values()).map(rel => {
-      const view = resolveRelationForViewer(registry, rel, userId, lang);
-      const isMyRelation = rel.createdById === userId;
+    return {
+      id: rel.id,
+      fromUserId: logicalFromUserId,
+      toUserId: rel.toUserId,
+      status: rel.status,
+      relationTypeCode: rel.relationTypeCode,
+      category: rel.category,
+      customName: isMyRelation ? rel.customName : null,
+      customPhotoUrl: isMyRelation ? rel.customPhotoUrl : null,
+      createdById: rel.createdById,
+      createdAt: rel.createdAt,
+      fromUser: logicalFromUser ? {
+        id: logicalFromUser.id,
+        firstName: logicalFromUser.firstName,
+        lastName: logicalFromUser.lastName,
+        photoUrl: logicalFromUser.photoUrl,
+        gender: logicalFromUser.gender,
+        phone: logicalFromUser.phone,
+        area: logicalFromUser.area,
+        isAlive: logicalFromUser.isAlive,
+        dateOfBirth: logicalFromUser.dateOfBirth,
+        dateOfDeath: logicalFromUser.dateOfDeath,
+        bloodGroup: logicalFromUser.bloodGroup,
+        profileCompleted: logicalFromUser.profileCompleted,
+        isRegistered: logicalFromUser.isRegistered,
+      } : null,
+      toUser: finalToUser ? {
+        id: finalToUser.id,
+        firstName: finalToUser.firstName,
+        lastName: finalToUser.lastName,
+        photoUrl: finalToUser.photoUrl,
+        gender: finalToUser.gender,
+        phone: finalToUser.phone,
+        area: finalToUser.area,
+        isAlive: finalToUser.isAlive,
+        dateOfBirth: finalToUser.dateOfBirth,
+        dateOfDeath: finalToUser.dateOfDeath,
+        bloodGroup: finalToUser.bloodGroup,
+        profileCompleted: finalToUser.profileCompleted,
+        isRegistered: finalToUser.isRegistered,
+      } : null,
+      relationType: { label: view.label, code: view.code }
+    };
+  });
 
-      // Use createdById as the primary 'from' identifier for the relations list.
-      // This ensures that if Root added KAKA from VADIL's node, both Root and KAKA see Root as the logical sender.
-      const logicalFromUser = (rel as any).User_Relation_createdByIdToUser || rel.fromUser;
-      const logicalFromUserId = rel.createdById || rel.fromUserId;
+  const filteredRelations = relations.filter(rel => {
+    if (rel.status === 'PENDING') {
+      const isMyRelation = rel.fromUserId === userId || rel.createdById === userId;
+      const relativeUser = isMyRelation ? rel.toUser : rel.fromUser;
+      if (!relativeUser) return false;
+      if (relativeUser.isAlive === false) return false;
+      if (!relativeUser.phone || !String(relativeUser.phone).trim()) return false;
+    }
+    return true;
+  });
 
-      let finalToUser = rel.toUser;
-      if (logicalFromUserId === userId) {
-        finalToUser = resolveNodeForViewer(rel.toUser, rel, userId);
-      }
-
-      return {
-        id: rel.id,
-        fromUserId: logicalFromUserId,
-        toUserId: rel.toUserId,
-        status: rel.status,
-        relationTypeCode: rel.relationTypeCode,
-        category: rel.category,
-        customName: isMyRelation ? rel.customName : null,
-        customPhotoUrl: isMyRelation ? rel.customPhotoUrl : null,
-        createdById: rel.createdById,
-        createdAt: rel.createdAt,
-        fromUser: logicalFromUser ? {
-          id: logicalFromUser.id,
-          firstName: logicalFromUser.firstName,
-          lastName: logicalFromUser.lastName,
-          photoUrl: logicalFromUser.photoUrl,
-          gender: logicalFromUser.gender,
-          phone: logicalFromUser.phone,
-          area: logicalFromUser.area,
-          isAlive: logicalFromUser.isAlive,
-          dateOfBirth: logicalFromUser.dateOfBirth,
-          dateOfDeath: logicalFromUser.dateOfDeath,
-          bloodGroup: logicalFromUser.bloodGroup,
-          profileCompleted: logicalFromUser.profileCompleted,
-          isRegistered: logicalFromUser.isRegistered,
-        } : null,
-        toUser: finalToUser ? {
-          id: finalToUser.id,
-          firstName: finalToUser.firstName,
-          lastName: finalToUser.lastName,
-          photoUrl: finalToUser.photoUrl,
-          gender: finalToUser.gender,
-          phone: finalToUser.phone,
-          area: finalToUser.area,
-          isAlive: finalToUser.isAlive,
-          dateOfBirth: finalToUser.dateOfBirth,
-          dateOfDeath: finalToUser.dateOfDeath,
-          bloodGroup: finalToUser.bloodGroup,
-          profileCompleted: finalToUser.profileCompleted,
-          isRegistered: finalToUser.isRegistered,
-        } : null,
-        relationType: { label: view.label, code: view.code }
-      };
-    });
-
-    const filteredRelations = relations.filter(rel => {
-      if (rel.status === 'PENDING') {
-        const isMyRelation = rel.fromUserId === userId || rel.createdById === userId;
-        const relativeUser = isMyRelation ? rel.toUser : rel.fromUser;
-        if (!relativeUser) return false;
-        if (relativeUser.isAlive === false) return false;
-        if (!relativeUser.phone || !String(relativeUser.phone).trim()) return false;
-      }
-      return true;
-    });
-
-    return res.json(filteredRelations);
+  return res.json(filteredRelations);
 };
 
 export const getTree = async (req: AuthRequest, res: Response) => {
@@ -345,20 +351,20 @@ export const getTree = async (req: AuthRequest, res: Response) => {
         return true;
       })
       .map(rel => {
-      const view = resolveRelationForViewer(registry, rel, userId, lang);
-      const isMyRelation = rel.createdById === userId;
-      let finalToUser = rel.toUser;
-      if (rel.fromUserId === userId) {
-        finalToUser = resolveNodeForViewer(rel.toUser, rel, userId);
-      }
-      return {
-        ...rel,
-        customName: isMyRelation ? rel.customName : null,
-        customPhotoUrl: isMyRelation ? rel.customPhotoUrl : null,
-        toUser: finalToUser,
-        relationType: { label: view.label, code: view.code }
-      };
-    });
+        const view = resolveRelationForViewer(registry, rel, userId, lang);
+        const isMyRelation = rel.createdById === userId;
+        let finalToUser = rel.toUser;
+        if (rel.fromUserId === userId) {
+          finalToUser = resolveNodeForViewer(rel.toUser, rel, userId);
+        }
+        return {
+          ...rel,
+          customName: isMyRelation ? rel.customName : null,
+          customPhotoUrl: isMyRelation ? rel.customPhotoUrl : null,
+          toUser: finalToUser,
+          relationType: { label: view.label, code: view.code }
+        };
+      });
 
     return res.json({ rootUser, relations });
   }
@@ -498,7 +504,7 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
   if (!userId) throw unauthenticated();
 
   const {
-    phone, firstName, lastName, gender, relationTypeCode, sourceUserId, customName, customPhotoUrl, isAlive, dateOfBirth, dateOfDeath, bloodGroup,
+    phone, phones, firstName, lastName, gender, relationTypeCode, sourceUserId, customName, customPhotoUrl, isAlive, dateOfBirth, dateOfDeath, bloodGroup,
     education, occupation, maritalStatus, pincode, address, area, visualSide
   } = req.body;
   const fromUserId = sourceUserId || userId;
@@ -523,30 +529,12 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
 
   const cleanBloodGroup = (isPersonAlive && bloodGroup) ? String(bloodGroup).trim() : null;
 
-  let cleanPhone = null;
-  if (isPersonAlive && phone && String(phone).trim()) {
-    cleanPhone = normalizePhone(phone);
-    if (!cleanPhone || cleanPhone.length < 10) {
-      throw badRequest('Invalid phone number');
-    }
-  }
+  // Up to three numbers (legacy single `phone` still works). A deceased relative has none.
+  const cleanPhones = isPersonAlive ? normalizeRelativePhones({ phone, phones }) : [];
 
-  const matchedExistingUser = cleanPhone
-    ? await prisma.user.findFirst({
-        where: {
-          OR: [
-            { phone: { in: phoneLookupVariants(cleanPhone) } },
-            { secondaryPhone: { in: phoneLookupVariants(cleanPhone) } },
-          ],
-        },
-        // Prefer the actual account when both a legacy-prefixed user and a
-        // placeholder exist for the same national number.
-        orderBy: [
-          { profileCompleted: 'desc' },
-          { isRegistered: 'desc' },
-        ],
-      })
-    : null;
+  // If the relative already has an account on ANY of the numbers, the request goes to
+  // that account. Real accounts are preferred over placeholders.
+  const matchedExistingUser = await findUserByAnyPhone(cleanPhones);
 
   {
     const relType = await prisma.relationType.findUnique({
@@ -570,8 +558,7 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
 
       relatedUser = await prisma.user.create({
         data: {
-          phone: cleanPhone,
-          whatsapp: cleanPhone,
+          ...placeholderPhoneFields(cleanPhones),
           firstName,
           lastName: lastName || null,
           gender: normalizeGender(gender || relType.targetGender),
@@ -615,6 +602,8 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
       if (pincode) updateFields.pincode = String(pincode).trim();
       if (address) updateFields.address = String(address).trim();
       if (area) updateFields.area = String(area).trim();
+      // A placeholder learns any extra numbers; registered accounts keep their own.
+      Object.assign(updateFields, await placeholderPhoneUpdates(relatedUser, cleanPhones));
 
       if (Object.keys(updateFields).length > 0) {
         relatedUser = await prisma.user.update({
@@ -717,10 +706,10 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
           visualSide: normalizeVisualSide(visualSide),
           ...(isRecreating || hasPriorApproval || isBlocked
             ? {
-                status: targetStatus as any,
-                approvedAt: targetApprovedAt,
-                hiddenByUserIds: hiddenList,
-              }
+              status: targetStatus as any,
+              approvedAt: targetApprovedAt,
+              hiddenByUserIds: hiddenList,
+            }
             : {}),
         },
         create: {
@@ -743,12 +732,12 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
       const score: ScoreAwardResult = isBlocked
         ? { applied: false, delta: 0, userId, reason: addReason, total: 0, level: 0, leveledUp: false }
         : await awardPointsInTransaction(
-            tx,
-            savedRelation.createdById ?? userId,
-            addReason,
-            savedRelation.id,
-            `relation:${savedRelation.id}:add`
-          );
+          tx,
+          savedRelation.createdById ?? userId,
+          addReason,
+          savedRelation.id,
+          `relation:${savedRelation.id}:add`
+        );
       return { relation: savedRelation, scoreUpdate: score, isRecreating, hasPriorApproval, isBlocked };
     });
 
@@ -1191,6 +1180,23 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
   const maxDepth = Number(req.query.depth) || 10;
   const category = req.query.category as string;
 
+  const { value: responseData, hit } = await loadFullTree(userId, lang, maxDepth, category);
+
+  // Lets clients and dashboards see cache effectiveness without extra tooling.
+  res.setHeader('X-Cache', hit ? 'HIT' : 'MISS');
+  return res.json(responseData);
+};
+
+/**
+ * The tree exactly as `userId` sees it. Shared by `getFullTree` (the user's own
+ * request) and the admin API (viewing a user's tree), so both always agree.
+ */
+export const loadFullTree = async (
+  userId: string,
+  lang: string,
+  maxDepth: number,
+  category?: string
+) => {
   /**
    * Read-through cache with single-flight.
    *
@@ -1201,108 +1207,108 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
    * outage starts. `readThroughFullTree` lets one request rebuild while the others
    * wait briefly for the result.
    */
-  const { value: responseData, hit } = await TreeCacheService.readThroughFullTree(
+  return TreeCacheService.readThroughFullTree(
     userId,
     maxDepth,
     lang,
     category,
     async () => {
-    const rootUserDb = await prisma.user.findUnique({
-      where: { id: userId },
-      select: {
-        id: true,
-        firstName: true,
-        lastName: true,
-        photoUrl: true,
-        gender: true,
-        isAlive: true,
-        phone: true,
-        profileCompleted: true,
-        isRegistered: true,
-      }
-    });
-    if (!rootUserDb) throw notFound('User not found');
-    const rootUser = rootUserDb;
+      const rootUserDb = await prisma.user.findUnique({
+        where: { id: userId },
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          photoUrl: true,
+          gender: true,
+          isAlive: true,
+          phone: true,
+          profileCompleted: true,
+          isRegistered: true,
+        }
+      });
+      if (!rootUserDb) throw notFound('User not found');
+      const rootUser = rootUserDb;
 
-    const visited = new Map<string, { gen: number, code: string }>();
-    visited.set(userId, { gen: 0, code: 'ROOT' });
+      const visited = new Map<string, { gen: number, code: string }>();
+      visited.set(userId, { gen: 0, code: 'ROOT' });
 
-    const processedRelations = new Set<string>();
-    const allRelations: any[] = [];
+      const processedRelations = new Set<string>();
+      const allRelations: any[] = [];
 
-    /**
-     * Relation types come from the shared cached registry instead of
-     * `prisma.relationType.findMany({ include: { translations: true } })` on every
-     * call. That query fetched the entire reference table plus all translations
-     * per request; it is now loaded once per process and refreshed on a TTL.
-     *
-     * `require('../utils/relationMetadata')` mid-function has also been replaced
-     * with a static import at the top of the file — a synchronous `require` inside
-     * a request handler blocks the event loop on first call and defeats bundling.
-     */
-    const registry = await getRelationTypeRegistry();
+      /**
+       * Relation types come from the shared cached registry instead of
+       * `prisma.relationType.findMany({ include: { translations: true } })` on every
+       * call. That query fetched the entire reference table plus all translations
+       * per request; it is now loaded once per process and refreshed on a TTL.
+       *
+       * `require('../utils/relationMetadata')` mid-function has also been replaced
+       * with a static import at the top of the file — a synchronous `require` inside
+       * a request handler blocks the event loop on first call and defeats bundling.
+       */
+      const registry = await getRelationTypeRegistry();
 
-    const resolveRelationWithCache = (rel: any, viewerUserId: string, lang: string = 'mr') => {
-      if (rel.fromUserId === viewerUserId) {
+      const resolveRelationWithCache = (rel: any, viewerUserId: string, lang: string = 'mr') => {
+        if (rel.fromUserId === viewerUserId) {
+          return {
+            code: rel.relationTypeCode,
+            label: registry.label(rel.relationTypeCode, lang)
+          };
+        }
+        if (rel.toUserId === viewerUserId) {
+          const reciprocalCode = registry.reciprocalOf(rel.relationTypeCode);
+          return {
+            code: reciprocalCode,
+            label: registry.label(reciprocalCode, lang)
+          };
+        }
         return {
           code: rel.relationTypeCode,
           label: registry.label(rel.relationTypeCode, lang)
         };
-      }
-      if (rel.toUserId === viewerUserId) {
-        const reciprocalCode = registry.reciprocalOf(rel.relationTypeCode);
-        return {
-          code: reciprocalCode,
-          label: registry.label(reciprocalCode, lang)
-        };
-      }
-      return {
-        code: rel.relationTypeCode,
-        label: registry.label(rel.relationTypeCode, lang)
       };
-    };
 
-    let queue = [userId];
-    const nodesByGen = new Map<number, any[]>();
-    nodesByGen.set(0, [{
-      user: rootUser,
-      relation: { id: `root-${userId}`, status: 'ROOT', relationType: { code: 'ROOT', label: 'You' } }
-    }]);
+      let queue = [userId];
+      const nodesByGen = new Map<number, any[]>();
+      nodesByGen.set(0, [{
+        user: rootUser,
+        relation: { id: `root-${userId}`, status: 'ROOT', relationType: { code: 'ROOT', label: 'You' } }
+      }]);
 
-    /**
-     * Frontier batch size.
-     *
-     * The BFS builds `IN (...)` lists from the previous hop's node set. On a dense
-     * tree that list grows without bound, producing a single query with thousands
-     * of bind parameters — slow to plan and capable of exceeding the parameter
-     * limit outright. Batching keeps each query a predictable size without
-     * changing which relations are visited.
-     */
-    const FRONTIER_BATCH_SIZE = 500;
+      /**
+       * Frontier batch size.
+       *
+       * The BFS builds `IN (...)` lists from the previous hop's node set. On a dense
+       * tree that list grows without bound, producing a single query with thousands
+       * of bind parameters — slow to plan and capable of exceeding the parameter
+       * limit outright. Batching keeps each query a predictable size without
+       * changing which relations are visited.
+       */
+      const FRONTIER_BATCH_SIZE = 500;
 
-    const chunk = <T,>(items: T[], size: number): T[][] => {
-      const out: T[][] = [];
-      for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
-      return out;
-    };
+      const chunk = <T,>(items: T[], size: number): T[][] => {
+        const out: T[][] = [];
+        for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+        return out;
+      };
 
-    const userBlocks = await prisma.userBlock.findMany({
-      where: {
-        OR: [{ blockerId: userId }, { blockedId: userId }],
-      },
-      select: { blockerId: true, blockedId: true },
-    });
-    const blockedUserIds = new Set<string>(
-      userBlocks.map((b) => (b.blockerId === userId ? b.blockedId : b.blockerId))
-    );
+      const userBlocks = await prisma.userBlock.findMany({
+        where: {
+          OR: [{ blockerId: userId }, { blockedId: userId }],
+        },
+        select: { blockerId: true, blockedId: true },
+      });
+      const blockedUserIds = new Set<string>(
+        userBlocks.map((b) => (b.blockerId === userId ? b.blockedId : b.blockerId))
+      );
 
-    let hop = 0;
-    while (queue.length > 0 && hop < maxDepth) {
-      const nextQueue = new Set<string>();
-      // Position lookup for the current frontier, replacing a per-relation scan.
-      const queueIndex = new Map(queue.map((id, index) => [id, index]));
+      let hop = 0;
+      while (queue.length > 0 && hop < maxDepth) {
+        const nextQueue = new Set<string>();
+        // Position lookup for the current frontier, replacing a per-relation scan.
+        const queueIndex = new Map(queue.map((id, index) => [id, index]));
 
-      const relationSelect = {
+        const relationSelect = {
           id: true,
           fromUserId: true,
           toUserId: true,
@@ -1322,242 +1328,238 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
           // from the cached registry, so this join no longer runs per hop.
         } as const;
 
-      const batches = chunk(queue, FRONTIER_BATCH_SIZE);
-      const rawRelations: any[] = (
-        await Promise.all(
-          batches.map((batch, batchIndex) =>
-            prisma.relation.findMany({
-              where: {
-                OR: [
-                  { fromUserId: { in: batch } },
-                  { toUserId: { in: batch } },
-                  // Only attach the creator clause once, on the first batch of the
-                  // first hop, to preserve the original single-query semantics.
-                  ...(hop === 0 && batchIndex === 0 ? [{ createdById: userId }] : []),
-                ],
-              },
-              select: relationSelect,
-            })
+        const batches = chunk(queue, FRONTIER_BATCH_SIZE);
+        const rawRelations: any[] = (
+          await Promise.all(
+            batches.map((batch, batchIndex) =>
+              prisma.relation.findMany({
+                where: {
+                  OR: [
+                    { fromUserId: { in: batch } },
+                    { toUserId: { in: batch } },
+                    // Only attach the creator clause once, on the first batch of the
+                    // first hop, to preserve the original single-query semantics.
+                    ...(hop === 0 && batchIndex === 0 ? [{ createdById: userId }] : []),
+                  ],
+                },
+                select: relationSelect,
+              })
+            )
           )
-        )
-      ).flat();
+        ).flat();
 
-      for (const rel of rawRelations) {
-        if (processedRelations.has(rel.id)) continue;
-        if (blockedUserIds.has(rel.fromUserId) || blockedUserIds.has(rel.toUserId)) continue;
-        // Unfollowing is directional: hide this edge only from the caller's tree.
-        // The confirmed relation row remains available to the other participant.
-        if (rel.hiddenByUserIds?.includes(userId)) continue;
-        if (category && rel.category !== category) continue;
-        if (rel.status === 'REJECTED') {
-          // If the user created this relation, keep it visible in their tree as REJECTED so they know the request was declined
-          if (rel.createdById !== userId) continue;
-        }
+        for (const rel of rawRelations) {
+          if (processedRelations.has(rel.id)) continue;
+          if (blockedUserIds.has(rel.fromUserId) || blockedUserIds.has(rel.toUserId)) continue;
+          // Unfollowing is directional: hide this edge only from the caller's tree.
+          // The confirmed relation row remains available to the other participant.
+          if (rel.hiddenByUserIds?.includes(userId)) continue;
+          if (category && rel.category !== category) continue;
+          if (rel.status === 'REJECTED') {
+            // If the user created this relation, keep it visible in their tree as REJECTED so they know the request was declined
+            if (rel.createdById !== userId) continue;
+          }
 
-        const isCreator = rel.createdById === userId;
-        const isFromMe = rel.fromUserId === userId;
-        const isToMe = rel.toUserId === userId;
-        const isConfirmed = rel.status === 'CONFIRMED';
-        
-        // For FAMILY category: Only show relations the user explicitly added/created themselves.
-        // Incoming requests accepted by the user belong in their accepted/approval list,
-        // and must NOT be auto-injected onto the visual Family Tree canvas unless explicitly added by the user.
-        // For FRIENDS and other categories: reciprocal confirmed relations can be traversed.
-        if (rel.category === 'FAMILY') {
-          const retainedAfterOtherUnfollow =
-            isConfirmed &&
-            (isFromMe || isToMe || isCreator) &&
-            rel.hiddenByUserIds?.length > 0 &&
-            !rel.hiddenByUserIds.includes(userId);
-          if (!isCreator && !retainedAfterOtherUnfollow) continue;
-        } else {
-          if (!isCreator && !isFromMe && !isToMe) continue;
-          if (!isConfirmed && !isCreator) continue;
-        }
+          const isCreator = rel.createdById === userId;
+          const isFromMe = rel.fromUserId === userId;
+          const isToMe = rel.toUserId === userId;
+          const isConfirmed = rel.status === 'CONFIRMED';
 
-        /**
-         * Was `queue.find(id => id === rel.fromUserId || id === rel.toUserId)`,
-         * a linear scan of the frontier for every relation in the hop — O(frontier
-         * x relations), which is the quadratic term that made wide trees slow.
-         *
-         * `queueIndex` preserves the exact original semantics: `find` returns the
-         * earliest match in queue order, so when both endpoints are in the frontier
-         * the lower index wins.
-         */
-        const fromIndex = queueIndex.get(rel.fromUserId);
-        const toIndex = queueIndex.get(rel.toUserId);
-        // A viewer-created relation's fromUserId is the placement anchor selected
-        // in the UI. If only its target is in this frontier, defer the edge until
-        // the anchor is reached instead of permanently processing it backward.
-        if (rel.createdById === userId && fromIndex === undefined) continue;
-
-        // Relations created by this viewer use fromUserId as their explicit
-        // placement anchor. Prefer it when both endpoints are in the frontier so
-        // adding through another friend's node cannot flip the new edge around.
-        const sourceId =
-          rel.createdById === userId && fromIndex !== undefined
-            ? rel.fromUserId
-            : fromIndex !== undefined && (toIndex === undefined || fromIndex <= toIndex)
-              ? rel.fromUserId
-              : toIndex !== undefined
-                ? rel.toUserId
-                : undefined;
-        if (!sourceId) continue;
-
-        const neighborUser = (rel.fromUserId === sourceId) ? rel.toUser : rel.fromUser;
-        const isOutgoing = (rel.fromUserId === sourceId);
-        const targetId = neighborUser.id;
-        const sourceData = visited.get(sourceId)!;
-        const sourceGen = sourceData.gen;
-        const visualSide = isOutgoing
-          ? rel.visualSide
-          : rel.visualSide === 'top'
-            ? 'bottom'
-            : rel.visualSide === 'bottom'
-              ? 'top'
-              : rel.visualSide === 'left'
-                ? 'right'
-                : rel.visualSide === 'right'
-                  ? 'left'
-                  : null;
-
-        // Resolve the relation code from ROOT's perspective
-        const rootView = resolveRelationWithCache(rel, userId, lang);
-
-        processedRelations.add(rel.id);
-
-        const targetViewCode = resolveRelationWithCache(rel, sourceId, lang).code;
-        const visualSourceId = sourceId;
-
-        // Only carry customName/customPhotoUrl when the viewer (Prathamesh) created
-        // this relation row. For incoming relations (created by someone else, e.g. Vinesh
-        // added Prathamesh as PUTANYA), the customName is what VINESH typed for PRATHAMESH
-        // and must NOT be used as Vinesh's display name in Prathamesh's tree.
-        const isViewerCreated = rel.createdById === userId;
-        const rootRelationType = registry.get(rootView.code);
-        allRelations.push({
-          id: rel.id,
-          fromUserId: rel.fromUserId,
-          toUserId: rel.toUserId,
-          relationType: {
-            code: rootView.code,
-            label: rootView.label,
-            // Second operand was `rel.relationType?.treeSide` from the dropped join;
-            // the registry lookup by the row's own code is equivalent.
-            treeSide: rootRelationType?.treeSide ?? registry.get(rel.relationTypeCode)?.treeSide,
-          },
-          direction: isOutgoing ? 'OUTGOING' : 'INCOMING',
-          sourceUserId: visualSourceId,
-          status: rel.status,
-          customName: isViewerCreated ? rel.customName : null,
-          customPhotoUrl: isViewerCreated ? rel.customPhotoUrl : null,
-          visualSide,
-          createdById: rel.createdById,
-          hiddenByUserIds: rel.hiddenByUserIds,
-        });
-
-        if (visited.has(targetId)) continue;
-
-        // ─── LEVEL ASSIGNMENT ───────────────────────────────────────────
-        // Step 1: Resolve the relation code from the TARGET's perspective viewing the edge
-        const targetViewFromSource = resolveRelationWithCache(rel, sourceId, lang);
-        const targetRelCode = targetViewFromSource.code;
-        const targetRelationType = registry.get(targetRelCode);
-
-        let localNeighborGen: number;
-        const canonicalLevel = RELATION_LEVEL_MAP[targetRelCode];
-
-        // Dynamic level for NATEVAIK generic relative based on the side from
-        // the current source node's perspective (already inverted when needed).
-        if (targetRelCode === 'NATEVAIK') {
-          if (visualSide === 'top') {
-            let nextGen = sourceGen + 1;
-            // When adding on top, never place onto the root level (gen 0). It must be at least gen 1 (above root).
-            if (nextGen === 0) {
-              nextGen = 1;
-            }
-            localNeighborGen = nextGen;
-          } else if (visualSide === 'bottom') {
-            localNeighborGen = sourceGen - 1;
+          // For FAMILY category: Only show relations the user explicitly added/created themselves.
+          // Incoming requests accepted by the user belong in their accepted/approval list,
+          // and must NOT be auto-injected onto the visual Family Tree canvas unless explicitly added by the user.
+          // For FRIENDS and other categories: reciprocal confirmed relations can be traversed.
+          if (rel.category === 'FAMILY') {
+            const retainedAfterOtherUnfollow =
+              isConfirmed &&
+              (isFromMe || isToMe || isCreator) &&
+              rel.hiddenByUserIds?.length > 0 &&
+              !rel.hiddenByUserIds.includes(userId);
+            if (!isCreator && !retainedAfterOtherUnfollow) continue;
           } else {
-            localNeighborGen = sourceGen;
-          }
-        }
-        // Step 2: Prefer canonical static generation from RELATION_LEVEL_MAP when available.
-        // This protects against stale/mismatched DB treeLevel values for same-generation cousins.
-        else if (canonicalLevel !== undefined) {
-          localNeighborGen = canonicalLevel;
-        } else if (targetRelationType?.treeLevel !== null && targetRelationType?.treeLevel !== undefined) {
-          localNeighborGen = targetRelationType.treeLevel;
-        } else {
-          // Fallback: derive from direction delta
-          const sourceRelCode = sourceData.code || 'ROOT';
-          const isSpousePairEdge = SPOUSE_PAIRS.some(
-            ([a, b]: [string, string]) =>
-              (a === sourceRelCode && b === targetRelCode) ||
-              (b === sourceRelCode && a === targetRelCode)
-          );
-
-          const axis = RELATION_AXIS_CONFIG[sourceRelCode];
-          let axisDirection: 'UP' | 'DOWN' | 'SAME' | null = null;
-          if (axis) {
-            const allOpts = [
-              ...(axis.xAxis?.left || []),
-              ...(axis.xAxis?.right || []),
-              ...(axis.yAxis?.top || []),
-              ...(axis.yAxis?.bottom || []),
-            ];
-            const matched = allOpts.find(opt => opt.code === targetRelCode);
-            axisDirection = matched?.direction || null;
+            if (!isCreator && !isFromMe && !isToMe) continue;
+            if (!isConfirmed && !isCreator) continue;
           }
 
-          const unitDelta = isSpousePairEdge
-            ? 0
-            : axisDirection === 'SAME'
+          /**
+           * Was `queue.find(id => id === rel.fromUserId || id === rel.toUserId)`,
+           * a linear scan of the frontier for every relation in the hop — O(frontier
+           * x relations), which is the quadratic term that made wide trees slow.
+           *
+           * `queueIndex` preserves the exact original semantics: `find` returns the
+           * earliest match in queue order, so when both endpoints are in the frontier
+           * the lower index wins.
+           */
+          const fromIndex = queueIndex.get(rel.fromUserId);
+          const toIndex = queueIndex.get(rel.toUserId);
+          // A viewer-created relation's fromUserId is the placement anchor selected
+          // in the UI. If only its target is in this frontier, defer the edge until
+          // the anchor is reached instead of permanently processing it backward.
+          if (rel.createdById === userId && fromIndex === undefined) continue;
+
+          // Relations created by this viewer use fromUserId as their explicit
+          // placement anchor. Prefer it when both endpoints are in the frontier so
+          // adding through another friend's node cannot flip the new edge around.
+          const sourceId =
+            rel.createdById === userId && fromIndex !== undefined
+              ? rel.fromUserId
+              : fromIndex !== undefined && (toIndex === undefined || fromIndex <= toIndex)
+                ? rel.fromUserId
+                : toIndex !== undefined
+                  ? rel.toUserId
+                  : undefined;
+          if (!sourceId) continue;
+
+          const neighborUser = (rel.fromUserId === sourceId) ? rel.toUser : rel.fromUser;
+          const isOutgoing = (rel.fromUserId === sourceId);
+          const targetId = neighborUser.id;
+          const sourceData = visited.get(sourceId)!;
+          const sourceGen = sourceData.gen;
+          const visualSide = isOutgoing
+            ? rel.visualSide
+            : rel.visualSide === 'top'
+              ? 'bottom'
+              : rel.visualSide === 'bottom'
+                ? 'top'
+                : rel.visualSide === 'left'
+                  ? 'right'
+                  : rel.visualSide === 'right'
+                    ? 'left'
+                    : null;
+
+          // Resolve the relation code from ROOT's perspective
+          const rootView = resolveRelationWithCache(rel, userId, lang);
+
+          processedRelations.add(rel.id);
+
+          const targetViewCode = resolveRelationWithCache(rel, sourceId, lang).code;
+          const visualSourceId = sourceId;
+
+          // Only carry customName/customPhotoUrl when the viewer (Prathamesh) created
+          // this relation row. For incoming relations (created by someone else, e.g. Vinesh
+          // added Prathamesh as PUTANYA), the customName is what VINESH typed for PRATHAMESH
+          // and must NOT be used as Vinesh's display name in Prathamesh's tree.
+          const isViewerCreated = rel.createdById === userId;
+          const rootRelationType = registry.get(rootView.code);
+          allRelations.push({
+            id: rel.id,
+            fromUserId: rel.fromUserId,
+            toUserId: rel.toUserId,
+            relationType: {
+              code: rootView.code,
+              label: rootView.label,
+              // Second operand was `rel.relationType?.treeSide` from the dropped join;
+              // the registry lookup by the row's own code is equivalent.
+              treeSide: rootRelationType?.treeSide ?? registry.get(rel.relationTypeCode)?.treeSide,
+            },
+            direction: isOutgoing ? 'OUTGOING' : 'INCOMING',
+            sourceUserId: visualSourceId,
+            status: rel.status,
+            customName: isViewerCreated ? rel.customName : null,
+            customPhotoUrl: isViewerCreated ? rel.customPhotoUrl : null,
+            visualSide,
+            createdById: rel.createdById,
+            hiddenByUserIds: rel.hiddenByUserIds,
+          });
+
+          if (visited.has(targetId)) continue;
+
+          // ─── LEVEL ASSIGNMENT ───────────────────────────────────────────
+          // Step 1: Resolve the relation code from the TARGET's perspective viewing the edge
+          const targetViewFromSource = resolveRelationWithCache(rel, sourceId, lang);
+          const targetRelCode = targetViewFromSource.code;
+          const targetRelationType = registry.get(targetRelCode);
+
+          let localNeighborGen: number;
+          const canonicalLevel = RELATION_LEVEL_MAP[targetRelCode];
+
+          // Dynamic level for NATEVAIK generic relative based on the side from
+          // the current source node's perspective (already inverted when needed).
+          if (targetRelCode === 'NATEVAIK') {
+            if (visualSide === 'top') {
+              let nextGen = sourceGen + 1;
+              // When adding on top, never place onto the root level (gen 0). It must be at least gen 1 (above root).
+              if (nextGen === 0) {
+                nextGen = 1;
+              }
+              localNeighborGen = nextGen;
+            } else if (visualSide === 'bottom') {
+              localNeighborGen = sourceGen - 1;
+            } else {
+              localNeighborGen = sourceGen;
+            }
+          }
+          // Step 2: Prefer canonical static generation from RELATION_LEVEL_MAP when available.
+          // This protects against stale/mismatched DB treeLevel values for same-generation cousins.
+          else if (canonicalLevel !== undefined) {
+            localNeighborGen = canonicalLevel;
+          } else if (targetRelationType?.treeLevel !== null && targetRelationType?.treeLevel !== undefined) {
+            localNeighborGen = targetRelationType.treeLevel;
+          } else {
+            // Fallback: derive from direction delta
+            const sourceRelCode = sourceData.code || 'ROOT';
+            const isSpousePairEdge = SPOUSE_PAIRS.some(
+              ([a, b]: [string, string]) =>
+                (a === sourceRelCode && b === targetRelCode) ||
+                (b === sourceRelCode && a === targetRelCode)
+            );
+
+            const axis = RELATION_AXIS_CONFIG[sourceRelCode];
+            let axisDirection: 'UP' | 'DOWN' | 'SAME' | null = null;
+            if (axis) {
+              const allOpts = [
+                ...(axis.xAxis?.left || []),
+                ...(axis.xAxis?.right || []),
+                ...(axis.yAxis?.top || []),
+                ...(axis.yAxis?.bottom || []),
+              ];
+              const matched = allOpts.find(opt => opt.code === targetRelCode);
+              axisDirection = matched?.direction || null;
+            }
+
+            const unitDelta = isSpousePairEdge
               ? 0
-              : axisDirection === 'UP'
-                ? 1
-                : axisDirection === 'DOWN'
-                  ? -1
-                  : 0;
+              : axisDirection === 'SAME'
+                ? 0
+                : axisDirection === 'UP'
+                  ? 1
+                  : axisDirection === 'DOWN'
+                    ? -1
+                    : 0;
 
-          localNeighborGen = sourceGen + unitDelta;
+            localNeighborGen = sourceGen + unitDelta;
+          }
+          // ────────────────────────────────────────────────────────────────
+
+          visited.set(targetId, { gen: localNeighborGen, code: targetRelCode });
+          if (rel.status !== 'REJECTED') {
+            nextQueue.add(targetId);
+          }
+
+          if (!nodesByGen.has(localNeighborGen)) nodesByGen.set(localNeighborGen, []);
+
+          let displayNeighbor = neighborUser;
+          if (rel.createdById === userId && rel.toUserId === targetId) {
+            displayNeighbor = resolveNodeForViewer(neighborUser, rel, userId);
+          }
+
+          nodesByGen.get(localNeighborGen)!.push({
+            user: displayNeighbor,
+            relation: allRelations[allRelations.length - 1]
+          });
         }
-        // ────────────────────────────────────────────────────────────────
 
-        visited.set(targetId, { gen: localNeighborGen, code: targetRelCode });
-        if (rel.status !== 'REJECTED') {
-          nextQueue.add(targetId);
-        }
-
-        if (!nodesByGen.has(localNeighborGen)) nodesByGen.set(localNeighborGen, []);
-
-        let displayNeighbor = neighborUser;
-        if (rel.createdById === userId && rel.toUserId === targetId) {
-          displayNeighbor = resolveNodeForViewer(neighborUser, rel, userId);
-        }
-
-        nodesByGen.get(localNeighborGen)!.push({
-          user: displayNeighbor,
-          relation: allRelations[allRelations.length - 1]
-        });
+        queue = Array.from(nextQueue);
+        hop++;
       }
 
-      queue = Array.from(nextQueue);
-      hop++;
-    }
-
-    const levels = [];
-    for (const [gen, nodes] of nodesByGen.entries()) {
-      levels.push({ level: gen, nodes });
-    }
-    return { rootUser, levels, allRelations };
+      const levels = [];
+      for (const [gen, nodes] of nodesByGen.entries()) {
+        levels.push({ level: gen, nodes });
+      }
+      return { rootUser, levels, allRelations };
     }
   );
-
-  // Lets clients and dashboards see cache effectiveness without extra tooling.
-  res.setHeader('X-Cache', hit ? 'HIT' : 'MISS');
-  return res.json(responseData);
 };
 
 /**
@@ -1827,37 +1829,37 @@ export const getAcceptedRequests = async (req: AuthRequest, res: Response) => {
   const registry = await getRelationTypeRegistry();
 
   const raw = await prisma.relation.findMany({
-      where: { toUserId: userId, status: 'CONFIRMED' },
-      select: {
-        id: true,
-        fromUserId: true,
-        toUserId: true,
-        status: true,
-        relationTypeCode: true,
-        category: true,
-        customName: true,
-        customPhotoUrl: true,
-        createdById: true,
-        createdAt: true,
-        updatedAt: true,
-        fromUser: { select: RELATION_USER_SELECT },
-        toUser: { select: RELATION_USER_SELECT },
-      },
-      orderBy: { updatedAt: 'desc' },
-      // Previously unbounded. A long-lived account would return its entire
-      // confirmed-relation history on every call.
-      take: 200,
-    });
+    where: { toUserId: userId, status: 'CONFIRMED' },
+    select: {
+      id: true,
+      fromUserId: true,
+      toUserId: true,
+      status: true,
+      relationTypeCode: true,
+      category: true,
+      customName: true,
+      customPhotoUrl: true,
+      createdById: true,
+      createdAt: true,
+      updatedAt: true,
+      fromUser: { select: RELATION_USER_SELECT },
+      toUser: { select: RELATION_USER_SELECT },
+    },
+    orderBy: { updatedAt: 'desc' },
+    // Previously unbounded. A long-lived account would return its entire
+    // confirmed-relation history on every call.
+    take: 200,
+  });
 
-    const accepted = raw.map(rel => {
-      const view = resolveRelationForViewer(registry, rel, userId, lang);
-      return {
-        ...rel,
-        relationType: { label: view.label, code: view.code }
-      };
-    });
+  const accepted = raw.map(rel => {
+    const view = resolveRelationForViewer(registry, rel, userId, lang);
+    return {
+      ...rel,
+      relationType: { label: view.label, code: view.code }
+    };
+  });
 
-    return res.json(accepted);
+  return res.json(accepted);
 };
 
 export const checkAcceptedByPhone = async (req: AuthRequest, res: Response) => {

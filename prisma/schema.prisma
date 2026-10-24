@@ -10,6 +10,10 @@ model User {
   id                                  String               @id @default(uuid())
   phone                               String?              @unique
   secondaryPhone                      String?              @unique
+  /// When the primary number was proven by OTP. NULL = not verified.
+  phoneVerifiedAt                     DateTime?
+  /// When the secondary number was proven by OTP. NULL = not verified (or no secondary).
+  secondaryPhoneVerifiedAt            DateTime?
   email                               String?              @unique
   photoUrl                            String?
   bannerUrl                           String?

@@ -97,6 +97,8 @@ export const createRelationSchema = {
       lastName: boundedText(TEXT_LIMITS.name),
       // Absent for deceased relatives, who have no phone.
       phone: phoneField.optional(),
+      // Up to two numbers for the same person; the request reaches them on whichever they register with.
+      phones: z.array(phoneField).max(2, 'at most 2 phone numbers').optional(),
       gender: z.enum(['MALE', 'FEMALE', 'male', 'female', 'OTHER']).optional(),
       sourceUserId: uuidString.optional(),
       customName: boundedText(TEXT_LIMITS.name),

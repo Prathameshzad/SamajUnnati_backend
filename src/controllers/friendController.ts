@@ -15,6 +15,12 @@ import { getRelationTypeRegistry, type RelationTypeRegistry } from '../services/
 import { badRequest, forbidden, notFound, unauthenticated } from '../lib/errors';
 import { createLogger } from '../lib/logger';
 import { RELATION_USER_SELECT, assertSourceNodeOwned } from './relationController';
+import {
+  findUserByAnyPhone,
+  normalizeRelativePhones,
+  placeholderPhoneFields,
+  placeholderPhoneUpdates,
+} from '../services/relativePhoneService';
 
 const log = createLogger('friends');
 
@@ -107,45 +113,45 @@ export const getFriendTree = async (req: AuthRequest, res: Response) => {
       ],
     },
     select: {
-        id: true,
-        fromUserId: true,
-        toUserId: true,
-        relationTypeCode: true,
-        category: true,
-        status: true,
-        customName: true,
-        customPhotoUrl: true,
-        visualSide: true,
-        hiddenByUserIds: true,
-        createdById: true,
-        createdAt: true,
-        updatedAt: true,
-        fromUser: {
-          select: {
-            id: true,
-            phone: true,
-            firstName: true,
-            lastName: true,
-            photoUrl: true,
-            gender: true,
-            isAlive: true,
-            profileCompleted: true,
-            isRegistered: true,
-          }
-        },
-        toUser: {
-          select: {
-            id: true,
-            phone: true,
-            firstName: true,
-            lastName: true,
-            photoUrl: true,
-            gender: true,
-            isAlive: true,
-            profileCompleted: true,
-            isRegistered: true,
-          }
-        },
+      id: true,
+      fromUserId: true,
+      toUserId: true,
+      relationTypeCode: true,
+      category: true,
+      status: true,
+      customName: true,
+      customPhotoUrl: true,
+      visualSide: true,
+      hiddenByUserIds: true,
+      createdById: true,
+      createdAt: true,
+      updatedAt: true,
+      fromUser: {
+        select: {
+          id: true,
+          phone: true,
+          firstName: true,
+          lastName: true,
+          photoUrl: true,
+          gender: true,
+          isAlive: true,
+          profileCompleted: true,
+          isRegistered: true,
+        }
+      },
+      toUser: {
+        select: {
+          id: true,
+          phone: true,
+          firstName: true,
+          lastName: true,
+          photoUrl: true,
+          gender: true,
+          isAlive: true,
+          profileCompleted: true,
+          isRegistered: true,
+        }
+      },
     }
   });
 
@@ -735,7 +741,7 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
   if (!userId) throw unauthenticated();
 
   const {
-    phone, firstName, lastName, gender, relationTypeCode, sourceUserId, customName, customPhotoUrl, isAlive, visualSide, dateOfBirth, dateOfDeath, bloodGroup,
+    phone, phones, firstName, lastName, gender, relationTypeCode, sourceUserId, customName, customPhotoUrl, isAlive, visualSide, dateOfBirth, dateOfDeath, bloodGroup,
     education, occupation, maritalStatus, pincode, address, area
   } = req.body;
 
@@ -761,13 +767,7 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
 
   const cleanBloodGroup = (isPersonAlive && bloodGroup) ? String(bloodGroup).trim() : null;
 
-  let cleanPhone = null;
-  if (isPersonAlive && phone && String(phone).trim()) {
-    cleanPhone = normalizePhone(phone);
-    if (!cleanPhone || cleanPhone.length < 10) {
-      throw badRequest('Invalid phone number');
-    }
-  }
+  const cleanPhones = isPersonAlive ? normalizeRelativePhones({ phone, phones }) : [];
 
   const relType = await prisma.relationType.findUnique({
     where: { code: relationTypeCode },
@@ -778,28 +778,19 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
     throw badRequest('Invalid friend relation type');
   }
 
-  let relatedUser = null;
-  if (cleanPhone) {
-    relatedUser = await prisma.user.findFirst({
-      where: {
-        OR: [
-          { phone: { in: phoneLookupVariants(cleanPhone) } },
-          { secondaryPhone: { in: phoneLookupVariants(cleanPhone) } },
-        ],
-      },
-      // Prefer the real account if legacy 10/12-digit duplicates exist.
-      orderBy: [
-        { profileCompleted: 'desc' },
-        { isRegistered: 'desc' },
-      ],
-    });
+  let relatedUser = await findUserByAnyPhone(cleanPhones);
+
+  if (relatedUser) {
+    const phoneUpdates = await placeholderPhoneUpdates(relatedUser, cleanPhones);
+    if (Object.keys(phoneUpdates).length > 0) {
+      relatedUser = await prisma.user.update({ where: { id: relatedUser.id }, data: phoneUpdates });
+    }
   }
 
   if (!relatedUser) {
     relatedUser = await prisma.user.create({
       data: {
-        phone: cleanPhone,
-        whatsapp: cleanPhone,
+        ...placeholderPhoneFields(cleanPhones),
         firstName,
         lastName: lastName || null,
         gender: normalizeGender(gender),
@@ -907,10 +898,10 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
         visualSide: normalizeVisualSide(visualSide),
         ...(isRecreating || hasPriorApproval || isBlocked
           ? {
-              status: targetStatus as any,
-              approvedAt: targetApprovedAt,
-              hiddenByUserIds: hiddenList,
-            }
+            status: targetStatus as any,
+            approvedAt: targetApprovedAt,
+            hiddenByUserIds: hiddenList,
+          }
           : {}),
       },
       create: {
@@ -932,12 +923,12 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
     const score: ScoreAwardResult = isBlocked
       ? { applied: false, delta: 0, userId, reason: addReason, total: 0, level: 0, leveledUp: false }
       : await awardPointsInTransaction(
-          tx,
-          savedRelation.createdById ?? userId,
-          addReason,
-          savedRelation.id,
-          `relation:${savedRelation.id}:add`
-        );
+        tx,
+        savedRelation.createdById ?? userId,
+        addReason,
+        savedRelation.id,
+        `relation:${savedRelation.id}:add`
+      );
     return { relation: savedRelation, scoreUpdate: score, isRecreating, hasPriorApproval, isBlocked };
   });
   const displayLabel = resolveLabel(relType, lang);

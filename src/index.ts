@@ -51,6 +51,7 @@ import matrimonyRoutes from './routes/matrimonyRoutes';
 import scoreRoutes from './routes/scoreRoutes';
 import configRoutes from './routes/configRoutes';
 import musicRoutes from './routes/musicRoutes';
+import adminRoutes from './routes/adminRoutes';
 
 const app: Application = express();
 
@@ -175,6 +176,8 @@ app.use('/api/follow', followRoutes);
 app.use('/api/matrimony', matrimonyRoutes);
 app.use('/api/scores', scoreRoutes);
 app.use('/api/music', musicRoutes);
+// Separate admin surface: own credentials, own token audience (see lib/adminJwt.ts).
+app.use('/api/admin', adminRoutes);
 
 /**
  * Locally-stored media, only reachable when the local-disk fallback is enabled

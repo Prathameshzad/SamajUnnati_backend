@@ -112,6 +112,15 @@ const schema = z.object({
   /** User IDs permitted to call maintenance/admin endpoints. */
   ADMIN_USER_IDS: z.string().optional(),
 
+  /**
+   * Admin dashboard (/api/admin) credentials. Separate from app users: the admin
+   * signs in with this username/password and receives a token that is only valid
+   * on /api/admin. Leave both empty to disable the admin API entirely.
+   */
+  ADMIN_USERNAME: z.string().optional(),
+  ADMIN_PASSWORD: z.string().optional(),
+  ADMIN_TOKEN_EXPIRES_IN: z.string().default('12h'),
+
   /** Number of proxy hops to trust for client IP resolution (rate limiting correctness). */
   TRUST_PROXY_HOPS: intFromString(0, 0, 10),
 
@@ -248,6 +257,15 @@ if (isProduction) {
   }
 }
 
+const adminUsername = raw.ADMIN_USERNAME?.trim() || undefined;
+const adminPassword = raw.ADMIN_PASSWORD || undefined;
+if (Boolean(adminUsername) !== Boolean(adminPassword)) {
+  fatal.push('ADMIN_USERNAME and ADMIN_PASSWORD must be set together (or both left empty).');
+}
+if (isProduction && adminPassword && adminPassword.length < 12) {
+  fatal.push('ADMIN_PASSWORD must be at least 12 characters in production.');
+}
+
 if (fatal.length > 0) {
   console.error(`\nRefusing to start:\n${fatal.map((m) => `  - ${m}`).join('\n')}\n`);
   process.exit(1);
@@ -318,6 +336,15 @@ export const config = {
   },
 
   adminUserIds: new Set(csv(raw.ADMIN_USER_IDS)),
+
+  admin: {
+    enabled: Boolean(adminUsername && adminPassword),
+    username: adminUsername,
+    password: adminPassword,
+    tokenExpiresIn: raw.ADMIN_TOKEN_EXPIRES_IN,
+    /** Audience stamped on admin tokens so they can never pass as app-user tokens. */
+    audience: `${raw.JWT_AUDIENCE}-admin`,
+  },
 
   http: {
     trustProxyHops: raw.TRUST_PROXY_HOPS,

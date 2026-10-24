@@ -8,6 +8,15 @@ import { OtpService } from '../services/otpService';
 import { config, isTestBypassPhone } from '../config/env';
 import { CURRENT_PRIVACY_VERSION, CURRENT_TERMS_VERSION } from '../constants/legal';
 import { syncPendingRelationsForUser, reconnectDeletedUserRelations } from '../services/relationReconnectService';
+import { signPhoneVerificationToken, verifyPhoneVerificationToken } from '../lib/phoneVerificationToken';
+import {
+  canonicalPhone,
+  findRegisteredOwner,
+  numberTakenMessage,
+  phoneMatchWhere,
+  samePhone,
+  uniqueViolationField,
+} from '../services/phoneIdentityService';
 
 type GenderValue = 'MALE' | 'FEMALE';
 
@@ -224,6 +233,33 @@ export const checkPhone = async (
 };
 
 /**
+ * Stores the secondary number on a freshly registered account.
+ *
+ * Done after `syncPendingRelationsForUser`, which merges (and deletes) any
+ * placeholder that held this number. A placeholder that survives the merge would
+ * still own the number in `secondaryPhone` (a unique column) and make the update
+ * below fail with a 500, so its copy is cleared first.
+ */
+async function attachSecondaryPhone<T extends { id: string }>(
+  user: T,
+  secondary: string | null | undefined,
+  verifiedAt: Date
+): Promise<T> {
+  if (!secondary) return user;
+  await prisma.user.updateMany({
+    where: {
+      AND: [phoneMatchWhere(secondary), { profileCompleted: false }, { id: { not: user.id } }],
+      secondaryPhone: { not: null },
+    },
+    data: { secondaryPhone: null },
+  });
+  return (await prisma.user.update({
+    where: { id: user.id },
+    data: { secondaryPhone: secondary, secondaryPhoneVerifiedAt: verifiedAt },
+  })) as unknown as T;
+}
+
+/**
  * POST /api/auth/register
  * Body: { phone, email, firstName, middleName, lastName, religion, community, dateOfBirth }
  */
@@ -234,6 +270,8 @@ export const registerUser = async (
   const {
     phone,
     secondaryPhone,
+    phoneVerificationToken,
+    secondaryPhoneVerificationToken,
     email,
     firstName,
     middleName,
@@ -258,6 +296,8 @@ export const registerUser = async (
   } = req.body as {
     phone?: string;
     secondaryPhone?: string;
+    phoneVerificationToken?: string;
+    secondaryPhoneVerificationToken?: string;
     email?: string;
     firstName?: string;
     middleName?: string;
@@ -316,10 +356,31 @@ export const registerUser = async (
     if (!normalizedSecondaryPhone || normalizedSecondaryPhone.length < 10) {
       return res.status(400).json({ message: 'Invalid secondary phone number' });
     }
-    if (normalizedSecondaryPhone === normalizedPhone) {
+    if (samePhone(normalizedSecondaryPhone, normalizedPhone)) {
       return res.status(400).json({ message: 'Secondary phone cannot be the same as primary phone' });
     }
   }
+
+  // Phone verification is mandatory: each number must have passed an OTP check, proven by
+  // the token /auth/verify-otp issued for it. Development and the store-review test
+  // number bypass OTP everywhere else, so they are treated as verified here too.
+  const skipVerification = config.isDevelopment || isTestBypassPhone(normalizedPhone);
+  if (!skipVerification) {
+    if (!samePhone(verifyPhoneVerificationToken(phoneVerificationToken), normalizedPhone)) {
+      return res.status(403).json({
+        message: 'Please verify your mobile number with the OTP before registering.',
+      });
+    }
+    if (
+      normalizedSecondaryPhone &&
+      !samePhone(verifyPhoneVerificationToken(secondaryPhoneVerificationToken), normalizedSecondaryPhone)
+    ) {
+      return res.status(403).json({
+        message: 'Please verify your second mobile number with the OTP before registering.',
+      });
+    }
+  }
+  const verifiedAt = new Date();
 
   try {
     // We treat normalizedPhone as canonical, with fallback variants to match placeholder stubs
@@ -337,20 +398,19 @@ export const registerUser = async (
       });
     }
 
+    // The primary number must not already be some other account's primary OR secondary
+    // number. (Only the `phone` column used to be consulted, so a new account could take
+    // over a number that another user had saved as their secondary.)
+    const primaryOwner = await findRegisteredOwner(normalizedPhone, existing?.id);
+    if (primaryOwner) {
+      return res.status(409).json({ message: numberTakenMessage(normalizedPhone, 'primary') });
+    }
+
     // Validate secondary phone uniqueness against existing registered accounts
     if (normalizedSecondaryPhone) {
-      const existingSec = await prisma.user.findFirst({
-        where: {
-          OR: [
-            { phone: normalizedSecondaryPhone },
-            { secondaryPhone: normalizedSecondaryPhone },
-          ],
-          profileCompleted: true,
-          id: { not: existing?.id || 'none' },
-        },
-      });
-      if (existingSec) {
-        return res.status(409).json({ message: 'Secondary phone is already registered to another account' });
+      const secondaryOwner = await findRegisteredOwner(normalizedSecondaryPhone, existing?.id);
+      if (secondaryOwner) {
+        return res.status(409).json({ message: numberTakenMessage(normalizedSecondaryPhone, 'secondary') });
       }
 
       // If a placeholder user exists with this secondaryPhone, delete it so unique constraint succeeds
@@ -398,6 +458,7 @@ export const registerUser = async (
 
     const acceptedAt = new Date();
     const userData = {
+      phoneVerifiedAt: verifiedAt,
       email: normalizedEmail,
       firstName: derivedFirstName ?? null,
       middleName: middleName?.trim() ?? null,
@@ -408,7 +469,6 @@ export const registerUser = async (
       subcaste: subcaste ?? null,
       dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : null,
       gender: normalizeGender(gender),
-      secondaryPhone: normalizedSecondaryPhone ?? null,
       appLanguage: appLanguage ?? 'en',
       relationLanguage: relationLanguage ?? 'en',
       profileCompleted: true,
@@ -429,7 +489,7 @@ export const registerUser = async (
       if (existing.profileCompleted) {
         return res
           .status(409)
-          .json({ message: 'User with this phone already exists' });
+          .json({ message: numberTakenMessage(normalizedPhone, 'primary') });
       }
 
       // Claim the stub user
@@ -447,9 +507,10 @@ export const registerUser = async (
           console.error('Error syncing pending relations for secondary phone:', err);
         });
       }
+      const finalUser = await attachSecondaryPhone(user, normalizedSecondaryPhone, verifiedAt);
 
       const token = signAuthToken({ userId: user.id, phone: user.phone || normalizedPhone });
-      return res.status(200).json({ token, user });
+      return res.status(200).json({ token, user: finalUser });
     }
 
     const user = await prisma.user.create({
@@ -468,11 +529,20 @@ export const registerUser = async (
         console.error('Error syncing pending relations for secondary phone:', err);
       });
     }
+    const finalUser = await attachSecondaryPhone(user, normalizedSecondaryPhone, verifiedAt);
 
     const token = signAuthToken({ userId: user.id, phone: user.phone || normalizedPhone });
 
-    return res.status(201).json({ token, user });
+    return res.status(201).json({ token, user: finalUser });
   } catch (error) {
+    // Two sign-ups racing for the same number get past the checks above; the database
+    // constraint is the last line of defence. Report it as a conflict, not a 500.
+    const clash = uniqueViolationField(error);
+    if (clash === 'phone') return res.status(409).json({ message: numberTakenMessage(normalizedPhone, 'primary') });
+    if (clash === 'secondaryPhone') {
+      return res.status(409).json({ message: numberTakenMessage(normalizedSecondaryPhone ?? '', 'secondary') });
+    }
+    if (clash === 'email') return res.status(409).json({ message: 'Email is already registered to another account' });
     console.error('register error', error);
     return res.status(500).json({ message: 'Internal server error' });
   }
@@ -533,19 +603,16 @@ export const verifyOtp = async (req: Request, res: Response) => {
   if (!isValid) return res.status(401).json({ message: 'Invalid OTP code' });
 
   if (isSecondary) {
-    const existingCompleted = await prisma.user.findFirst({
-      where: {
-        OR: [
-          { phone: normalized },
-          { secondaryPhone: normalized },
-        ],
-        profileCompleted: true,
-      },
-    });
+    const existingCompleted = await findRegisteredOwner(normalized);
     if (existingCompleted) {
-      return res.status(409).json({ message: 'This phone number is already registered to another account' });
+      return res.status(409).json({ message: numberTakenMessage(normalized, 'secondary') });
     }
-    return res.json({ verified: true, isSecondary: true, phone: normalized });
+    return res.json({
+      verified: true,
+      isSecondary: true,
+      phone: normalized,
+      phoneVerificationToken: signPhoneVerificationToken(canonicalPhone(normalized)),
+    });
   }
 
   const phoneVariants = [normalized];
@@ -583,6 +650,14 @@ export const verifyOtp = async (req: Request, res: Response) => {
       });
     }
     if (user.profileCompleted) {
+      // Record which of the account's numbers was just proven by OTP (first time only).
+      const viaSecondary = samePhone(user.secondaryPhone, normalized) && !samePhone(user.phone, normalized);
+      if (viaSecondary && !user.secondaryPhoneVerifiedAt) {
+        user = await prisma.user.update({ where: { id: user.id }, data: { secondaryPhoneVerifiedAt: new Date() } });
+      } else if (!viaSecondary && !user.phoneVerifiedAt) {
+        user = await prisma.user.update({ where: { id: user.id }, data: { phoneVerifiedAt: new Date() } });
+      }
+
       await syncPendingRelationsForUser(user.id, user.phone || normalized).catch((err) => {
         console.error('Error syncing pending relations for user on login:', err);
       });
@@ -602,7 +677,12 @@ export const verifyOtp = async (req: Request, res: Response) => {
     });
   }
 
-  return res.json({ verified: true, exists: false, message: 'Phone verified, proceed to registration' });
+  return res.json({
+    verified: true,
+    exists: false,
+    message: 'Phone verified, proceed to registration',
+    phoneVerificationToken: signPhoneVerificationToken(canonicalPhone(normalized)),
+  });
 };
 
 /**

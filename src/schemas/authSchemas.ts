@@ -76,6 +76,9 @@ export const registerSchema = {
     .object({
       phone: phoneField,
       secondaryPhone: optionalSecondaryPhone,
+      // Issued by /auth/verify-otp. Required outside development (see registerUser).
+      phoneVerificationToken: z.string().trim().max(2000).optional(),
+      secondaryPhoneVerificationToken: z.string().trim().max(2000).optional(),
       acceptedTermsAndPrivacy: requiredLegalConsent,
       firstName: requiredText(TEXT_LIMITS.name),
       middleName: boundedText(TEXT_LIMITS.name),
