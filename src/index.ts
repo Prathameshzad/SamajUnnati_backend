@@ -34,6 +34,7 @@ import { RabbitMQService } from './services/rabbitmqService';
 import { RedisService } from './services/redisService';
 import { warmRelationTypeRegistry } from './services/relationTypeRegistry';
 import { closeRateLimitRedis } from './middleware/rateLimit';
+import { startReminderScheduler, stopReminderScheduler } from './services/reminderService';
 
 import authRoutes from './routes/authRoutes';
 import userRoutes from './routes/userRoutes';
@@ -234,6 +235,9 @@ server.listen(config.port, () => {
   // Load reference data up front so the first tree request does not pay for it.
   void warmRelationTypeRegistry();
 
+  // Daily birthday / death-anniversary reminders.
+  startReminderScheduler();
+
   if (config.isDevelopment) {
     logger.info('rabbitmq OTP consumer disabled in development');
   } else {
@@ -245,6 +249,7 @@ server.listen(config.port, () => {
 
 registerShutdown(server, [
   { name: 'socket.io', close: () => closeSocket() },
+  { name: 'reminders', close: () => stopReminderScheduler() },
   { name: 'rabbitmq', close: () => RabbitMQService.close() },
   { name: 'redis', close: () => RedisService.quit() },
   { name: 'rate-limit-redis', close: () => closeRateLimitRedis() },

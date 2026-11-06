@@ -50,12 +50,13 @@ export const RELATION_USER_SELECT = {
   photoUrl: true,
   gender: true,
   phone: true,
+        secondaryPhone: true,
   area: true,
   isAlive: true,
   dateOfBirth: true,
   dateOfDeath: true,
   bloodGroup: true,
-  profileCompleted: true,
+  profileCompleted: true, education: true, occupation: true, maritalStatus: true, pincode: true, address: true,
   isRegistered: true,
 } as const;
 
@@ -354,7 +355,7 @@ export const getTree = async (req: AuthRequest, res: Response) => {
         const view = resolveRelationForViewer(registry, rel, userId, lang);
         const isMyRelation = rel.createdById === userId;
         let finalToUser = rel.toUser;
-        if (rel.fromUserId === userId) {
+        if (rel.fromUserId === userId || isMyRelation) {
           finalToUser = resolveNodeForViewer(rel.toUser, rel, userId);
         }
         return {
@@ -1024,8 +1025,24 @@ export const updateRelation = async (req: AuthRequest, res: Response) => {
   const { id } = req.params;
   const {
     targetUserId: bodyTargetUserId,
-    customName, customPhotoUrl, relationTypeCode, phone, isAlive, dateOfBirth, dateOfDeath, bloodGroup,
-    education, occupation, maritalStatus, pincode, address, area
+    customName,
+    customPhotoUrl,
+    relationTypeCode,
+    firstName,
+    lastName,
+    gender,
+    phone,
+    phones,
+    isAlive,
+    dateOfBirth,
+    dateOfDeath,
+    bloodGroup,
+    education,
+    occupation,
+    maritalStatus,
+    pincode,
+    address,
+    area,
   } = req.body;
 
   if (!userId) throw unauthenticated();
@@ -1041,6 +1058,8 @@ export const updateRelation = async (req: AuthRequest, res: Response) => {
         customName: true,
         customPhotoUrl: true,
         relationTypeCode: true,
+        status: true,
+        category: true,
       },
     });
 
@@ -1055,19 +1074,105 @@ export const updateRelation = async (req: AuthRequest, res: Response) => {
       throw forbidden('Not authorized to edit this relation');
     }
 
-    const updateData: any = {
-      customName: customName !== undefined ? customName : relation.customName,
-      customPhotoUrl: customPhotoUrl !== undefined ? customPhotoUrl : relation.customPhotoUrl
-    };
+    // Resolve which user in the relation is the target being edited
+    let resolvedTargetUserId = bodyTargetUserId;
+    if (!resolvedTargetUserId) {
+      if (relation.fromUserId === userId) {
+        resolvedTargetUserId = relation.toUserId;
+      } else if (relation.toUserId === userId) {
+        resolvedTargetUserId = relation.fromUserId;
+      } else {
+        resolvedTargetUserId = relation.createdById === userId ? relation.toUserId : relation.fromUserId;
+      }
+    }
+
+    // Validate authorization: only write to a user who is actually a party of this relation
+    if (resolvedTargetUserId) {
+      const counterpartyIds = new Set(
+        [relation.fromUserId, relation.toUserId, relation.createdById].filter(
+          (value): value is string => typeof value === 'string'
+        )
+      );
+
+      if (!counterpartyIds.has(resolvedTargetUserId)) {
+        log.warn(
+          { userId, resolvedTargetUserId, relationId: id },
+          'rejected profile write to a user outside this relation'
+        );
+        throw forbidden('Cannot modify a user who is not part of this relation');
+      }
+    }
+
+    const targetUser = resolvedTargetUserId
+      ? await prisma.user.findUnique({
+          where: { id: resolvedTargetUserId },
+          select: { id: true, isRegistered: true, profileCompleted: true, phone: true, secondaryPhone: true },
+        })
+      : null;
+
+    // Build customName from firstName/lastName if customName not explicitly passed
+    let finalCustomName = customName;
+    if (finalCustomName === undefined && (firstName !== undefined || lastName !== undefined)) {
+      finalCustomName = `${firstName || ''} ${lastName || ''}`.trim() || undefined;
+    }
+
+    const updateData: any = {};
+    if (finalCustomName !== undefined) updateData.customName = finalCustomName;
+    if (customPhotoUrl !== undefined) updateData.customPhotoUrl = customPhotoUrl;
+    if (relationTypeCode !== undefined) updateData.relationTypeCode = relationTypeCode;
+
+    // Handle phone updates or reconnecting to a real user with this phone
+    if (phone !== undefined || phones !== undefined) {
+      const cleanPhones = normalizeRelativePhones({ phone, phones });
+      if (targetUser && !targetUser.isRegistered) {
+        if (cleanPhones.length > 0) {
+          const matchedUser = await findUserByAnyPhone(cleanPhones);
+          if (matchedUser && matchedUser.id !== targetUser.id) {
+            // Re-point the relation to the existing user matching this phone
+            if (relation.toUserId === targetUser.id) {
+              updateData.toUserId = matchedUser.id;
+              resolvedTargetUserId = matchedUser.id;
+            } else if (relation.fromUserId === targetUser.id) {
+              updateData.fromUserId = matchedUser.id;
+              resolvedTargetUserId = matchedUser.id;
+            }
+          }
+        }
+      }
+    }
 
     const updated = await prisma.relation.update({
       where: { id },
-      data: updateData
+      data: updateData,
     });
 
-    // Update target relative user's profile fields if specified
+    // Update target relative user's profile fields
     const targetUserData: any = {};
     if (customPhotoUrl !== undefined) targetUserData.photoUrl = customPhotoUrl ? String(customPhotoUrl).trim() : null;
+    if (firstName !== undefined) targetUserData.firstName = firstName ? String(firstName).trim() : null;
+    if (lastName !== undefined) targetUserData.lastName = lastName ? String(lastName).trim() : null;
+    if (gender !== undefined) targetUserData.gender = normalizeGender(gender);
+
+    // If firstName was not provided, but customName was, populate firstName and lastName on placeholder users
+    if (targetUserData.firstName === undefined && finalCustomName && targetUser && !targetUser.isRegistered) {
+      const parts = String(finalCustomName).trim().split(/\s+/);
+      if (parts.length > 0) {
+        targetUserData.firstName = parts[0];
+        targetUserData.lastName = parts.slice(1).join(' ') || null;
+      }
+    }
+
+    // Update phone fields on target placeholder user
+    if ((phone !== undefined || phones !== undefined) && targetUser && !targetUser.isRegistered) {
+      const cleanPhones = normalizeRelativePhones({ phone, phones });
+      if (cleanPhones.length > 0) {
+        Object.assign(targetUserData, placeholderPhoneFields(cleanPhones));
+      } else {
+        targetUserData.phone = null;
+        targetUserData.secondaryPhone = null;
+      }
+    }
+
     if (isAlive !== undefined) {
       const aliveBool = Boolean(isAlive);
       targetUserData.isAlive = aliveBool;
@@ -1090,6 +1195,7 @@ export const updateRelation = async (req: AuthRequest, res: Response) => {
         targetUserData.bloodGroup = bloodGroup ? String(bloodGroup).trim() : null;
       }
     }
+
     if (dateOfBirth !== undefined) {
       if (dateOfBirth) {
         const d = new Date(dateOfBirth);
@@ -1098,6 +1204,7 @@ export const updateRelation = async (req: AuthRequest, res: Response) => {
         targetUserData.dateOfBirth = null;
       }
     }
+
     if (education !== undefined) targetUserData.education = education ? String(education).trim() : null;
     if (occupation !== undefined) targetUserData.occupation = occupation ? String(occupation).trim() : null;
     if (maritalStatus !== undefined) targetUserData.maritalStatus = maritalStatus ? String(maritalStatus).trim() : null;
@@ -1105,56 +1212,27 @@ export const updateRelation = async (req: AuthRequest, res: Response) => {
     if (address !== undefined) targetUserData.address = address ? String(address).trim() : null;
     if (area !== undefined) targetUserData.area = area ? String(area).trim() : null;
 
-    let resolvedTargetUserId = bodyTargetUserId;
-    if (!resolvedTargetUserId) {
-      if (relation.fromUserId === userId) {
-        resolvedTargetUserId = relation.toUserId;
-      } else if (relation.toUserId === userId) {
-        resolvedTargetUserId = relation.fromUserId;
-      } else {
-        resolvedTargetUserId = relation.createdById === userId ? relation.toUserId : relation.fromUserId;
-      }
-    }
-
-    if (Object.keys(targetUserData).length > 0) {
-      /**
-       * The four `console.log` calls that were here ran on every single call and
-       * serialised `targetUserData` — which contains address, pincode, date of
-       * birth and blood group — straight into stdout. That is PII in plaintext
-       * logs on a hot write path. Replaced with a debug-level record of the field
-       * *names* only, which is level-gated off in production.
-       */
-      log.debug(
-        { fields: Object.keys(targetUserData), relationId: id },
-        'updating related user profile'
-      );
-
-      if (resolvedTargetUserId) {
-        // AUTHORIZATION: only write to a user who is actually the counterparty of
-        // this relation. `targetUserId` arrives in the request body, and the
-        // original code passed it to `prisma.user.update` unchecked whenever it
-        // was present — so any participant of any relation could overwrite an
-        // arbitrary user's profile fields by supplying their ID.
-        const counterpartyIds = new Set(
-          [relation.fromUserId, relation.toUserId, relation.createdById].filter(
-            (value): value is string => typeof value === 'string'
-          )
-        );
-
-        if (!counterpartyIds.has(resolvedTargetUserId)) {
-          log.warn(
-            { userId, resolvedTargetUserId, relationId: id },
-            'rejected profile write to a user outside this relation'
-          );
-          throw forbidden('Cannot modify a user who is not part of this relation');
+    if (Object.keys(targetUserData).length > 0 && resolvedTargetUserId) {
+      // If target user is a registered member and the relation is confirmed, don't overwrite their private personal info
+      if (targetUser && targetUser.isRegistered && relation.status === 'CONFIRMED') {
+        const restrictedData: any = {};
+        if (targetUserData.photoUrl !== undefined) restrictedData.photoUrl = targetUserData.photoUrl;
+        if (Object.keys(restrictedData).length > 0) {
+          await prisma.user.update({
+            where: { id: resolvedTargetUserId },
+            data: restrictedData,
+          });
         }
+      } else {
+        log.debug(
+          { fields: Object.keys(targetUserData), relationId: id, targetUserId: resolvedTargetUserId },
+          'updating related user profile'
+        );
 
         await prisma.user.update({
           where: { id: resolvedTargetUserId },
-          data: targetUserData
+          data: targetUserData,
         });
-      } else {
-        log.warn({ relationId: id }, 'no target user resolved; profile not updated');
       }
     }
 
@@ -1223,7 +1301,7 @@ export const loadFullTree = async (
           gender: true,
           isAlive: true,
           phone: true,
-          profileCompleted: true,
+          profileCompleted: true, education: true, occupation: true, maritalStatus: true, pincode: true, address: true,
           isRegistered: true,
         }
       });

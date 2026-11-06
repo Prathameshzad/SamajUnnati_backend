@@ -1521,6 +1521,12 @@ export function getCastesForReligion(religion: string | undefined | null): Array
     value: caste,
   }));
 
+  // For Hindu, the community's own caste (SSK) is pinned to the very top of the list.
+  if (key === 'Hindu') {
+    const isSsk = (c: { value: string }) => c.value.trim().toUpperCase().startsWith('SSK');
+    list.splice(0, list.length, ...list.filter(isSsk), ...list.filter((c) => !isSsk(c)));
+  }
+
   list.push({ label: 'Other', value: 'Other' });
   return list;
 }

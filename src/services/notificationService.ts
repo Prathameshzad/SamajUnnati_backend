@@ -103,6 +103,8 @@ const POLICY: Record<
     channel: PUSH_CHANNELS.relations,
     route: '/notifications',
   },
+  BIRTHDAY_REMINDER: { push: true, channel: PUSH_CHANNELS.social, route: '/notifications' },
+  DEATH_ANNIVERSARY: { push: true, channel: PUSH_CHANNELS.social, route: '/notifications' },
   POST_LIKE: { push: false, channel: PUSH_CHANNELS.social, route: '/post-detail' },
   POST_COMMENT: { push: false, channel: PUSH_CHANNELS.social, route: '/post-detail' },
   POST_SHARE: { push: false, channel: PUSH_CHANNELS.social, route: '/post-detail' },
@@ -115,6 +117,8 @@ export interface CreateNotificationInput {
   message: string;
   relationId?: string | null;
   postId?: string | null;
+  /** Who the notification is about, for once-per-day dedupe of scheduled reminders. */
+  subjectUserId?: string | null;
   /** Avatar to show in the tray entry. */
   imageUrl?: string | null;
   /**
@@ -135,7 +139,7 @@ export interface CreateNotificationInput {
 export async function createNotification(
   input: CreateNotificationInput
 ): Promise<{ id: string } | null> {
-  const { userId, type, title, message, relationId, postId, imageUrl } = input;
+  const { userId, type, title, message, relationId, postId, subjectUserId, imageUrl } = input;
 
   try {
     const notification = await prisma.notification.create({
@@ -146,6 +150,7 @@ export async function createNotification(
         message,
         relationId: relationId ?? null,
         postId: postId ?? null,
+        subjectUserId: subjectUserId ?? null,
       },
       include: NOTIFICATION_RELATION_INCLUDE,
     });
@@ -177,7 +182,8 @@ export async function createNotification(
         },
         // One pending entry per notification type, so ten relation requests
         // arriving overnight collapse into one tray row rather than ten.
-        collapseKey: `notif:${type}`,
+        // Per-subject for reminders, so two birthdays on one day both reach the tray.
+        collapseKey: subjectUserId ? `notif:${type}:${subjectUserId}` : `notif:${type}`,
       }).catch((err) => log.warn({ err, userId, type }, 'push dispatch failed'));
     }
 

@@ -87,6 +87,7 @@ export const getFriendTree = async (req: AuthRequest, res: Response) => {
       gender: true,
       isAlive: true,
       phone: true,
+      secondaryPhone: true,
       profileCompleted: true,
       isRegistered: true,
     }
@@ -126,32 +127,8 @@ export const getFriendTree = async (req: AuthRequest, res: Response) => {
       createdById: true,
       createdAt: true,
       updatedAt: true,
-      fromUser: {
-        select: {
-          id: true,
-          phone: true,
-          firstName: true,
-          lastName: true,
-          photoUrl: true,
-          gender: true,
-          isAlive: true,
-          profileCompleted: true,
-          isRegistered: true,
-        }
-      },
-      toUser: {
-        select: {
-          id: true,
-          phone: true,
-          firstName: true,
-          lastName: true,
-          photoUrl: true,
-          gender: true,
-          isAlive: true,
-          profileCompleted: true,
-          isRegistered: true,
-        }
-      },
+      fromUser: { select: RELATION_USER_SELECT },
+      toUser: { select: RELATION_USER_SELECT },
     }
   });
 

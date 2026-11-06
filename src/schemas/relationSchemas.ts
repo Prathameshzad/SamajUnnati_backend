@@ -133,7 +133,7 @@ export const updateRelationSchema = {
       targetUserId: uuidString.optional(),
       customName: boundedText(TEXT_LIMITS.name),
       customPhotoUrl: photoUrlField,
-      relationTypeCode: relationTypeCode.optional(),
+      relationTypeCode: relationTypeCode.optional(), firstName: boundedText(TEXT_LIMITS.name), lastName: boundedText(TEXT_LIMITS.name), gender: z.enum(['MALE', 'FEMALE', 'male', 'female', 'OTHER']).optional(), phones: z.array(phoneField).max(2).optional(),
       phone: phoneField.optional(),
       isAlive: isAliveField,
       dateOfBirth: dateStringField,

@@ -178,11 +178,14 @@ model Notification {
   createdAt  DateTime          @default(now())
   readAt     DateTime?
   postId     String?
+  /// The person a BIRTHDAY_REMINDER / DEATH_ANNIVERSARY is about; lets the daily job send each once.
+  subjectUserId String?
   post       Post?             @relation(fields: [postId], references: [id])
   relation   Relation?         @relation(fields: [relationId], references: [id])
   user       User              @relation(fields: [userId], references: [id])
 
   @@index([userId, state, createdAt])
+  @@index([subjectUserId, type, createdAt])
   @@index([relationId])
   @@index([postId])
 }
@@ -773,6 +776,8 @@ enum NotificationType {
   FOLLOW_REQUEST
   FOLLOW_ACCEPTED
   MATRIMONY_PROFILE_APPROVAL
+  BIRTHDAY_REMINDER
+  DEATH_ANNIVERSARY
 }
 
 enum NotificationState {
