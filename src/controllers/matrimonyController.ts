@@ -417,6 +417,20 @@ export class MatrimonyController {
     });
   }
 
+  /**
+   * `Relation.relationTypeCode` is a foreign key, and this type is not part of the
+   * seeded family/friend taxonomy, so without this every create fails with
+   * "Referenced record does not exist". It has no tree level, so it never appears
+   * in the tree's add-relative options.
+   */
+  private async ensureManagerRelationType() {
+    await prisma.relationType.upsert({
+      where: { code: 'MATRIMONY_MANAGER' },
+      update: {},
+      create: { code: 'MATRIMONY_MANAGER', category: 'MATRIMONY' },
+    });
+  }
+
   async requestManagedProfileApproval(req: AuthRequest, res: Response) {
     const parentUserId = req.user?.id;
     if (!parentUserId) throw unauthenticated();
@@ -438,6 +452,8 @@ export class MatrimonyController {
     if (existing) {
       throw badRequest('Approval request already sent');
     }
+
+    await this.ensureManagerRelationType();
 
     const relation = await prisma.relation.create({
       data: {
@@ -480,6 +496,8 @@ export class MatrimonyController {
       where: { phone: normalized },
     });
 
+    const normalizedGender = String(gender ?? '').toUpperCase();
+
     if (!childUser) {
       // Create User as placeholder
       childUser = await prisma.user.create({
@@ -487,7 +505,9 @@ export class MatrimonyController {
           phone: normalized,
           firstName: String(firstName).trim(),
           lastName: lastName ? String(lastName).trim() : null,
-          gender: gender || null,
+          // Clients send display values ('Male', 'Other'). The enum only has MALE and
+          // FEMALE, and anything else used to fail the create with a 500.
+          gender: normalizedGender === 'MALE' || normalizedGender === 'FEMALE' ? normalizedGender : null,
           isRegistered: false,
         }
       });
@@ -503,6 +523,7 @@ export class MatrimonyController {
     });
 
     if (!existingRelation) {
+      await this.ensureManagerRelationType();
       // Create a confirmed relation indicating parent manages them
       await prisma.relation.create({
         data: {

@@ -1,48 +1,19 @@
-// src/controllers/adminController.ts
-import crypto from 'crypto';
+// src/controllers/integrationController.ts
+// Read-only reporting for the Ads Management panel (mounted at /api/integration,
+// authenticated by INTEGRATION_API_KEY — see middleware/integrationAuth.ts).
 import type { Request, Response } from 'express';
 import type { Prisma } from '@prisma/client';
 import prisma from '../lib/prisma';
-import { config } from '../config/env';
-import { signAdminToken } from '../lib/adminJwt';
 import { getOnlineUserIds, isOnline } from '../lib/socket';
-import { unauthenticated, notFound, badRequest } from '../lib/errors';
-import { createLogger } from '../lib/logger';
-import type { AdminRequest } from '../middleware/adminAuth';
+import { notFound, badRequest } from '../lib/errors';
 import { loadFullTree } from './relationController';
 import { getRelationConfig } from './relationTypeController';
-
-const log = createLogger('admin');
-
-/** Hash first so both buffers are equal length, then compare in constant time. */
-const safeEqual = (a: string, b: string): boolean => {
-  const ha = crypto.createHash('sha256').update(a).digest();
-  const hb = crypto.createHash('sha256').update(b).digest();
-  return crypto.timingSafeEqual(ha, hb);
-};
-
-export const adminLogin = async (req: Request, res: Response) => {
-  const { username, password } = req.body as { username: string; password: string };
-
-  // Evaluate both so timing does not reveal which half was wrong.
-  const userOk = safeEqual(username, config.admin.username ?? '');
-  const passOk = safeEqual(password, config.admin.password ?? '');
-  if (!userOk || !passOk) {
-    log.warn({ ip: req.ip }, 'admin login failed');
-    throw unauthenticated('Invalid username or password');
-  }
-
-  log.info({ ip: req.ip }, 'admin login succeeded');
-  return res.json({ token: signAdminToken(config.admin.username!), username: config.admin.username });
-};
-
-export const adminMe = (req: AdminRequest, res: Response) => res.json({ username: req.admin!.username });
 
 const notDeleted: Prisma.UserWhereInput = { deletedAt: null };
 /** Someone who actually signed up (as opposed to a relative added to a tree by another user). */
 const registered: Prisma.UserWhereInput = { deletedAt: null, isRegistered: true };
 
-export const adminStats = async (_req: Request, res: Response) => {
+export const reportStats = async (_req: Request, res: Response) => {
   const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
   const [totalUsers, registeredUsers, newLast7Days] = await Promise.all([
     prisma.user.count({ where: notDeleted }),
@@ -70,7 +41,7 @@ const USER_LIST_SELECT = {
   createdAt: true,
 } as const;
 
-export const adminListUsers = async (req: Request, res: Response) => {
+export const reportListUsers = async (req: Request, res: Response) => {
   const { search, page, limit, online, status } = req.query as unknown as {
     search?: string;
     page: number;
@@ -110,7 +81,7 @@ export const adminListUsers = async (req: Request, res: Response) => {
 };
 
 /** A user's family tree, built exactly as that user would see it in the app. */
-export const adminUserTree = async (req: Request, res: Response) => {
+export const reportUserTree = async (req: Request, res: Response) => {
   const { id } = req.params as { id: string };
   const { depth, lang } = req.query as unknown as { depth: number; lang?: string };
 
@@ -132,9 +103,9 @@ export const adminUserTree = async (req: Request, res: Response) => {
 };
 
 /** Relation metadata the layout engine needs; identical to the app's /relation-types/config. */
-export const adminRelationConfig = (req: Request, res: Response) => getRelationConfig(req, res);
+export const reportRelationConfig = (req: Request, res: Response) => getRelationConfig(req, res);
 
-export const adminDeletedUsers = async (req: Request, res: Response) => {
+export const reportDeletedUsers = async (req: Request, res: Response) => {
   const { search, page, limit } = req.query as unknown as { search?: string; page: number; limit: number };
 
   const where: Prisma.DeletedUserWhereInput = {};
@@ -207,7 +178,7 @@ async function installsBetween(from: Date, to: Date): Promise<Map<string, number
   return new Map(rows.map((r) => [r.day, r.count]));
 }
 
-export const adminOverview = async (req: Request, res: Response) => {
+export const reportOverview = async (req: Request, res: Response) => {
   const q = req.query as unknown as { range: 'today' | '7d' | '30d' | 'custom'; from?: string; to?: string };
 
   const today = istDateString(new Date());
@@ -308,7 +279,7 @@ const USER_DETAIL_SELECT = {
   updatedAt: true,
 } as const;
 
-export const adminUserDetails = async (req: Request, res: Response) => {
+export const reportUserDetails = async (req: Request, res: Response) => {
   const { id } = req.params as { id: string };
   const user = await prisma.user.findFirst({ where: { id, ...notDeleted }, select: USER_DETAIL_SELECT });
   if (!user) throw notFound('User not found');

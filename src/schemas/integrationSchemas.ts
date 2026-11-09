@@ -1,17 +1,8 @@
-// src/schemas/adminSchemas.ts
+// src/schemas/integrationSchemas.ts
 import { z } from 'zod';
 import { uuidParam } from './common';
 
-export const adminLoginSchema = {
-  body: z
-    .object({
-      username: z.string().min(1).max(128),
-      password: z.string().min(1).max(256),
-    })
-    .strip(),
-};
-
-export const adminListUsersSchema = {
+export const reportListUsersSchema = {
   query: z
     .object({
       search: z.string().trim().max(100).optional(),
@@ -24,7 +15,7 @@ export const adminListUsersSchema = {
     .strip(),
 };
 
-export const adminUserTreeSchema = {
+export const reportUserTreeSchema = {
   params: uuidParam('id'),
   query: z
     .object({
@@ -34,13 +25,13 @@ export const adminUserTreeSchema = {
     .strip(),
 };
 
-export const adminRelationConfigSchema = {
+export const reportRelationConfigSchema = {
   query: z.object({ lang: z.string().trim().min(2).max(10).optional() }).strip(),
 };
 
 const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'must be YYYY-MM-DD');
 
-export const adminOverviewSchema = {
+export const reportOverviewSchema = {
   query: z
     .object({
       range: z.enum(['today', '7d', '30d', 'custom']).default('7d'),
@@ -53,7 +44,7 @@ export const adminOverviewSchema = {
     }),
 };
 
-export const adminDeletedUsersSchema = {
+export const reportDeletedUsersSchema = {
   query: z
     .object({
       search: z.string().trim().max(100).optional(),
@@ -63,4 +54,4 @@ export const adminDeletedUsersSchema = {
     .strip(),
 };
 
-export const adminUserDetailsSchema = { params: uuidParam('id') };
+export const reportUserDetailsSchema = { params: uuidParam('id') };

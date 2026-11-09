@@ -113,13 +113,16 @@ const schema = z.object({
   ADMIN_USER_IDS: z.string().optional(),
 
   /**
-   * Admin dashboard (/api/admin) credentials. Separate from app users: the admin
-   * signs in with this username/password and receives a token that is only valid
-   * on /api/admin. Leave both empty to disable the admin API entirely.
+   * Shared secret for the reporting API (/api/integration) used by the Ads
+   * Management panel. Sent as `Authorization: Bearer <key>` (or `X-Api-Key`).
+   * Leave empty to disable the integration API entirely.
    */
-  ADMIN_USERNAME: z.string().optional(),
-  ADMIN_PASSWORD: z.string().optional(),
-  ADMIN_TOKEN_EXPIRES_IN: z.string().default('12h'),
+  INTEGRATION_API_KEY: z.string().optional(),
+  /**
+   * Browser origins allowed to call /api/integration directly (comma-separated).
+   * The Ads Management backend calls it server-to-server, so this can stay empty.
+   */
+  INTEGRATION_ALLOWED_ORIGINS: z.string().optional(),
 
   /** Number of proxy hops to trust for client IP resolution (rate limiting correctness). */
   TRUST_PROXY_HOPS: intFromString(0, 0, 10),
@@ -257,13 +260,9 @@ if (isProduction) {
   }
 }
 
-const adminUsername = raw.ADMIN_USERNAME?.trim() || undefined;
-const adminPassword = raw.ADMIN_PASSWORD || undefined;
-if (Boolean(adminUsername) !== Boolean(adminPassword)) {
-  fatal.push('ADMIN_USERNAME and ADMIN_PASSWORD must be set together (or both left empty).');
-}
-if (isProduction && adminPassword && adminPassword.length < 12) {
-  fatal.push('ADMIN_PASSWORD must be at least 12 characters in production.');
+const integrationApiKey = raw.INTEGRATION_API_KEY?.trim() || undefined;
+if (integrationApiKey && integrationApiKey.length < 32) {
+  fatal.push('INTEGRATION_API_KEY must be at least 32 characters (e.g. openssl rand -hex 32).');
 }
 
 if (fatal.length > 0) {
@@ -337,13 +336,9 @@ export const config = {
 
   adminUserIds: new Set(csv(raw.ADMIN_USER_IDS)),
 
-  admin: {
-    enabled: Boolean(adminUsername && adminPassword),
-    username: adminUsername,
-    password: adminPassword,
-    tokenExpiresIn: raw.ADMIN_TOKEN_EXPIRES_IN,
-    /** Audience stamped on admin tokens so they can never pass as app-user tokens. */
-    audience: `${raw.JWT_AUDIENCE}-admin`,
+  integration: {
+    apiKey: integrationApiKey,
+    allowedOrigins: csv(raw.INTEGRATION_ALLOWED_ORIGINS),
   },
 
   http: {

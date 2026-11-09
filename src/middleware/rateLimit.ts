@@ -246,12 +246,3 @@ export const heavyReadLimiter = build({
   message: 'Too many tree requests. Please slow down.',
 });
 
-/** Admin password login: only failures count, so brute force is capped per IP. */
-export const adminLoginLimiter = build({
-  name: 'admin-login',
-  windowMs: 15 * 60 * 1000,
-  limit: 10,
-  keyGenerator: (req) => `ip:${ipKey(req)}`,
-  skipSuccessfulRequests: true,
-  message: 'Too many failed admin login attempts. Please try again later.',
-});
