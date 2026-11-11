@@ -10,6 +10,7 @@ import {
   getCastesForReligion,
 } from '../constants/religionCasteData';
 import { COMMON_HOBBIES, COMMON_INTERESTS } from '../constants/matrimonyData';
+import { getAppVersionData, compareVersions } from '../constants/appVersionData';
 
 /**
  * GET /api/config/gamification
@@ -96,11 +97,30 @@ export const getMatrimonyConfig = (_req: Request, res: Response): void => {
  * Serves app version metadata (latest version, minimum supported version,
  * force-update flag, store download URLs, and release notes) to mobile clients.
  */
-export const getAppVersionConfig = (_req: Request, res: Response): void => {
-  res.set('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { getAppVersionData } = require('../constants/appVersionData');
-  res.json(getAppVersionData());
+export const getAppVersionConfig = (req: Request, res: Response): void => {
+  // Short cache so a change to APP_* env vars reaches clients quickly. The
+  // response varies by ?currentVersion, which is part of the cache key (URL).
+  res.set('Cache-Control', 'public, max-age=60, stale-while-revalidate=120');
+
+  const data = getAppVersionData();
+  const raw = typeof req.query.currentVersion === 'string' ? req.query.currentVersion.trim() : '';
+  const currentVersion = /^\d+(\.\d+){0,3}$/.test(raw) ? raw : '';
+
+  if (!currentVersion) {
+    // Older clients that don't send their version get the raw config.
+    res.json(data);
+    return;
+  }
+
+  const isBelowLatest = compareVersions(currentVersion, data.latestVersion) < 0;
+  const isBelowMin = compareVersions(currentVersion, data.minSupportedVersion) < 0;
+
+  res.json({
+    ...data,
+    // A user who already has latestVersion (or newer) is never forced to update.
+    forceUpdate: isBelowLatest && (data.forceUpdate || isBelowMin),
+    updateAvailable: isBelowLatest,
+  });
 };
 
 

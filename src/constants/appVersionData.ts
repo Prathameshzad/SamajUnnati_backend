@@ -11,6 +11,18 @@ export interface AppVersionConfig {
   releaseNotes: string[];
 }
 
+/** Compare dotted version strings: -1 if v1 < v2, 0 if equal, 1 if v1 > v2. */
+export function compareVersions(v1: string, v2: string): number {
+  const p1 = (v1 || '0').split('.').map((n) => parseInt(n, 10) || 0);
+  const p2 = (v2 || '0').split('.').map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(p1.length, p2.length); i++) {
+    const a = p1[i] ?? 0;
+    const b = p2[i] ?? 0;
+    if (a !== b) return a > b ? 1 : -1;
+  }
+  return 0;
+}
+
 export const getAppVersionData = (): AppVersionConfig => {
   return {
     latestVersion: process.env.APP_LATEST_VERSION || '2.0.8',
