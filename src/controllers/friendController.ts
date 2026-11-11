@@ -14,6 +14,7 @@ import {
 import { getRelationTypeRegistry, type RelationTypeRegistry } from '../services/relationTypeRegistry';
 import { badRequest, forbidden, notFound, unauthenticated } from '../lib/errors';
 import { createLogger } from '../lib/logger';
+import { resolveBirthday } from '../utils/birthday';
 import { RELATION_USER_SELECT, assertSourceNodeOwned } from './relationController';
 import {
   findUserByAnyPhone,
@@ -730,11 +731,9 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
 
   const isPersonAlive = isAlive !== undefined ? (String(isAlive) === 'true') : true;
 
-  let parsedDob: Date | null = null;
-  if (dateOfBirth) {
-    const d = new Date(dateOfBirth);
-    if (!isNaN(d.getTime())) parsedDob = d;
-  }
+  // Day + month without a year is common; see utils/birthday.
+  const birthday = resolveBirthday(req.body);
+  const parsedDob: Date | null = birthday?.dateOfBirth ?? null;
 
   let parsedDateOfDeath: Date | null = null;
   if (!isPersonAlive && dateOfDeath) {
@@ -772,6 +771,8 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
         lastName: lastName || null,
         gender: normalizeGender(gender),
         dateOfBirth: parsedDob,
+        birthDay: birthday?.birthDay ?? null,
+        birthMonth: birthday?.birthMonth ?? null,
         dateOfDeath: !isPersonAlive ? parsedDateOfDeath : null,
         bloodGroup: isPersonAlive ? cleanBloodGroup : null,
         education: education ? String(education).trim() : null,

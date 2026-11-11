@@ -31,6 +31,7 @@ import {
 } from '../services/relativePhoneService';
 import { badRequest, forbidden, notFound, unauthenticated } from '../lib/errors';
 import { createLogger } from '../lib/logger';
+import { resolveBirthday } from '../utils/birthday';
 
 const log = createLogger('relations');
 
@@ -54,6 +55,8 @@ export const RELATION_USER_SELECT = {
   area: true,
   isAlive: true,
   dateOfBirth: true,
+  birthDay: true,
+  birthMonth: true,
   dateOfDeath: true,
   bloodGroup: true,
   profileCompleted: true, education: true, occupation: true, maritalStatus: true, pincode: true, address: true,
@@ -231,6 +234,8 @@ export const listRelations = async (req: AuthRequest, res: Response) => {
         area: logicalFromUser.area,
         isAlive: logicalFromUser.isAlive,
         dateOfBirth: logicalFromUser.dateOfBirth,
+        birthDay: logicalFromUser.birthDay,
+        birthMonth: logicalFromUser.birthMonth,
         dateOfDeath: logicalFromUser.dateOfDeath,
         bloodGroup: logicalFromUser.bloodGroup,
         profileCompleted: logicalFromUser.profileCompleted,
@@ -246,6 +251,8 @@ export const listRelations = async (req: AuthRequest, res: Response) => {
         area: finalToUser.area,
         isAlive: finalToUser.isAlive,
         dateOfBirth: finalToUser.dateOfBirth,
+        birthDay: finalToUser.birthDay,
+        birthMonth: finalToUser.birthMonth,
         dateOfDeath: finalToUser.dateOfDeath,
         bloodGroup: finalToUser.bloodGroup,
         profileCompleted: finalToUser.profileCompleted,
@@ -292,6 +299,8 @@ export const getTree = async (req: AuthRequest, res: Response) => {
         area: true,
         isAlive: true,
         dateOfBirth: true,
+        birthDay: true,
+        birthMonth: true,
         dateOfDeath: true,
         bloodGroup: true,
         education: true,
@@ -516,11 +525,9 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
 
   const isPersonAlive = isAlive !== undefined ? (String(isAlive) === 'true') : true;
 
-  let parsedDob: Date | null = null;
-  if (dateOfBirth) {
-    const d = new Date(dateOfBirth);
-    if (!isNaN(d.getTime())) parsedDob = d;
-  }
+  // Day + month without a year is common for relatives; see utils/birthday.
+  const birthday = resolveBirthday(req.body);
+  const parsedDob: Date | null = birthday?.dateOfBirth ?? null;
 
   let parsedDateOfDeath: Date | null = null;
   if (!isPersonAlive && dateOfDeath) {
@@ -564,6 +571,8 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
           lastName: lastName || null,
           gender: normalizeGender(gender || relType.targetGender),
           dateOfBirth: parsedDob,
+          birthDay: birthday?.birthDay ?? null,
+          birthMonth: birthday?.birthMonth ?? null,
           dateOfDeath: !isPersonAlive ? parsedDateOfDeath : null,
           bloodGroup: isPersonAlive ? cleanBloodGroup : null,
           education: education ? String(education).trim() : null,
@@ -581,7 +590,11 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
     } else {
       // Existing user found (e.g. by phone) -> update profile fields if provided
       const updateFields: any = {};
-      if (parsedDob) updateFields.dateOfBirth = parsedDob;
+      if (birthday && (birthday.dateOfBirth || birthday.birthDay)) {
+        updateFields.dateOfBirth = birthday.dateOfBirth;
+        updateFields.birthDay = birthday.birthDay;
+        updateFields.birthMonth = birthday.birthMonth;
+      }
       if (isAlive !== undefined) {
         updateFields.isAlive = isPersonAlive;
         if (!isPersonAlive) {
@@ -1196,13 +1209,11 @@ export const updateRelation = async (req: AuthRequest, res: Response) => {
       }
     }
 
-    if (dateOfBirth !== undefined) {
-      if (dateOfBirth) {
-        const d = new Date(dateOfBirth);
-        targetUserData.dateOfBirth = !isNaN(d.getTime()) ? d : null;
-      } else {
-        targetUserData.dateOfBirth = null;
-      }
+    const birthday = resolveBirthday(req.body);
+    if (birthday) {
+      targetUserData.dateOfBirth = birthday.dateOfBirth;
+      targetUserData.birthDay = birthday.birthDay;
+      targetUserData.birthMonth = birthday.birthMonth;
     }
 
     if (education !== undefined) targetUserData.education = education ? String(education).trim() : null;

@@ -22,6 +22,8 @@ model User {
   pincode                             String?
   designation                         String?
   dateOfBirth                         DateTime?
+  birthDay                            Int?
+  birthMonth                          Int?
   dateOfDeath                         DateTime?
   createdAt                           DateTime             @default(now())
   updatedAt                           DateTime             @updatedAt
@@ -88,6 +90,8 @@ model User {
   // getGraphChunk filters `worldX BETWEEN ... AND worldY BETWEEN ...` with no
   // index at all previously, forcing a full table scan on every spatial query.
   @@index([worldX, worldY])
+  // Daily birthday reminders look people up by month and day.
+  @@index([birthMonth, birthDay])
 }
 
 model RelationType {
@@ -837,6 +841,8 @@ model DeletedUser {
   pincode           String?
   designation       String?
   dateOfBirth       DateTime?
+  birthDay          Int?
+  birthMonth        Int?
   dateOfDeath       DateTime?
   gender            Gender?
   area              String?

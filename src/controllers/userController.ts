@@ -10,6 +10,7 @@ import { notFound, unauthenticated, badRequest } from '../lib/errors';
 import { OtpService } from '../services/otpService';
 import { signAuthToken } from '../lib/jwt';
 import { createLogger } from '../lib/logger';
+import { resolveBirthday } from '../utils/birthday';
 import { syncPendingRelationsForUser } from '../services/relationReconnectService';
 import {
   claimPlaceholdersForNumber,
@@ -256,6 +257,8 @@ export const updateMe = async (
     }
   }
 
+  const birthday = resolveBirthday(req.body);
+
   const user = await prisma.user.update({
     where: { id: req.user.id },
     data: {
@@ -277,7 +280,8 @@ export const updateMe = async (
       community: community ?? (caste ? caste : undefined),
       caste,
       subcaste,
-      dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : undefined,
+      // A full date, or day + month when the year isn't known (utils/birthday).
+      ...(birthday ?? {}),
       bloodGroup,
       gender:
         typeof gender === 'undefined' ? undefined : normalizedGender,
@@ -585,6 +589,8 @@ export const deleteMyAccount = async (
             lastName: user.lastName || null,
             gender: user.gender,
             dateOfBirth: user.dateOfBirth,
+            birthDay: user.birthDay,
+            birthMonth: user.birthMonth,
             dateOfDeath: user.dateOfDeath,
             isAlive: user.isAlive,
             bloodGroup: user.bloodGroup,
@@ -641,6 +647,8 @@ export const deleteMyAccount = async (
         pincode: user.pincode,
         designation: user.designation,
         dateOfBirth: user.dateOfBirth,
+        birthDay: user.birthDay,
+        birthMonth: user.birthMonth,
         dateOfDeath: user.dateOfDeath,
         gender: user.gender,
         area: user.area,

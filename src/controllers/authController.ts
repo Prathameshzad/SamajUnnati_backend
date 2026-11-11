@@ -9,6 +9,7 @@ import { config, isTestBypassPhone } from '../config/env';
 import { CURRENT_PRIVACY_VERSION, CURRENT_TERMS_VERSION } from '../constants/legal';
 import { syncPendingRelationsForUser, reconnectDeletedUserRelations } from '../services/relationReconnectService';
 import { signPhoneVerificationToken, verifyPhoneVerificationToken } from '../lib/phoneVerificationToken';
+import { resolveBirthday } from '../utils/birthday';
 import {
   canonicalPhone,
   findRegisteredOwner,
@@ -467,7 +468,8 @@ export const registerUser = async (
       community: community ?? caste ?? null,
       caste: caste ?? null,
       subcaste: subcaste ?? null,
-      dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : null,
+      // A full date, or day + month when the year isn't known (utils/birthday).
+      ...(resolveBirthday(req.body) ?? { dateOfBirth: null, birthDay: null, birthMonth: null }),
       gender: normalizeGender(gender),
       appLanguage: appLanguage ?? 'en',
       relationLanguage: relationLanguage ?? 'en',

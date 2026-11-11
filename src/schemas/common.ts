@@ -100,6 +100,18 @@ export const booleanish = z
     return ['true', '1', 'yes'].includes(value.toLowerCase());
   });
 
+/**
+ * Day / month of a birthday whose year is unknown. Accepts numbers or numeric
+ * strings (multipart forms send strings); '' or null clears the stored value.
+ */
+const dayMonthField = (max: number) =>
+  z.preprocess(
+    (value) => (value === '' || value === null ? null : value === undefined ? undefined : Number(value)),
+    z.number().int().min(1).max(max).nullable().optional()
+  );
+export const birthDayField = dayMonthField(31);
+export const birthMonthField = dayMonthField(12);
+
 /** Optional date string that must parse to a real date. */
 export const dateStringField = z
   .string()

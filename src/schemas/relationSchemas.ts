@@ -7,8 +7,7 @@ import {
   boundedText,
   dateStringField,
   uuidString,
-  TEXT_LIMITS,
-} from './common';
+  TEXT_LIMITS, birthDayField, birthMonthField } from './common';
 
 /** RelationType.code is an uppercase snake-case identifier. */
 const relationTypeCode = z
@@ -105,6 +104,9 @@ export const createRelationSchema = {
       customPhotoUrl: photoUrlField,
       isAlive: isAliveField,
       dateOfBirth: dateStringField,
+      // Day and month for a birthday whose year isn't known (see utils/birthday).
+      birthDay: birthDayField,
+      birthMonth: birthMonthField,
       dateOfDeath: dateStringField,
       bloodGroup: boundedText(16),
       education: boundedText(TEXT_LIMITS.shortField),
@@ -137,6 +139,9 @@ export const updateRelationSchema = {
       phone: phoneField.optional(),
       isAlive: isAliveField,
       dateOfBirth: dateStringField,
+      // Day and month for a birthday whose year isn't known (see utils/birthday).
+      birthDay: birthDayField,
+      birthMonth: birthMonthField,
       dateOfDeath: dateStringField,
       bloodGroup: boundedText(16),
       education: boundedText(TEXT_LIMITS.shortField),

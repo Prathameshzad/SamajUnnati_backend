@@ -212,15 +212,22 @@ export const getNotificationSummary = async (req: AuthRequest, res: Response) =>
     select: {
       fromUserId: true,
       toUserId: true,
-      fromUser: { select: { id: true, firstName: true, lastName: true, photoUrl: true, dateOfBirth: true, area: true } },
-      toUser: { select: { id: true, firstName: true, lastName: true, photoUrl: true, dateOfBirth: true, area: true } },
+      fromUser: { select: { id: true, firstName: true, lastName: true, photoUrl: true, dateOfBirth: true, birthDay: true, birthMonth: true, area: true } },
+      toUser: { select: { id: true, firstName: true, lastName: true, photoUrl: true, dateOfBirth: true, birthDay: true, birthMonth: true, area: true } },
     },
     take: 100,
   });
 
-  const today = new Date();
-  const currentMonth = today.getMonth();
-  const currentDate = today.getDate();
+  // Same calendar day as the daily reminder push (India time), not the server's clock:
+  // on a UTC server the card would otherwise show yesterday's birthdays until 5:30 AM IST.
+  const todayParts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: 'numeric', day: 'numeric' })
+      .formatToParts(new Date())
+      .map((p) => [p.type, p.value])
+  );
+  const currentYear = Number(todayParts.year);
+  const currentMonth = Number(todayParts.month) - 1;
+  const currentDate = Number(todayParts.day);
 
   const seenUsers = new Set<string>();
   const todayMilestones: {
@@ -238,15 +245,17 @@ export const getNotificationSummary = async (req: AuthRequest, res: Response) =>
       lastName: string | null;
       photoUrl: string | null;
       dateOfBirth: Date | null;
+      birthDay: number | null;
+      birthMonth: number | null;
       area: string | null;
     } | null;
     if (!relative || seenUsers.has(relative.id) || relative.id === userId) continue;
     seenUsers.add(relative.id);
 
-    if (relative.dateOfBirth) {
-      const dob = new Date(relative.dateOfBirth);
-      if (dob.getMonth() === currentMonth && dob.getDate() === currentDate) {
-        const age = today.getFullYear() - dob.getFullYear();
+    // birthDay/birthMonth exist even when the birth year isn't known; the age needs the full date.
+    if (relative.birthMonth && relative.birthDay) {
+      if (relative.birthMonth - 1 === currentMonth && relative.birthDay === currentDate) {
+        const age = relative.dateOfBirth ? currentYear - new Date(relative.dateOfBirth).getUTCFullYear() : 0;
         todayMilestones.push({
           userId: relative.id,
           name: [relative.firstName, relative.lastName].filter(Boolean).join(' ') || 'Family Member',

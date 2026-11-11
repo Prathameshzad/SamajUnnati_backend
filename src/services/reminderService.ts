@@ -70,9 +70,10 @@ async function findBirthdaySubjects(month: number, day: number, year: number): P
   const leapDayToo = month === 2 && day === 28 && !isLeap(year);
   return prisma.$queryRawUnsafe<Subject[]>(
     `SELECT ${SUBJECT_SELECT} FROM "User"
-     WHERE "deletedAt" IS NULL AND "isAlive" = true AND "dateOfBirth" IS NOT NULL
-       AND ((EXTRACT(MONTH FROM "dateOfBirth") = $1 AND EXTRACT(DAY FROM "dateOfBirth") = $2)
-            ${leapDayToo ? `OR (EXTRACT(MONTH FROM "dateOfBirth") = 2 AND EXTRACT(DAY FROM "dateOfBirth") = 29)` : ''})`,
+     WHERE "deletedAt" IS NULL AND "isAlive" = true
+       -- birthMonth/birthDay are set whether or not the birth year is known.
+       AND (("birthMonth" = $1 AND "birthDay" = $2)
+            ${leapDayToo ? `OR ("birthMonth" = 2 AND "birthDay" = 29)` : ''})`,
     month,
     day
   );

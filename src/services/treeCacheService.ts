@@ -18,7 +18,8 @@ const log = createLogger('tree-cache');
 
 // Rotated whenever the serialized full-tree payload shape changes. This keeps
 // older cached responses (which lack newer fields) from reaching updated clients.
-const FULL_TREE_RESPONSE_SCHEMA = 'v2-registration-state';
+// v3: people carry birthDay/birthMonth (birthdays without a year).
+const FULL_TREE_RESPONSE_SCHEMA = 'v3-birthday-day-month';
 
 export class TreeCacheService {
   private static async fullTreeKey(
