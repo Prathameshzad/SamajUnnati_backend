@@ -27,6 +27,7 @@
  */
 import prisma from '../lib/prisma';
 import { createLogger } from '../lib/logger';
+import regionalRelationLabels from '../constants/relationRegionalLabels.json';
 
 const log = createLogger('relation-types');
 
@@ -52,6 +53,26 @@ export interface RelationTypeRecord {
    * would silently change which label users see.
    */
   translations: RelationTranslationRecord[];
+}
+
+/**
+ * Picks the label for `lang`. When that language is missing, falls back in a
+ * fixed order (English, then Marathi) instead of `translations[0]`: rows come
+ * back from the DB unordered, so the old fallback showed an arbitrary language.
+ */
+export function pickTranslationLabel(
+  translations: { languageCode: string; label: string }[] | null | undefined,
+  lang: string | null | undefined
+): string | undefined {
+  if (!translations || translations.length === 0) return undefined;
+  const requested = (lang || '').toLowerCase();
+  const order = [requested, requested.split('-')[0], 'en', 'mr'];
+  for (const code of order) {
+    if (!code) continue;
+    const match = translations.find((t) => t.languageCode === code && t.label);
+    if (match) return match.label;
+  }
+  return translations[0]?.label;
 }
 
 export class RelationTypeRegistry {
@@ -81,10 +102,7 @@ export class RelationTypeRegistry {
     if (!code) return 'UNKNOWN';
     const record = this.byCode.get(code);
     if (!record || record.translations.length === 0) return code;
-    const match =
-      record.translations.find((translation) => translation.languageCode === lang) ??
-      record.translations[0];
-    return match ? match.label : code;
+    return pickTranslationLabel(record.translations, lang) ?? code;
   }
 
   /**
@@ -349,10 +367,69 @@ export async function ensureEssentialRelationTypes(): Promise<void> {
   }
 }
 
+/**
+ * Fills hi/gu/ta/kn/te relation labels that are missing or were seeded with the
+ * English text (older seeds fell back to English for ~100 relation types).
+ * Only rows that need changing are written, so after the first boot this is a
+ * single read query.
+ */
+export async function backfillRegionalRelationLabels(): Promise<void> {
+  const regional = regionalRelationLabels as Record<string, Record<string, string>>;
+  const languages = Object.keys(regional);
+  const codes = Array.from(new Set(languages.flatMap((lang) => Object.keys(regional[lang]))));
+
+  const [existingTypes, rows] = await Promise.all([
+    prisma.relationType.findMany({ where: { code: { in: codes } }, select: { code: true } }),
+    prisma.relationTranslation.findMany({
+      where: { relationTypeCode: { in: codes }, languageCode: { in: [...languages, 'en'] } },
+      select: { id: true, relationTypeCode: true, languageCode: true, label: true, community: true },
+    }),
+  ]);
+  const knownCodes = new Set(existingTypes.map((t) => t.code));
+
+  const english = new Map<string, string>();
+  for (const row of rows) {
+    if (row.languageCode === 'en' && !row.community) english.set(row.relationTypeCode, row.label);
+  }
+
+  let updated = 0;
+  let created = 0;
+  for (const lang of languages) {
+    for (const [code, label] of Object.entries(regional[lang])) {
+      if (!knownCodes.has(code)) continue;
+      const current = rows.filter((r) => r.relationTypeCode === code && r.languageCode === lang);
+      if (current.length === 0) {
+        await prisma.relationTranslation.create({
+          data: { relationTypeCode: code, languageCode: lang, community: '', label },
+        });
+        created++;
+        continue;
+      }
+      for (const row of current) {
+        const looksUntranslated = !row.label || row.label === english.get(code) || row.label === code;
+        if (looksUntranslated && row.label !== label) {
+          await prisma.relationTranslation.update({ where: { id: row.id }, data: { label } });
+          updated++;
+        }
+      }
+    }
+  }
+
+  if (created || updated) {
+    invalidateRelationTypeRegistry();
+    log.info({ created, updated }, 'backfilled regional relation labels');
+  }
+}
+
 /** Warms the cache at boot so the first request does not pay for the load. */
 export async function warmRelationTypeRegistry(): Promise<void> {
   try {
     await ensureEssentialRelationTypes();
+    try {
+      await backfillRegionalRelationLabels();
+    } catch (err) {
+      log.warn({ err }, 'regional relation label backfill failed');
+    }
     const registry = await getRelationTypeRegistry();
     log.info({ types: registry.size }, 'relation type registry warmed');
   } catch (err) {

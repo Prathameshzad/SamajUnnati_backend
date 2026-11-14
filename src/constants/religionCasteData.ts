@@ -152,6 +152,7 @@ export const RELIGION_TAXONOMY: Record<string, ReligionEntry> = {
       "Brahmin - Vyas",
       "Brahmin - Zalora",
       "Bunt (Shetty)",
+      "Telgu Mannerwarlu Gyatganga Samaj",
       "CKP",
       "Caste no bar",
       "Chambhar",

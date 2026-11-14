@@ -541,4 +541,244 @@ export class MatrimonyController {
 
     return res.json({ status: 'success', user: childUser });
   }
+
+  /* ── Quick registration + waitlist ─────────────────────────────────────── */
+
+  /**
+   * GET /api/matrimony/status
+   *
+   * Tells the app where to send the user: the registration form (with
+   * everything we already know about them pre-filled) or the waitlist screen.
+   */
+  async getStatus(req: AuthRequest, res: Response) {
+    const userId = req.user?.id;
+    if (!userId) throw unauthenticated();
+
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        firstName: true,
+        lastName: true,
+        photoUrl: true,
+        gender: true,
+        dateOfBirth: true,
+        maritalStatus: true,
+        religion: true,
+        caste: true,
+        community: true,
+        education: true,
+        occupation: true,
+        matrimonyProfile: {
+          select: { status: true, waitlistedAt: true, registrationCompletedAt: true },
+        },
+      },
+    });
+    if (!user) throw notFound('User not found');
+
+    const mp = user.matrimonyProfile;
+    const registered = !!mp?.registrationCompletedAt;
+    const waitlist = registered && mp?.status === 'WAITLIST' ? await waitlistInfo(mp.waitlistedAt) : null;
+
+    return res.json({
+      status: 'success',
+      data: {
+        registered,
+        profileStatus: registered ? mp!.status : null,
+        waitlist,
+        prefill: {
+          firstName: user.firstName,
+          lastName: user.lastName,
+          photoUrl: user.photoUrl,
+          gender: user.gender,
+          dateOfBirth: user.dateOfBirth ? user.dateOfBirth.toISOString().slice(0, 10) : null,
+          maritalStatus: user.maritalStatus,
+          religion: user.religion,
+          caste: user.caste,
+          community: user.community,
+          education: user.education,
+          occupation: user.occupation,
+        },
+      },
+    });
+  }
+
+  /**
+   * POST /api/matrimony/register  (body validated by matrimonyRegisterSchema)
+   *
+   * Saves the whole quick-registration form in one transaction, writes the core
+   * facts back to the user's main profile, and puts them on the waitlist.
+   */
+  async register(req: AuthRequest, res: Response) {
+    const userId = req.user?.id;
+    if (!userId) throw unauthenticated();
+    const b = req.body as {
+      gender?: 'MALE' | 'FEMALE';
+      dateOfBirth?: string;
+      maritalStatus: string;
+      religion?: string;
+      caste?: string;
+      community?: string;
+      motherTongue?: string;
+      birthState: string;
+      birthCity: string;
+      birthTaluka?: string;
+      birthDistrict?: string;
+      birthPlaceId?: string;
+      birthLat?: number;
+      birthLng?: number;
+      birthTime?: string;
+      birthTimeUnknown: boolean;
+      height: number;
+      education: string;
+      occupation: string;
+      income?: string;
+      diet?: string;
+      drinking?: string;
+      smoking?: string;
+      familyType?: string;
+      marriageTimeline?: string;
+      hobbies: string[];
+      vibes: string[];
+      bio?: string;
+      photos: string[];
+      partnerAgeMin: number;
+      partnerAgeMax: number;
+      partnerReligion: 'SAME' | 'ANY';
+    };
+
+    // Gender / DOB / religion come from signup unless the client had to ask.
+    const stored = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { gender: true, dateOfBirth: true, religion: true },
+    });
+    if (!stored) throw notFound('User not found');
+
+    const gender = b.gender ?? (stored.gender === 'MALE' || stored.gender === 'FEMALE' ? stored.gender : null);
+    if (!gender) throw badRequest('Please add your gender to continue');
+
+    const dob = b.dateOfBirth ? new Date(`${b.dateOfBirth}T00:00:00.000Z`) : stored.dateOfBirth;
+    if (!dob || Number.isNaN(dob.getTime())) throw badRequest('Please add your date of birth to continue');
+
+    const religion = b.religion ?? stored.religion ?? null;
+
+    // Legal minimum marriage age in India: 21 for men, 18 for women.
+    const age = ageOn(dob, new Date());
+    const minAge = gender === 'MALE' ? 21 : 18;
+    if (age < minAge) throw badRequest(`You must be at least ${minAge} to register for matrimony`);
+    if (age > 100) throw badRequest('Invalid date of birth');
+
+    const profileFields = {
+      photos: b.photos,
+      height: b.height,
+      maritalStatus: b.maritalStatus,
+      religion,
+      caste: b.caste ?? null,
+      community: b.community ?? b.caste ?? null,
+      motherTongue: b.motherTongue ?? null,
+      birthState: b.birthState,
+      birthCity: b.birthCity,
+      birthTaluka: b.birthTaluka ?? null,
+      birthDistrict: b.birthDistrict ?? null,
+      birthPlaceId: b.birthPlaceId ?? null,
+      birthLat: b.birthLat ?? null,
+      birthLng: b.birthLng ?? null,
+      birthPlace: [b.birthCity, b.birthTaluka, b.birthState].filter(Boolean).join(', '),
+      birthTime: b.birthTimeUnknown ? null : b.birthTime ?? null,
+      birthTimeUnknown: b.birthTimeUnknown,
+      education: b.education,
+      occupation: b.occupation,
+      income: b.income ?? null,
+      diet: b.diet ?? null,
+      drinking: b.drinking ?? null,
+      smoking: b.smoking ?? null,
+      familyType: b.familyType ?? null,
+      marriageTimeline: b.marriageTimeline ?? null,
+      hobbies: b.hobbies,
+      vibes: b.vibes,
+      bio: b.bio ?? null,
+      isLookingForMarriage: true,
+    };
+
+    const profile = await prisma.$transaction(async (tx) => {
+      // Keep the main profile in sync with what they just confirmed.
+      await tx.user.update({
+        where: { id: userId },
+        data: {
+          ...(b.gender ? { gender: b.gender } : {}),
+          ...(b.dateOfBirth
+            ? { dateOfBirth: dob, birthDay: dob.getUTCDate(), birthMonth: dob.getUTCMonth() + 1 }
+            : {}),
+          maritalStatus: b.maritalStatus,
+          ...(b.religion ? { religion: b.religion } : {}),
+          ...(b.caste ? { caste: b.caste } : {}),
+          education: b.education,
+          occupation: b.occupation,
+        },
+      });
+
+      const existing = await tx.matrimonyProfile.findUnique({
+        where: { userId },
+        select: { registrationCompletedAt: true },
+      });
+
+      const saved = await tx.matrimonyProfile.upsert({
+        where: { userId },
+        create: {
+          ...profileFields,
+          userId,
+          profileType: 'SELF',
+          status: 'WAITLIST',
+          waitlistedAt: new Date(),
+          registrationCompletedAt: new Date(),
+        },
+        update: {
+          ...profileFields,
+          // Editing an existing registration must not reset the queue position.
+          ...(existing?.registrationCompletedAt ? {} : { registrationCompletedAt: new Date(), waitlistedAt: new Date() }),
+        },
+      });
+
+      const prefData = {
+        ageMin: b.partnerAgeMin,
+        ageMax: b.partnerAgeMax,
+        religion: b.partnerReligion === 'SAME' && religion ? [religion] : [],
+      };
+      await tx.matrimonyPreference.upsert({
+        where: { profileId: saved.id },
+        create: { ...prefData, profileId: saved.id },
+        update: prefData,
+      });
+
+      return saved;
+    });
+
+    log.info({ userId }, 'matrimony quick registration completed');
+
+    const waitlist = profile.status === 'WAITLIST' ? await waitlistInfo(profile.waitlistedAt) : null;
+    return res.json({
+      status: 'success',
+      data: { registered: true, profileStatus: profile.status, waitlist },
+    });
+  }
+}
+
+/** Age in whole years on `at`. */
+function ageOn(dob: Date, at: Date): number {
+  let age = at.getUTCFullYear() - dob.getUTCFullYear();
+  const m = at.getUTCMonth() - dob.getUTCMonth();
+  if (m < 0 || (m === 0 && at.getUTCDate() < dob.getUTCDate())) age--;
+  return age;
+}
+
+/** 1-based queue position and total size of the matrimony waitlist. */
+async function waitlistInfo(waitlistedAt: Date) {
+  const [ahead, total] = await Promise.all([
+    prisma.matrimonyProfile.count({
+      where: { status: 'WAITLIST', registrationCompletedAt: { not: null }, waitlistedAt: { lt: waitlistedAt } },
+    }),
+    prisma.matrimonyProfile.count({
+      where: { status: 'WAITLIST', registrationCompletedAt: { not: null } },
+    }),
+  ]);
+  return { position: ahead + 1, total, joinedAt: waitlistedAt.toISOString() };
 }

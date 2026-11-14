@@ -1,6 +1,8 @@
 import { Response } from 'express';
 import type { PushPlatform } from '@prisma/client';
 import prisma from '../lib/prisma';
+import { pickTranslationLabel } from '../services/relationTypeRegistry';
+import { getUserAppLanguage, localizeNotificationText } from '../services/notificationI18n';
 import { AuthRequest } from '../middleware/authMiddleware';
 import { forbidden, notFound, unauthenticated } from '../lib/errors';
 import {
@@ -94,11 +96,16 @@ export const listNotifications = async (req: AuthRequest, res: Response) => {
     take: limit,
   });
 
-  const notifications = notificationsRaw.map((n) => {
+  // Notification text is stored in English; show it in the app language
+  // (header from the app, else the language saved on the account).
+  const headerLang = req.headers['x-app-language'];
+  const appLang = (typeof headerLang === 'string' && headerLang) || (await getUserAppLanguage(userId));
+
+  const notifications = notificationsRaw.map((raw) => {
+    const n = { ...raw, ...localizeNotificationText(raw.title, raw.message, appLang) };
     if (n.relation) {
       const rt = n.relation.relationType;
-      const trans = rt?.translations.find(t => t.languageCode === lang) || rt?.translations[0];
-      const label = trans ? trans.label : n.relation.relationTypeCode;
+      const label = pickTranslationLabel(rt?.translations, lang) ?? n.relation.relationTypeCode;
 
       // Only apply customName to toUser when the notification recipient themselves
       // created the relation (i.e. THEY typed the custom name for the relative).

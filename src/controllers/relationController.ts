@@ -20,6 +20,7 @@ import {
 import { getUserBadgeData } from '../services/badgeService';
 import {
   getRelationTypeRegistry,
+  pickTranslationLabel,
   type RelationTypeRegistry,
 } from '../services/relationTypeRegistry';
 import { syncPendingRelationsForUser } from '../services/relationReconnectService';
@@ -84,8 +85,7 @@ function normalizeVisualSide(side?: string | null): 'top' | 'bottom' | 'left' | 
  */
 function resolveLabel(relationType: any, lang: string = 'mr') {
   if (!relationType || !relationType.translations) return relationType?.code || 'UNKNOWN';
-  const trans = relationType.translations.find((t: any) => t.languageCode === lang) || relationType.translations[0];
-  return trans ? trans.label : relationType.code;
+  return pickTranslationLabel(relationType.translations, lang) ?? relationType.code;
 }
 
 /**
@@ -147,6 +147,79 @@ function resolveNodeForViewer(nodeUser: any, relation: any, viewerUserId: string
   return nodeUser;
 }
 
+/**
+ * Shapes one relation row for list screens (relations list, profile network and
+ * approved lists). Shared so every list renders the same fields and labels.
+ */
+function serializeListRelation(registry: RelationTypeRegistry, rel: any, userId: string, lang: string) {
+  const view = resolveRelationForViewer(registry, rel, userId, lang);
+  const isMyRelation = rel.createdById === userId;
+
+  // Use createdById as the primary 'from' identifier for the relations list.
+  // This ensures that if Root added KAKA from VADIL's node, both Root and KAKA see Root as the logical sender.
+  const logicalFromUser = (rel as any).User_Relation_createdByIdToUser || rel.fromUser;
+  const logicalFromUserId = rel.createdById || rel.fromUserId;
+
+  let finalToUser = rel.toUser;
+  if (logicalFromUserId === userId) {
+    finalToUser = resolveNodeForViewer(rel.toUser, rel, userId);
+  }
+
+  return {
+    id: rel.id,
+    fromUserId: logicalFromUserId,
+    toUserId: rel.toUserId,
+    status: rel.status,
+    relationTypeCode: rel.relationTypeCode,
+    category: rel.category,
+    customName: isMyRelation ? rel.customName : null,
+    customPhotoUrl: isMyRelation ? rel.customPhotoUrl : null,
+    createdById: rel.createdById,
+    createdAt: rel.createdAt,
+    fromUser: logicalFromUser ? {
+      id: logicalFromUser.id,
+      firstName: logicalFromUser.firstName,
+      lastName: logicalFromUser.lastName,
+      photoUrl: logicalFromUser.photoUrl,
+      gender: logicalFromUser.gender,
+      phone: logicalFromUser.phone,
+      area: logicalFromUser.area,
+      isAlive: logicalFromUser.isAlive,
+      dateOfBirth: logicalFromUser.dateOfBirth,
+      birthDay: logicalFromUser.birthDay,
+      birthMonth: logicalFromUser.birthMonth,
+      dateOfDeath: logicalFromUser.dateOfDeath,
+      bloodGroup: logicalFromUser.bloodGroup,
+      profileCompleted: logicalFromUser.profileCompleted,
+      isRegistered: logicalFromUser.isRegistered,
+      secondaryPhone: logicalFromUser.secondaryPhone,
+      education: logicalFromUser.education,
+      occupation: logicalFromUser.occupation,
+    } : null,
+    toUser: finalToUser ? {
+      id: finalToUser.id,
+      firstName: finalToUser.firstName,
+      lastName: finalToUser.lastName,
+      photoUrl: finalToUser.photoUrl,
+      gender: finalToUser.gender,
+      phone: finalToUser.phone,
+      area: finalToUser.area,
+      isAlive: finalToUser.isAlive,
+      dateOfBirth: finalToUser.dateOfBirth,
+      birthDay: finalToUser.birthDay,
+      birthMonth: finalToUser.birthMonth,
+      dateOfDeath: finalToUser.dateOfDeath,
+      bloodGroup: finalToUser.bloodGroup,
+      profileCompleted: finalToUser.profileCompleted,
+      isRegistered: finalToUser.isRegistered,
+      secondaryPhone: finalToUser.secondaryPhone,
+      education: finalToUser.education,
+      occupation: finalToUser.occupation,
+    } : null,
+    relationType: { label: view.label, code: view.code }
+  };
+}
+
 export const listRelations = async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;
   const lang = (req.query.lang as string) || 'mr';
@@ -199,68 +272,7 @@ export const listRelations = async (req: AuthRequest, res: Response) => {
 
   // No longer `Promise.all(async ...)`: label resolution is synchronous now,
   // so this is a plain map with zero database access.
-  const relations = Array.from(deduped.values()).map(rel => {
-    const view = resolveRelationForViewer(registry, rel, userId, lang);
-    const isMyRelation = rel.createdById === userId;
-
-    // Use createdById as the primary 'from' identifier for the relations list.
-    // This ensures that if Root added KAKA from VADIL's node, both Root and KAKA see Root as the logical sender.
-    const logicalFromUser = (rel as any).User_Relation_createdByIdToUser || rel.fromUser;
-    const logicalFromUserId = rel.createdById || rel.fromUserId;
-
-    let finalToUser = rel.toUser;
-    if (logicalFromUserId === userId) {
-      finalToUser = resolveNodeForViewer(rel.toUser, rel, userId);
-    }
-
-    return {
-      id: rel.id,
-      fromUserId: logicalFromUserId,
-      toUserId: rel.toUserId,
-      status: rel.status,
-      relationTypeCode: rel.relationTypeCode,
-      category: rel.category,
-      customName: isMyRelation ? rel.customName : null,
-      customPhotoUrl: isMyRelation ? rel.customPhotoUrl : null,
-      createdById: rel.createdById,
-      createdAt: rel.createdAt,
-      fromUser: logicalFromUser ? {
-        id: logicalFromUser.id,
-        firstName: logicalFromUser.firstName,
-        lastName: logicalFromUser.lastName,
-        photoUrl: logicalFromUser.photoUrl,
-        gender: logicalFromUser.gender,
-        phone: logicalFromUser.phone,
-        area: logicalFromUser.area,
-        isAlive: logicalFromUser.isAlive,
-        dateOfBirth: logicalFromUser.dateOfBirth,
-        birthDay: logicalFromUser.birthDay,
-        birthMonth: logicalFromUser.birthMonth,
-        dateOfDeath: logicalFromUser.dateOfDeath,
-        bloodGroup: logicalFromUser.bloodGroup,
-        profileCompleted: logicalFromUser.profileCompleted,
-        isRegistered: logicalFromUser.isRegistered,
-      } : null,
-      toUser: finalToUser ? {
-        id: finalToUser.id,
-        firstName: finalToUser.firstName,
-        lastName: finalToUser.lastName,
-        photoUrl: finalToUser.photoUrl,
-        gender: finalToUser.gender,
-        phone: finalToUser.phone,
-        area: finalToUser.area,
-        isAlive: finalToUser.isAlive,
-        dateOfBirth: finalToUser.dateOfBirth,
-        birthDay: finalToUser.birthDay,
-        birthMonth: finalToUser.birthMonth,
-        dateOfDeath: finalToUser.dateOfDeath,
-        bloodGroup: finalToUser.bloodGroup,
-        profileCompleted: finalToUser.profileCompleted,
-        isRegistered: finalToUser.isRegistered,
-      } : null,
-      relationType: { label: view.label, code: view.code }
-    };
-  });
+  const relations = Array.from(deduped.values()).map(rel => serializeListRelation(registry, rel, userId, lang));
 
   const filteredRelations = relations.filter(rel => {
     if (rel.status === 'PENDING') {
@@ -1739,11 +1751,108 @@ export const initWorldCoords = async (_req: AuthRequest, res: Response) => {
   return res.json({ message: `Initialized coordinates for ${result} users.` });
 };
 
+/**
+ * Single source of truth for the profile's NETWORK and APPROVED numbers and the
+ * lists those buttons open, so a count can never disagree with its list.
+ *
+ * NETWORK  — distinct people the user added to their family/friend tree
+ *            (created by them, PENDING or CONFIRMED, not removed/hidden/blocked).
+ * APPROVED — distinct registered people who explicitly approved a connection
+ *            with the user, in either direction (CONFIRMED with `approvedAt`).
+ *            Deceased relatives are auto-CONFIRMED without approval, so they
+ *            count toward NETWORK but not APPROVED.
+ *
+ * Each list holds one row per person (the most recent relation with them).
+ */
+export async function collectProfileConnections(userId: string) {
+  const [userBlocks, rows] = await Promise.all([
+    prisma.userBlock.findMany({
+      where: { OR: [{ blockerId: userId }, { blockedId: userId }] },
+      select: { blockerId: true, blockedId: true },
+    }),
+    prisma.relation.findMany({
+      where: {
+        deletedAt: null,
+        category: { in: ['FAMILY', 'FRIEND'] },
+        NOT: { hiddenByUserIds: { has: userId } },
+        OR: [
+          { createdById: userId },
+          { createdById: null, fromUserId: userId },
+          { fromUserId: userId, status: 'CONFIRMED', approvedAt: { not: null } },
+          { toUserId: userId, status: 'CONFIRMED', approvedAt: { not: null } },
+        ],
+      },
+      select: {
+        id: true,
+        fromUserId: true,
+        toUserId: true,
+        status: true,
+        approvedAt: true,
+        relationTypeCode: true,
+        category: true,
+        customName: true,
+        customPhotoUrl: true,
+        createdById: true,
+        createdAt: true,
+        fromUser: { select: RELATION_USER_SELECT },
+        toUser: { select: RELATION_USER_SELECT },
+        User_Relation_createdByIdToUser: { select: RELATION_USER_SELECT },
+      },
+      orderBy: { createdAt: 'desc' },
+    }),
+  ]);
+
+  const blockedUserIds = new Set(
+    userBlocks.map((b) => (b.blockerId === userId ? b.blockedId : b.blockerId))
+  );
+
+  const network = new Map<string, (typeof rows)[number]>();
+  const approved = new Map<string, (typeof rows)[number]>();
+
+  for (const rel of rows) {
+    const createdByMe = rel.createdById === userId || (!rel.createdById && rel.fromUserId === userId);
+
+    if (createdByMe && (rel.status === 'PENDING' || rel.status === 'CONFIRMED')) {
+      // The person added is the target; the source is just the node it was added from.
+      const personId = rel.toUserId !== userId ? rel.toUserId : rel.fromUserId;
+      if (personId !== userId && !blockedUserIds.has(personId) && !network.has(personId)) {
+        network.set(personId, rel);
+      }
+    }
+
+    if (rel.status === 'CONFIRMED' && rel.approvedAt) {
+      const partnerId = rel.toUserId === userId
+        ? (rel.createdById || rel.fromUserId)
+        : rel.toUserId;
+      if (partnerId !== userId && !blockedUserIds.has(partnerId) && !approved.has(partnerId)) {
+        approved.set(partnerId, rel);
+      }
+    }
+  }
+
+  return { network: Array.from(network.values()), approved: Array.from(approved.values()) };
+}
+
+/** GET /relations/profile-connections?type=network|approved — the lists behind the profile counts. */
+export const getProfileConnections = async (req: AuthRequest, res: Response) => {
+  const userId = req.user?.id;
+  if (!userId) throw unauthenticated();
+  const type = req.query.type === 'approved' ? 'approved' : 'network';
+  const lang = (req.query.lang as string) || 'mr';
+
+  const [registry, connections] = await Promise.all([
+    getRelationTypeRegistry(),
+    collectProfileConnections(userId),
+  ]);
+
+  return res.json(connections[type].map((rel) => serializeListRelation(registry, rel, userId, lang)));
+};
+
 export const getRelationCounts = async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;
   if (!userId) throw unauthenticated();
 
-  const [pending, confirmed, rejected, accepted, userCreatedRelations, confirmedRelations, badge] = await Promise.all([
+  const [pending, confirmed, rejected, accepted, connections, badge] = await Promise.all([
     prisma.relation.count({
       where: {
         OR: [{ createdById: userId }, { fromUserId: userId }],
@@ -1766,42 +1875,14 @@ export const getRelationCounts = async (req: AuthRequest, res: Response) => {
     prisma.relation.count({
       where: { toUserId: userId, status: 'CONFIRMED', hiddenByUserIds: { isEmpty: true } },
     }),
-    prisma.relation.findMany({
-      where: {
-        OR: [
-          { createdById: userId },
-          { fromUserId: userId },
-        ],
-      },
-      select: { fromUserId: true, toUserId: true },
-    }),
-    prisma.relation.findMany({
-      where: {
-        hiddenByUserIds: { isEmpty: true },
-        OR: [
-          { fromUserId: userId, status: 'CONFIRMED' },
-          { toUserId: userId, status: 'CONFIRMED' },
-        ],
-      },
-      select: { fromUserId: true, toUserId: true },
-    }),
+    // Same helper as the lists, so the numbers always equal the list lengths.
+    collectProfileConnections(userId),
     // Cached and versioned — see badgeService.getUserBadgeData.
     getUserBadgeData(userId),
   ]);
 
-  const nodeSet = new Set<string>();
-  for (const r of userCreatedRelations) {
-    if (r.fromUserId && r.fromUserId !== userId) nodeSet.add(r.fromUserId);
-    if (r.toUserId && r.toUserId !== userId) nodeSet.add(r.toUserId);
-  }
-  const network = nodeSet.size;
-
-  const approvedSet = new Set<string>();
-  for (const r of confirmedRelations) {
-    const partnerId = r.fromUserId === userId ? r.toUserId : r.fromUserId;
-    if (partnerId) approvedSet.add(partnerId);
-  }
-  const approved = approvedSet.size;
+  const network = connections.network.length;
+  const approved = connections.approved.length;
 
   return res.json({ pending, confirmed, rejected, accepted, network, approved, badge });
 };

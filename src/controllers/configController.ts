@@ -9,7 +9,13 @@ import {
   RELIGIONS,
   getCastesForReligion,
 } from '../constants/religionCasteData';
-import { COMMON_HOBBIES, COMMON_INTERESTS } from '../constants/matrimonyData';
+import {
+  COMMON_HOBBIES,
+  COMMON_INTERESTS,
+  MATRIMONY_VIBES,
+  FAMILY_TYPES,
+  MARRIAGE_TIMELINES,
+} from '../constants/matrimonyData';
 import { getAppVersionData, compareVersions } from '../constants/appVersionData';
 
 /**
@@ -88,6 +94,9 @@ export const getMatrimonyConfig = (_req: Request, res: Response): void => {
   res.json({
     hobbies: COMMON_HOBBIES,
     interests: COMMON_INTERESTS,
+    vibes: MATRIMONY_VIBES,
+    familyTypes: FAMILY_TYPES,
+    marriageTimelines: MARRIAGE_TIMELINES,
   });
 };
 

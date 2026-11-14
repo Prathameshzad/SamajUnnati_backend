@@ -9,6 +9,7 @@ import type { ValidatedFile } from '../lib/fileValidation';
 import { badRequest, forbidden, notFound, unauthenticated } from '../lib/errors';
 import { createLogger } from '../lib/logger';
 import { getUserBadgeData } from '../services/badgeService';
+import { collectProfileConnections } from './relationController';
 
 const log = createLogger('posts');
 
@@ -270,42 +271,19 @@ export const getUserPosts = async (req: AuthRequest, res: Response): Promise<Res
     postCount,
     followerCount,
     followingCount,
-    userCreatedRelations,
-    confirmedRelations,
+    connections,
     badgeData,
   ] = await Promise.all([
     prisma.post.count({ where: { userId, deletedAt: null } }),
     prisma.follow.count({ where: { followingId: userId, status: 'ACCEPTED' } }),
     prisma.follow.count({ where: { followerId: userId, status: 'ACCEPTED' } }),
-    prisma.relation.findMany({
-      where: { createdById: userId, deletedAt: null },
-      select: { fromUserId: true, toUserId: true },
-    }),
-    prisma.relation.findMany({
-      where: {
-        deletedAt: null,
-        status: 'CONFIRMED',
-        hiddenByUserIds: { isEmpty: true },
-        OR: [{ fromUserId: userId }, { toUserId: userId }],
-      },
-      select: { fromUserId: true, toUserId: true },
-    }),
+    // Same definition as the user's own profile (relationController.collectProfileConnections).
+    collectProfileConnections(userId),
     getUserBadgeData(userId),
   ]);
 
-  const nodeSet = new Set<string>();
-  for (const r of userCreatedRelations) {
-    if (r.fromUserId && r.fromUserId !== userId) nodeSet.add(r.fromUserId);
-    if (r.toUserId && r.toUserId !== userId) nodeSet.add(r.toUserId);
-  }
-  const networkCount = Math.max(nodeSet.size, followerCount);
-
-  const approvedSet = new Set<string>();
-  for (const r of confirmedRelations) {
-    const partnerId = r.fromUserId === userId ? r.toUserId : r.fromUserId;
-    if (partnerId) approvedSet.add(partnerId);
-  }
-  const approvedCount = approvedSet.size || badgeData.approvedCount;
+  const networkCount = connections.network.length;
+  const approvedCount = connections.approved.length;
 
   // Check follow status for this viewer
   const followRecord = await prisma.follow.findUnique({

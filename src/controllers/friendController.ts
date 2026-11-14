@@ -11,7 +11,7 @@ import {
   type ScoreReason,
   type ScoreAwardResult,
 } from '../services/scoreService';
-import { getRelationTypeRegistry, type RelationTypeRegistry } from '../services/relationTypeRegistry';
+import { getRelationTypeRegistry, pickTranslationLabel, type RelationTypeRegistry } from '../services/relationTypeRegistry';
 import { badRequest, forbidden, notFound, unauthenticated } from '../lib/errors';
 import { createLogger } from '../lib/logger';
 import { resolveBirthday } from '../utils/birthday';
@@ -32,8 +32,7 @@ const log = createLogger('friends');
  */
 function resolveLabel(relationType: any, lang: string = 'mr') {
   if (!relationType || !relationType.translations) return relationType?.code || 'UNKNOWN';
-  const trans = relationType.translations.find((t: any) => t.languageCode === lang) || relationType.translations[0];
-  return trans ? trans.label : relationType.code;
+  return pickTranslationLabel(relationType.translations, lang) ?? relationType.code;
 }
 
 /**
