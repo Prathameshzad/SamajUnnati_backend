@@ -1,6 +1,7 @@
 // src/controllers/relationTypeController.ts
 import { Request, Response } from 'express';
 import prisma from '../lib/prisma';
+import { pickTranslationLabel } from '../services/relationTypeRegistry';
 import {
   RELATION_AXIS_CONFIG,
   SPOUSE_PAIRS,
@@ -26,10 +27,10 @@ export const listRelationTypes = async (req: Request, res: Response) => {
     });
 
     const response = types.map(t => {
-      const trans = t.translations.find(tr => tr.languageCode === lang) || t.translations[0];
+      const translatedLabel = pickTranslationLabel(t.translations, lang);
       return {
         code: t.code,
-        label: trans ? trans.label : t.code,
+        label: translatedLabel ?? t.code,
         targetGender: t.targetGender,
         treeLevel: t.treeLevel,
         treeSide: t.treeSide,
@@ -56,10 +57,10 @@ export const getRelationConfig = async (req: Request, res: Response) => {
 
     const metadata: Record<string, any> = {};
     allTypes.forEach(t => {
-      const trans = t.translations.find(tr => tr.languageCode === lang) || t.translations[0];
+      const translatedLabel = pickTranslationLabel(t.translations, lang);
       metadata[t.code] = {
         code: t.code,
-        label: trans ? trans.label : t.code,
+        label: translatedLabel ?? t.code,
         gender: t.targetGender,
         level: t.treeLevel ?? 0,
         treeSide: t.treeSide,

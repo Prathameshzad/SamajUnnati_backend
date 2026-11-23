@@ -2,7 +2,6 @@
 import { Response } from 'express';
 import prisma from '../lib/prisma';
 import { FamilyGraphMatchEngine } from '../services/matrimonyEngine';
-import { OtpService } from '../services/otpService';
 import { createNotification } from '../services/notificationService';
 import { AuthRequest } from '../middleware/authMiddleware';
 import { badRequest, notFound, rateLimited, unauthenticated } from '../lib/errors';
@@ -394,21 +393,6 @@ export class MatrimonyController {
     });
 
     if (!childUser) {
-      /**
-       * SECURITY FIX: this branch used to just report `exists: false` with no
-       * OTP ever sent, while `verifyOtpAndCreateUser` accepted a hardcoded
-       * '1234' as a valid code for any phone number — a universal bypass, same
-       * class of bug as the '1111' bypass already removed from OtpService.
-       * This now issues a real OTP through the same service auth uses, so the
-       * subsequent verify step has something genuine to check against.
-       */
-      const otpResult = await OtpService.sendOtp(normalized, 'REGISTER');
-      if (otpResult.rateLimited) {
-        throw rateLimited(otpResult.message, { retryAfterSeconds: otpResult.retryAfterSeconds });
-      }
-      if (!otpResult.success) {
-        return res.status(503).json({ status: 'error', message: otpResult.message });
-      }
       return res.json({
         status: 'success',
         exists: false,
@@ -433,6 +417,20 @@ export class MatrimonyController {
     });
   }
 
+  /**
+   * `Relation.relationTypeCode` is a foreign key, and this type is not part of the
+   * seeded family/friend taxonomy, so without this every create fails with
+   * "Referenced record does not exist". It has no tree level, so it never appears
+   * in the tree's add-relative options.
+   */
+  private async ensureManagerRelationType() {
+    await prisma.relationType.upsert({
+      where: { code: 'MATRIMONY_MANAGER' },
+      update: {},
+      create: { code: 'MATRIMONY_MANAGER', category: 'MATRIMONY' },
+    });
+  }
+
   async requestManagedProfileApproval(req: AuthRequest, res: Response) {
     const parentUserId = req.user?.id;
     if (!parentUserId) throw unauthenticated();
@@ -454,6 +452,8 @@ export class MatrimonyController {
     if (existing) {
       throw badRequest('Approval request already sent');
     }
+
+    await this.ensureManagerRelationType();
 
     const relation = await prisma.relation.create({
       data: {
@@ -482,48 +482,303 @@ export class MatrimonyController {
   async verifyOtpAndCreateUser(req: AuthRequest, res: Response) {
     const parentUserId = req.user?.id;
     if (!parentUserId) throw unauthenticated();
-    const { phone, otp, firstName, lastName, gender, relationLabel } = req.body;
+    const { phone, firstName, lastName, gender, relationLabel } = req.body;
 
     const normalized = this.normalizePhone(phone);
     if (!normalized) throw badRequest('Invalid phone number');
 
-    /**
-     * SECURITY FIX: this was `if (otp !== '1234') return 400` — a hardcoded
-     * universal OTP bypass, active in production, for creating and linking a
-     * user record. Replaced with the same OtpService.verifyOtp used by the main
-     * auth flow (single-use, attempt-limited, constant-time compare).
-     */
-    const isValid = await OtpService.verifyOtp(normalized, otp);
-    if (!isValid) {
-      log.warn({ phone: maskPhone(normalized) }, 'managed profile otp verification failed');
-      throw badRequest('Invalid OTP');
+    if (!firstName || !String(firstName).trim()) {
+      throw badRequest('First name is required');
     }
 
-    // Create User
-    let childUser = await prisma.user.create({
-      data: {
-        phone: normalized,
-        firstName,
-        lastName,
-        gender: gender || null,
-        isRegistered: false,
-      }
+    // Check if user already exists
+    let childUser = await prisma.user.findUnique({
+      where: { phone: normalized },
     });
 
-    // Create a confirmed relation indicating parent manages them
-    await prisma.relation.create({
-      data: {
+    const normalizedGender = String(gender ?? '').toUpperCase();
+
+    if (!childUser) {
+      // Create User as placeholder
+      childUser = await prisma.user.create({
+        data: {
+          phone: normalized,
+          firstName: String(firstName).trim(),
+          lastName: lastName ? String(lastName).trim() : null,
+          // Clients send display values ('Male', 'Other'). The enum only has MALE and
+          // FEMALE, and anything else used to fail the create with a 500.
+          gender: normalizedGender === 'MALE' || normalizedGender === 'FEMALE' ? normalizedGender : null,
+          isRegistered: false,
+        }
+      });
+    }
+
+    // Check if relation already exists
+    const existingRelation = await prisma.relation.findFirst({
+      where: {
         fromUserId: parentUserId,
         toUserId: childUser.id,
         relationTypeCode: 'MATRIMONY_MANAGER',
-        category: 'MATRIMONY',
-        status: 'CONFIRMED',
-        customName: relationLabel
       }
     });
+
+    if (!existingRelation) {
+      await this.ensureManagerRelationType();
+      // Create a confirmed relation indicating parent manages them
+      await prisma.relation.create({
+        data: {
+          fromUserId: parentUserId,
+          toUserId: childUser.id,
+          relationTypeCode: 'MATRIMONY_MANAGER',
+          category: 'MATRIMONY',
+          status: 'CONFIRMED',
+          customName: relationLabel || null,
+        }
+      });
+    }
 
     log.info({ phone: maskPhone(normalized), parentUserId }, 'managed profile child user created');
 
     return res.json({ status: 'success', user: childUser });
   }
+
+  /* ── Quick registration + waitlist ─────────────────────────────────────── */
+
+  /**
+   * GET /api/matrimony/status
+   *
+   * Tells the app where to send the user: the registration form (with
+   * everything we already know about them pre-filled) or the waitlist screen.
+   */
+  async getStatus(req: AuthRequest, res: Response) {
+    const userId = req.user?.id;
+    if (!userId) throw unauthenticated();
+
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        firstName: true,
+        lastName: true,
+        photoUrl: true,
+        gender: true,
+        dateOfBirth: true,
+        maritalStatus: true,
+        religion: true,
+        caste: true,
+        community: true,
+        education: true,
+        occupation: true,
+        matrimonyProfile: {
+          select: { status: true, waitlistedAt: true, registrationCompletedAt: true },
+        },
+      },
+    });
+    if (!user) throw notFound('User not found');
+
+    const mp = user.matrimonyProfile;
+    const registered = !!mp?.registrationCompletedAt;
+    const waitlist = registered && mp?.status === 'WAITLIST' ? await waitlistInfo(mp.waitlistedAt) : null;
+
+    return res.json({
+      status: 'success',
+      data: {
+        registered,
+        profileStatus: registered ? mp!.status : null,
+        waitlist,
+        prefill: {
+          firstName: user.firstName,
+          lastName: user.lastName,
+          photoUrl: user.photoUrl,
+          gender: user.gender,
+          dateOfBirth: user.dateOfBirth ? user.dateOfBirth.toISOString().slice(0, 10) : null,
+          maritalStatus: user.maritalStatus,
+          religion: user.religion,
+          caste: user.caste,
+          community: user.community,
+          education: user.education,
+          occupation: user.occupation,
+        },
+      },
+    });
+  }
+
+  /**
+   * POST /api/matrimony/register  (body validated by matrimonyRegisterSchema)
+   *
+   * Saves the whole quick-registration form in one transaction, writes the core
+   * facts back to the user's main profile, and puts them on the waitlist.
+   */
+  async register(req: AuthRequest, res: Response) {
+    const userId = req.user?.id;
+    if (!userId) throw unauthenticated();
+    const b = req.body as {
+      gender?: 'MALE' | 'FEMALE';
+      dateOfBirth?: string;
+      maritalStatus: string;
+      religion?: string;
+      caste?: string;
+      community?: string;
+      motherTongue?: string;
+      birthState: string;
+      birthCity: string;
+      birthTaluka?: string;
+      birthDistrict?: string;
+      birthPlaceId?: string;
+      birthLat?: number;
+      birthLng?: number;
+      birthTime?: string;
+      birthTimeUnknown: boolean;
+      height: number;
+      education: string;
+      occupation: string;
+      income?: string;
+      diet?: string;
+      drinking?: string;
+      smoking?: string;
+      familyType?: string;
+      marriageTimeline?: string;
+      hobbies: string[];
+      vibes: string[];
+      bio?: string;
+      photos: string[];
+      partnerAgeMin: number;
+      partnerAgeMax: number;
+      partnerReligion: 'SAME' | 'ANY';
+    };
+
+    // Gender / DOB / religion come from signup unless the client had to ask.
+    const stored = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { gender: true, dateOfBirth: true, religion: true },
+    });
+    if (!stored) throw notFound('User not found');
+
+    const gender = b.gender ?? (stored.gender === 'MALE' || stored.gender === 'FEMALE' ? stored.gender : null);
+    if (!gender) throw badRequest('Please add your gender to continue');
+
+    const dob = b.dateOfBirth ? new Date(`${b.dateOfBirth}T00:00:00.000Z`) : stored.dateOfBirth;
+    if (!dob || Number.isNaN(dob.getTime())) throw badRequest('Please add your date of birth to continue');
+
+    const religion = b.religion ?? stored.religion ?? null;
+
+    // Legal minimum marriage age in India: 21 for men, 18 for women.
+    const age = ageOn(dob, new Date());
+    const minAge = gender === 'MALE' ? 21 : 18;
+    if (age < minAge) throw badRequest(`You must be at least ${minAge} to register for matrimony`);
+    if (age > 100) throw badRequest('Invalid date of birth');
+
+    const profileFields = {
+      photos: b.photos,
+      height: b.height,
+      maritalStatus: b.maritalStatus,
+      religion,
+      caste: b.caste ?? null,
+      community: b.community ?? b.caste ?? null,
+      motherTongue: b.motherTongue ?? null,
+      birthState: b.birthState,
+      birthCity: b.birthCity,
+      birthTaluka: b.birthTaluka ?? null,
+      birthDistrict: b.birthDistrict ?? null,
+      birthPlaceId: b.birthPlaceId ?? null,
+      birthLat: b.birthLat ?? null,
+      birthLng: b.birthLng ?? null,
+      birthPlace: [b.birthCity, b.birthTaluka, b.birthState].filter(Boolean).join(', '),
+      birthTime: b.birthTimeUnknown ? null : b.birthTime ?? null,
+      birthTimeUnknown: b.birthTimeUnknown,
+      education: b.education,
+      occupation: b.occupation,
+      income: b.income ?? null,
+      diet: b.diet ?? null,
+      drinking: b.drinking ?? null,
+      smoking: b.smoking ?? null,
+      familyType: b.familyType ?? null,
+      marriageTimeline: b.marriageTimeline ?? null,
+      hobbies: b.hobbies,
+      vibes: b.vibes,
+      bio: b.bio ?? null,
+      isLookingForMarriage: true,
+    };
+
+    const profile = await prisma.$transaction(async (tx) => {
+      // Keep the main profile in sync with what they just confirmed.
+      await tx.user.update({
+        where: { id: userId },
+        data: {
+          ...(b.gender ? { gender: b.gender } : {}),
+          ...(b.dateOfBirth
+            ? { dateOfBirth: dob, birthDay: dob.getUTCDate(), birthMonth: dob.getUTCMonth() + 1 }
+            : {}),
+          maritalStatus: b.maritalStatus,
+          ...(b.religion ? { religion: b.religion } : {}),
+          ...(b.caste ? { caste: b.caste } : {}),
+          education: b.education,
+          occupation: b.occupation,
+        },
+      });
+
+      const existing = await tx.matrimonyProfile.findUnique({
+        where: { userId },
+        select: { registrationCompletedAt: true },
+      });
+
+      const saved = await tx.matrimonyProfile.upsert({
+        where: { userId },
+        create: {
+          ...profileFields,
+          userId,
+          profileType: 'SELF',
+          status: 'WAITLIST',
+          waitlistedAt: new Date(),
+          registrationCompletedAt: new Date(),
+        },
+        update: {
+          ...profileFields,
+          // Editing an existing registration must not reset the queue position.
+          ...(existing?.registrationCompletedAt ? {} : { registrationCompletedAt: new Date(), waitlistedAt: new Date() }),
+        },
+      });
+
+      const prefData = {
+        ageMin: b.partnerAgeMin,
+        ageMax: b.partnerAgeMax,
+        religion: b.partnerReligion === 'SAME' && religion ? [religion] : [],
+      };
+      await tx.matrimonyPreference.upsert({
+        where: { profileId: saved.id },
+        create: { ...prefData, profileId: saved.id },
+        update: prefData,
+      });
+
+      return saved;
+    });
+
+    log.info({ userId }, 'matrimony quick registration completed');
+
+    const waitlist = profile.status === 'WAITLIST' ? await waitlistInfo(profile.waitlistedAt) : null;
+    return res.json({
+      status: 'success',
+      data: { registered: true, profileStatus: profile.status, waitlist },
+    });
+  }
+}
+
+/** Age in whole years on `at`. */
+function ageOn(dob: Date, at: Date): number {
+  let age = at.getUTCFullYear() - dob.getUTCFullYear();
+  const m = at.getUTCMonth() - dob.getUTCMonth();
+  if (m < 0 || (m === 0 && at.getUTCDate() < dob.getUTCDate())) age--;
+  return age;
+}
+
+/** 1-based queue position and total size of the matrimony waitlist. */
+async function waitlistInfo(waitlistedAt: Date) {
+  const [ahead, total] = await Promise.all([
+    prisma.matrimonyProfile.count({
+      where: { status: 'WAITLIST', registrationCompletedAt: { not: null }, waitlistedAt: { lt: waitlistedAt } },
+    }),
+    prisma.matrimonyProfile.count({
+      where: { status: 'WAITLIST', registrationCompletedAt: { not: null } },
+    }),
+  ]);
+  return { position: ahead + 1, total, joinedAt: waitlistedAt.toISOString() };
 }

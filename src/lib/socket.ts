@@ -37,34 +37,42 @@ interface SocketUser {
 /**
  * Online presence.
  *
- * Tracked as a ref-count per user rather than a boolean, because one user can
- * have multiple sockets open at once (a phone and a tablet, or two app
- * instances). The user only becomes "offline" once every one of their sockets
- * has disconnected — using a plain Set of userIds and deleting on any single
- * disconnect would flicker a still-connected user to offline whenever their
- * *other* device dropped.
+ * Tracked as a Set of active socket IDs per user. This accurately tracks multi-socket
+ * devices (e.g. Chat, Score, and Notification providers) without counter drift.
  */
-const onlineUserRefCounts = new Map<string, number>();
+const userActiveSockets = new Map<string, Set<string>>();
 
-const isOnline = (userId: string): boolean => (onlineUserRefCounts.get(userId) ?? 0) > 0;
+export const isOnline = (userId: string): boolean => (userActiveSockets.get(userId)?.size ?? 0) > 0;
 
-function markOnline(userId: string): void {
-  onlineUserRefCounts.set(userId, (onlineUserRefCounts.get(userId) ?? 0) + 1);
+function markOnline(userId: string, socketId: string): boolean {
+  let sockets = userActiveSockets.get(userId);
+  const wasOffline = !sockets || sockets.size === 0;
+  if (!sockets) {
+    sockets = new Set<string>();
+    userActiveSockets.set(userId, sockets);
+  }
+  sockets.add(socketId);
+  return wasOffline;
 }
 
 /** Returns true if this was the transition from online to offline (last socket closed). */
-function markOffline(userId: string): boolean {
-  const next = (onlineUserRefCounts.get(userId) ?? 1) - 1;
-  if (next <= 0) {
-    onlineUserRefCounts.delete(userId);
+function markOffline(userId: string, socketId?: string): boolean {
+  const sockets = userActiveSockets.get(userId);
+  if (!sockets) return false;
+  if (socketId) {
+    sockets.delete(socketId);
+  } else {
+    sockets.clear();
+  }
+  if (sockets.size === 0) {
+    userActiveSockets.delete(userId);
     return true;
   }
-  onlineUserRefCounts.set(userId, next);
   return false;
 }
 
 /** Current online user IDs, for a freshly-connecting client to seed its UI without waiting for individual events. */
-export const getOnlineUserIds = (): string[] => Array.from(onlineUserRefCounts.keys());
+export const getOnlineUserIds = (): string[] => Array.from(userActiveSockets.keys());
 
 /** Typed accessor for the authenticated user attached during the handshake. */
 const socketUser = (socket: Socket): SocketUser | undefined => (socket.data as any).user;
@@ -163,22 +171,47 @@ export const initSocket = (server: HttpServer): Server => {
      * ref-counting above) — a second tab/device connecting must not re-announce
      * "online" to everyone, since the user never went offline in the first place.
      */
-    const wasAlreadyOnline = isOnline(user.id);
-    markOnline(user.id);
-    if (!wasAlreadyOnline) {
+    const wasOffline = markOnline(user.id, socket.id);
+    if (wasOffline) {
       for (const conversationId of joinedConversationIds) {
-        socket.to(conversationId).emit('presence:online', { userId: user.id });
+        io?.to(conversationId).emit('presence:online', { userId: user.id });
       }
+      io?.to(`presence:${user.id}`).emit('presence:online', { userId: user.id });
     }
 
-    /** Lets a freshly-opened chat screen ask "is the other person online right now" without waiting for an event. */
+    /** Lets a client query presence of userIds and automatically subscribes to live updates for them */
     socket.on('presence:query', (userIds: unknown) => {
       if (!Array.isArray(userIds)) return;
       const result: Record<string, boolean> = {};
       for (const id of userIds) {
-        if (typeof id === 'string') result[id] = isOnline(id);
+        if (typeof id === 'string' && id.trim()) {
+          result[id] = isOnline(id);
+          socket.join(`presence:${id}`);
+        }
       }
       socket.emit('presence:snapshot', result);
+    });
+
+    /** Client app state notification (foreground/background) */
+    socket.on('presence:state', (payload: unknown) => {
+      const state = (payload as any)?.state;
+      if (state === 'background') {
+        const becameOffline = markOffline(user.id);
+        if (becameOffline) {
+          for (const conversationId of joinedConversationIds) {
+            io?.to(conversationId).emit('presence:offline', { userId: user.id });
+          }
+          io?.to(`presence:${user.id}`).emit('presence:offline', { userId: user.id });
+        }
+      } else if (state === 'active') {
+        const transitioned = markOnline(user.id, socket.id);
+        if (transitioned) {
+          for (const conversationId of joinedConversationIds) {
+            io?.to(conversationId).emit('presence:online', { userId: user.id });
+          }
+          io?.to(`presence:${user.id}`).emit('presence:online', { userId: user.id });
+        }
+      }
     });
 
     /**
@@ -229,11 +262,12 @@ export const initSocket = (server: HttpServer): Server => {
     socket.on('disconnect', (reason) => {
       log.debug({ socketId: socket.id, userId: user.id, reason }, 'socket disconnected');
 
-      const becameOffline = markOffline(user.id);
+      const becameOffline = markOffline(user.id, socket.id);
       if (becameOffline) {
         for (const conversationId of joinedConversationIds) {
-          socket.to(conversationId).emit('presence:offline', { userId: user.id });
+          io?.to(conversationId).emit('presence:offline', { userId: user.id });
         }
+        io?.to(`presence:${user.id}`).emit('presence:offline', { userId: user.id });
       }
     });
   });

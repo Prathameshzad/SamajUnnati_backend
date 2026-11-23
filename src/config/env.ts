@@ -112,6 +112,18 @@ const schema = z.object({
   /** User IDs permitted to call maintenance/admin endpoints. */
   ADMIN_USER_IDS: z.string().optional(),
 
+  /**
+   * Shared secret for the reporting API (/api/integration) used by the Ads
+   * Management panel. Sent as `Authorization: Bearer <key>` (or `X-Api-Key`).
+   * Leave empty to disable the integration API entirely.
+   */
+  INTEGRATION_API_KEY: z.string().optional(),
+  /**
+   * Browser origins allowed to call /api/integration directly (comma-separated).
+   * The Ads Management backend calls it server-to-server, so this can stay empty.
+   */
+  INTEGRATION_ALLOWED_ORIGINS: z.string().optional(),
+
   /** Number of proxy hops to trust for client IP resolution (rate limiting correctness). */
   TRUST_PROXY_HOPS: intFromString(0, 0, 10),
 
@@ -248,6 +260,11 @@ if (isProduction) {
   }
 }
 
+const integrationApiKey = raw.INTEGRATION_API_KEY?.trim() || undefined;
+if (integrationApiKey && integrationApiKey.length < 32) {
+  fatal.push('INTEGRATION_API_KEY must be at least 32 characters (e.g. openssl rand -hex 32).');
+}
+
 if (fatal.length > 0) {
   console.error(`\nRefusing to start:\n${fatal.map((m) => `  - ${m}`).join('\n')}\n`);
   process.exit(1);
@@ -318,6 +335,11 @@ export const config = {
   },
 
   adminUserIds: new Set(csv(raw.ADMIN_USER_IDS)),
+
+  integration: {
+    apiKey: integrationApiKey,
+    allowedOrigins: csv(raw.INTEGRATION_ALLOWED_ORIGINS),
+  },
 
   http: {
     trustProxyHops: raw.TRUST_PROXY_HOPS,

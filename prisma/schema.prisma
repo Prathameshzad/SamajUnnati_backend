@@ -10,6 +10,10 @@ model User {
   id                                  String               @id @default(uuid())
   phone                               String?              @unique
   secondaryPhone                      String?              @unique
+  /// When the primary number was proven by OTP. NULL = not verified.
+  phoneVerifiedAt                     DateTime?
+  /// When the secondary number was proven by OTP. NULL = not verified (or no secondary).
+  secondaryPhoneVerifiedAt            DateTime?
   email                               String?              @unique
   photoUrl                            String?
   bannerUrl                           String?
@@ -18,6 +22,8 @@ model User {
   pincode                             String?
   designation                         String?
   dateOfBirth                         DateTime?
+  birthDay                            Int?
+  birthMonth                          Int?
   dateOfDeath                         DateTime?
   createdAt                           DateTime             @default(now())
   updatedAt                           DateTime             @updatedAt
@@ -84,6 +90,8 @@ model User {
   // getGraphChunk filters `worldX BETWEEN ... AND worldY BETWEEN ...` with no
   // index at all previously, forcing a full table scan on every spatial query.
   @@index([worldX, worldY])
+  // Daily birthday reminders look people up by month and day.
+  @@index([birthMonth, birthDay])
 }
 
 model RelationType {
@@ -164,21 +172,24 @@ model Relation {
 }
 
 model Notification {
-  id         String            @id @default(uuid())
-  userId     String
-  type       NotificationType
-  title      String
-  message    String
-  relationId String?
-  state      NotificationState @default(UNREAD)
-  createdAt  DateTime          @default(now())
-  readAt     DateTime?
-  postId     String?
-  post       Post?             @relation(fields: [postId], references: [id])
-  relation   Relation?         @relation(fields: [relationId], references: [id])
-  user       User              @relation(fields: [userId], references: [id])
+  id            String            @id @default(uuid())
+  userId        String
+  type          NotificationType
+  title         String
+  message       String
+  relationId    String?
+  state         NotificationState @default(UNREAD)
+  createdAt     DateTime          @default(now())
+  readAt        DateTime?
+  postId        String?
+  /// The person a BIRTHDAY_REMINDER / DEATH_ANNIVERSARY is about; lets the daily job send each once.
+  subjectUserId String?
+  post          Post?             @relation(fields: [postId], references: [id])
+  relation      Relation?         @relation(fields: [relationId], references: [id])
+  user          User              @relation(fields: [userId], references: [id])
 
   @@index([userId, state, createdAt])
+  @@index([subjectUserId, type, createdAt])
   @@index([relationId])
   @@index([postId])
 }
@@ -435,23 +446,27 @@ model GroupJoinRequest {
 }
 
 model Message {
-  id             String        @id @default(uuid())
+  id             String          @id @default(uuid())
   conversationId String
   senderId       String
   content        String?
   mediaUrl       String?
   mediaType      MediaType?
-  type           MessageType   @default(TEXT)
+  type           MessageType     @default(TEXT)
+  replyToId      String?
+  replyTo        Message?        @relation("MessageReplies", fields: [replyToId], references: [id], onDelete: SetNull)
+  replies        Message[]       @relation("MessageReplies")
   deletedAt      DateTime?
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
-  conversation   Conversation  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  sender         User          @relation("MessageSender", fields: [senderId], references: [id])
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  conversation   Conversation    @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender         User            @relation("MessageSender", fields: [senderId], references: [id])
   reads          MessageRead[]
   reports        MessageReport[]
 
   @@index([conversationId, createdAt])
   @@index([senderId])
+  @@index([replyToId])
 }
 
 model MessageRead {
@@ -538,47 +553,75 @@ model UserReport {
 }
 
 model MatrimonyProfile {
-  id                   String                     @id @default(uuid())
-  userId               String                     @unique
-  isLookingForMarriage Boolean                    @default(true)
-  photos               String[]
-  height               Float?
-  complexion           String?
-  education            String?
-  occupation           String?
-  income               String?
-  lifestyle            String?
-  languages            String[]
-  religion             String?
-  community            String?
-  caste                String?
-  subcaste             String?
-  bio                  String?
-  hobbies              String[]
-  interests            String[]
-  isVerified           Boolean                    @default(false)
-  visibility           String                     @default("PUBLIC")
-  profileType          String                     @default("SELF")
-  relationLabel        String?
-  managedByUserId      String?
-  isClaimed            Boolean                    @default(false)
-  createdAt            DateTime                   @default(now())
-  updatedAt            DateTime                   @updatedAt
-  recommendedAs        GraphRecommendationCache[] @relation("RecommendedTarget")
-  recommendations      GraphRecommendationCache[] @relation("RecommendedTo")
-  blockedMe            MatrimonyBlock[]           @relation("BlockedTarget")
-  blocks               MatrimonyBlock[]           @relation("BlockedBy")
-  interestsReceived    MatrimonyInterest[]        @relation("InterestsReceived")
-  interestsSent        MatrimonyInterest[]        @relation("InterestsSent")
-  matchesAsUserA       MatrimonyMatch[]           @relation("MatchesUserA")
-  matchesAsUserB       MatrimonyMatch[]           @relation("MatchesUserB")
-  preference           MatrimonyPreference?
-  managedBy            User?                      @relation("ManagedMatrimonyProfiles", fields: [managedByUserId], references: [id])
-  user                 User                       @relation(fields: [userId], references: [id], onDelete: Cascade)
-  reportedMe           MatrimonyReport[]          @relation("ReportedTarget")
-  reports              MatrimonyReport[]          @relation("ReportedBy")
-  shortlistedMe        MatrimonyShortlist[]       @relation("ShortlistedTarget")
-  shortlists           MatrimonyShortlist[]       @relation("ShortlistedBy")
+  id                      String                     @id @default(uuid())
+  userId                  String                     @unique
+  isLookingForMarriage    Boolean                    @default(true)
+  photos                  String[]
+  height                  Float?
+  complexion              String?
+  education               String?
+  occupation              String?
+  income                  String?
+  lifestyle               String?
+  languages               String[]
+  religion                String?
+  community               String?
+  caste                   String?
+  subcaste                String?
+  bio                     String?
+  hobbies                 String[]
+  interests               String[]
+  isVerified              Boolean                    @default(false)
+  visibility              String                     @default("PUBLIC")
+  profileType             String                     @default("SELF")
+  relationLabel           String?
+  managedByUserId         String?
+  isClaimed               Boolean                    @default(false)
+  /// Quick-registration fields (Bumble-style onboarding)
+  maritalStatus           String?
+  motherTongue            String?
+  diet                    String?
+  drinking                String?
+  smoking                 String?
+  familyType              String?
+  marriageTimeline        String?
+  /// Birth details for patrika / kundli creation.
+  birthPlace              String?
+  birthState              String?
+  birthCity               String?
+  birthTaluka             String?
+  birthDistrict           String?
+  /// Google place id of the birth city, plus its coordinates (for kundli).
+  birthPlaceId            String?
+  birthLat                Float?
+  birthLng                Float?
+  /// 24h "HH:mm" local time of birth. NULL when unknown.
+  birthTime               String?
+  birthTimeUnknown        Boolean                    @default(false)
+  vibes                   String[]                   @default([])
+  /// WAITLIST until matrimony opens up; later ACTIVE / PAUSED.
+  status                  String                     @default("WAITLIST")
+  waitlistedAt            DateTime                   @default(now())
+  registrationCompletedAt DateTime?
+  createdAt               DateTime                   @default(now())
+  updatedAt               DateTime                   @updatedAt
+  recommendedAs           GraphRecommendationCache[] @relation("RecommendedTarget")
+  recommendations         GraphRecommendationCache[] @relation("RecommendedTo")
+  blockedMe               MatrimonyBlock[]           @relation("BlockedTarget")
+  blocks                  MatrimonyBlock[]           @relation("BlockedBy")
+  interestsReceived       MatrimonyInterest[]        @relation("InterestsReceived")
+  interestsSent           MatrimonyInterest[]        @relation("InterestsSent")
+  matchesAsUserA          MatrimonyMatch[]           @relation("MatchesUserA")
+  matchesAsUserB          MatrimonyMatch[]           @relation("MatchesUserB")
+  preference              MatrimonyPreference?
+  managedBy               User?                      @relation("ManagedMatrimonyProfiles", fields: [managedByUserId], references: [id])
+  user                    User                       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  reportedMe              MatrimonyReport[]          @relation("ReportedTarget")
+  reports                 MatrimonyReport[]          @relation("ReportedBy")
+  shortlistedMe           MatrimonyShortlist[]       @relation("ShortlistedTarget")
+  shortlists              MatrimonyShortlist[]       @relation("ShortlistedBy")
+
+  @@index([status, waitlistedAt])
 }
 
 model MatrimonyPreference {
@@ -765,6 +808,8 @@ enum NotificationType {
   FOLLOW_REQUEST
   FOLLOW_ACCEPTED
   MATRIMONY_PROFILE_APPROVAL
+  BIRTHDAY_REMINDER
+  DEATH_ANNIVERSARY
 }
 
 enum NotificationState {
@@ -824,6 +869,8 @@ model DeletedUser {
   pincode           String?
   designation       String?
   dateOfBirth       DateTime?
+  birthDay          Int?
+  birthMonth        Int?
   dateOfDeath       DateTime?
   gender            Gender?
   area              String?
@@ -857,4 +904,3 @@ model DeletedUser {
   @@index([deletedAt])
   @@index([originalUserId])
 }
-

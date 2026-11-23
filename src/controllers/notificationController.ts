@@ -1,6 +1,8 @@
 import { Response } from 'express';
 import type { PushPlatform } from '@prisma/client';
 import prisma from '../lib/prisma';
+import { pickTranslationLabel } from '../services/relationTypeRegistry';
+import { getUserAppLanguage, localizeNotificationText } from '../services/notificationI18n';
 import { AuthRequest } from '../middleware/authMiddleware';
 import { forbidden, notFound, unauthenticated } from '../lib/errors';
 import {
@@ -94,11 +96,16 @@ export const listNotifications = async (req: AuthRequest, res: Response) => {
     take: limit,
   });
 
-  const notifications = notificationsRaw.map((n) => {
+  // Notification text is stored in English; show it in the app language
+  // (header from the app, else the language saved on the account).
+  const headerLang = req.headers['x-app-language'];
+  const appLang = (typeof headerLang === 'string' && headerLang) || (await getUserAppLanguage(userId));
+
+  const notifications = notificationsRaw.map((raw) => {
+    const n = { ...raw, ...localizeNotificationText(raw.title, raw.message, appLang) };
     if (n.relation) {
       const rt = n.relation.relationType;
-      const trans = rt?.translations.find(t => t.languageCode === lang) || rt?.translations[0];
-      const label = trans ? trans.label : n.relation.relationTypeCode;
+      const label = pickTranslationLabel(rt?.translations, lang) ?? n.relation.relationTypeCode;
 
       // Only apply customName to toUser when the notification recipient themselves
       // created the relation (i.e. THEY typed the custom name for the relative).
@@ -212,15 +219,22 @@ export const getNotificationSummary = async (req: AuthRequest, res: Response) =>
     select: {
       fromUserId: true,
       toUserId: true,
-      fromUser: { select: { id: true, firstName: true, lastName: true, photoUrl: true, dateOfBirth: true, area: true } },
-      toUser: { select: { id: true, firstName: true, lastName: true, photoUrl: true, dateOfBirth: true, area: true } },
+      fromUser: { select: { id: true, firstName: true, lastName: true, photoUrl: true, dateOfBirth: true, birthDay: true, birthMonth: true, area: true } },
+      toUser: { select: { id: true, firstName: true, lastName: true, photoUrl: true, dateOfBirth: true, birthDay: true, birthMonth: true, area: true } },
     },
     take: 100,
   });
 
-  const today = new Date();
-  const currentMonth = today.getMonth();
-  const currentDate = today.getDate();
+  // Same calendar day as the daily reminder push (India time), not the server's clock:
+  // on a UTC server the card would otherwise show yesterday's birthdays until 5:30 AM IST.
+  const todayParts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: 'numeric', day: 'numeric' })
+      .formatToParts(new Date())
+      .map((p) => [p.type, p.value])
+  );
+  const currentYear = Number(todayParts.year);
+  const currentMonth = Number(todayParts.month) - 1;
+  const currentDate = Number(todayParts.day);
 
   const seenUsers = new Set<string>();
   const todayMilestones: {
@@ -238,15 +252,17 @@ export const getNotificationSummary = async (req: AuthRequest, res: Response) =>
       lastName: string | null;
       photoUrl: string | null;
       dateOfBirth: Date | null;
+      birthDay: number | null;
+      birthMonth: number | null;
       area: string | null;
     } | null;
     if (!relative || seenUsers.has(relative.id) || relative.id === userId) continue;
     seenUsers.add(relative.id);
 
-    if (relative.dateOfBirth) {
-      const dob = new Date(relative.dateOfBirth);
-      if (dob.getMonth() === currentMonth && dob.getDate() === currentDate) {
-        const age = today.getFullYear() - dob.getFullYear();
+    // birthDay/birthMonth exist even when the birth year isn't known; the age needs the full date.
+    if (relative.birthMonth && relative.birthDay) {
+      if (relative.birthMonth - 1 === currentMonth && relative.birthDay === currentDate) {
+        const age = relative.dateOfBirth ? currentYear - new Date(relative.dateOfBirth).getUTCFullYear() : 0;
         todayMilestones.push({
           userId: relative.id,
           name: [relative.firstName, relative.lastName].filter(Boolean).join(' ') || 'Family Member',

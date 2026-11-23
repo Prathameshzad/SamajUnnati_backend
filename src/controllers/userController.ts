@@ -10,7 +10,15 @@ import { notFound, unauthenticated, badRequest } from '../lib/errors';
 import { OtpService } from '../services/otpService';
 import { signAuthToken } from '../lib/jwt';
 import { createLogger } from '../lib/logger';
+import { resolveBirthday } from '../utils/birthday';
 import { syncPendingRelationsForUser } from '../services/relationReconnectService';
+import {
+  claimPlaceholdersForNumber,
+  findRegisteredOwner,
+  numberTakenMessage,
+  samePhone,
+  uniqueViolationField,
+} from '../services/phoneIdentityService';
 
 const log = createLogger('users');
 
@@ -52,6 +60,8 @@ const OWNER_SAFE_SELECT = {
   ...PUBLIC_SAFE_SELECT,
   phone: true,
   secondaryPhone: true,
+  phoneVerifiedAt: true,
+  secondaryPhoneVerifiedAt: true,
   email: true,
 } as const;
 
@@ -211,26 +221,43 @@ export const updateMe = async (
       }
       const currentUser = await prisma.user.findUnique({
         where: { id: req.user.id },
-        select: { phone: true },
+        select: { phone: true, secondaryPhone: true },
       });
-      if (currentUser?.phone === norm) {
+      if (samePhone(currentUser?.phone, norm)) {
         throw badRequest('Secondary phone cannot be identical to primary phone');
       }
-      const existing = await prisma.user.findFirst({
+      // Saving a number here would skip OTP proof of ownership, so a user could attach
+      // someone else's number to their account (and with it that person's pending
+      // relation requests, or their login). Adding or changing a secondary number must
+      // go through /users/change-phone/*, which verifies it. Re-sending the current
+      // value (as profile forms do) is a no-op.
+      if (!samePhone(currentUser?.secondaryPhone, norm)) {
+        throw badRequest('Verify the new secondary number with an OTP to add or change it');
+      }
+      cleanSecondary = currentUser?.secondaryPhone ?? undefined;
+    }
+  }
+
+  let cleanEmail: string | null | undefined = undefined;
+  if (email !== undefined) {
+    if (email === null || (typeof email === 'string' && email.trim() === '')) {
+      cleanEmail = null;
+    } else {
+      const normEmail = email.trim().toLowerCase();
+      const existingEmail = await prisma.user.findFirst({
         where: {
-          OR: [
-            { phone: norm },
-            { secondaryPhone: norm },
-          ],
+          email: normEmail,
           id: { not: req.user.id },
         },
       });
-      if (existing) {
-        throw badRequest('This secondary phone number is already registered with another account');
+      if (existingEmail) {
+        throw badRequest('This email is already registered with another account');
       }
-      cleanSecondary = norm;
+      cleanEmail = normEmail;
     }
   }
+
+  const birthday = resolveBirthday(req.body);
 
   const user = await prisma.user.update({
     where: { id: req.user.id },
@@ -239,8 +266,9 @@ export const updateMe = async (
       bannerUrl: finalBannerUrl !== undefined ? finalBannerUrl : undefined,
       // contact
       whatsapp,
-      email,
+      email: cleanEmail !== undefined ? cleanEmail : undefined,
       secondaryPhone: cleanSecondary !== undefined ? cleanSecondary : undefined,
+      secondaryPhoneVerifiedAt: cleanSecondary === null ? null : undefined,
 
       // name
       firstName,
@@ -252,7 +280,8 @@ export const updateMe = async (
       community: community ?? (caste ? caste : undefined),
       caste,
       subcaste,
-      dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : undefined,
+      // A full date, or day + month when the year isn't known (utils/birthday).
+      ...(birthday ?? {}),
       bloodGroup,
       gender:
         typeof gender === 'undefined' ? undefined : normalizedGender,
@@ -364,32 +393,26 @@ export const requestChangePhoneOtp = async (
   });
 
   if (isSecondary) {
-    if (currentUser?.phone === normalized) {
+    if (samePhone(currentUser?.phone, normalized)) {
       throw badRequest('Secondary phone number cannot be the same as your primary phone number');
     }
-    if (currentUser?.secondaryPhone === normalized) {
+    if (samePhone(currentUser?.secondaryPhone, normalized)) {
       throw badRequest('Secondary phone number cannot be the same as your current secondary number');
     }
   } else {
-    if (currentUser?.phone === normalized) {
+    if (samePhone(currentUser?.phone, normalized)) {
       throw badRequest('New phone number cannot be the same as your current phone number');
     }
-    if (currentUser?.secondaryPhone === normalized) {
+    if (samePhone(currentUser?.secondaryPhone, normalized)) {
       throw badRequest('Primary phone number cannot be the same as your secondary phone number');
     }
   }
 
-  const existing = await prisma.user.findFirst({
-    where: {
-      OR: [
-        { phone: normalized },
-        { secondaryPhone: normalized },
-      ],
-      id: { not: req.user.id },
-    },
-  });
+  // Taken as another account's primary OR secondary number, in any format. Unfinished
+  // placeholder rows (relatives added by others) do not block: they are merged on verify.
+  const existing = await findRegisteredOwner(normalized, req.user.id);
   if (existing) {
-    throw badRequest('This phone number is already registered with another account');
+    throw badRequest(numberTakenMessage(normalized, isSecondary ? 'secondary' : 'primary'));
   }
 
   const otpResult = await OtpService.sendOtp(normalized, 'CHANGE_PHONE');
@@ -425,26 +448,27 @@ export const verifyChangePhoneOtp = async (
     return res.status(400).json({ message: 'Invalid or expired OTP' });
   }
 
-  // Conflict re-check across both fields
-  const existing = await prisma.user.findFirst({
-    where: {
-      OR: [
-        { phone: normalized },
-        { secondaryPhone: normalized },
-      ],
-      id: { not: req.user.id },
-    },
-  });
+  // Conflict re-check across both fields and formats
+  const existing = await findRegisteredOwner(normalized, req.user.id);
   if (existing) {
-    throw badRequest('This phone number is already registered with another account');
+    throw badRequest(numberTakenMessage(normalized, isSecondary ? 'secondary' : 'primary'));
   }
 
+  // OTP proves ownership: take over any placeholder holding this number so the
+  // unique columns are free (and the relative's pending requests reach this user).
+  await claimPlaceholdersForNumber(req.user.id, normalized);
+
   if (isSecondary) {
-    const updatedUser = await prisma.user.update({
-      where: { id: req.user.id },
-      data: { secondaryPhone: normalized },
-      select: OWNER_SAFE_SELECT,
-    });
+    const updatedUser = await prisma.user
+      .update({
+        where: { id: req.user.id },
+        data: { secondaryPhone: normalized, secondaryPhoneVerifiedAt: new Date() },
+        select: OWNER_SAFE_SELECT,
+      })
+      .catch((err) => {
+        if (uniqueViolationField(err)) throw badRequest(numberTakenMessage(normalized, 'secondary'));
+        throw err;
+      });
 
     await syncPendingRelationsForUser(updatedUser.id, normalized).catch((err) => {
       log.warn({ err }, 'Failed to sync pending relations for new secondary phone');
@@ -456,11 +480,16 @@ export const verifyChangePhoneOtp = async (
     });
   }
 
-  const updatedUser = await prisma.user.update({
-    where: { id: req.user.id },
-    data: { phone: normalized },
-    select: OWNER_SAFE_SELECT,
-  });
+  const updatedUser = await prisma.user
+    .update({
+      where: { id: req.user.id },
+      data: { phone: normalized, phoneVerifiedAt: new Date() },
+      select: OWNER_SAFE_SELECT,
+    })
+    .catch((err) => {
+      if (uniqueViolationField(err)) throw badRequest(numberTakenMessage(normalized, 'primary'));
+      throw err;
+    });
 
   await invalidateAccountStatus(req.user.id);
 
@@ -488,7 +517,7 @@ export const removeSecondaryPhone = async (
 
   const updatedUser = await prisma.user.update({
     where: { id: req.user.id },
-    data: { secondaryPhone: null },
+    data: { secondaryPhone: null, secondaryPhoneVerifiedAt: null },
     select: OWNER_SAFE_SELECT,
   });
 
@@ -560,6 +589,8 @@ export const deleteMyAccount = async (
             lastName: user.lastName || null,
             gender: user.gender,
             dateOfBirth: user.dateOfBirth,
+            birthDay: user.birthDay,
+            birthMonth: user.birthMonth,
             dateOfDeath: user.dateOfDeath,
             isAlive: user.isAlive,
             bloodGroup: user.bloodGroup,
@@ -616,6 +647,8 @@ export const deleteMyAccount = async (
         pincode: user.pincode,
         designation: user.designation,
         dateOfBirth: user.dateOfBirth,
+        birthDay: user.birthDay,
+        birthMonth: user.birthMonth,
         dateOfDeath: user.dateOfDeath,
         gender: user.gender,
         area: user.area,

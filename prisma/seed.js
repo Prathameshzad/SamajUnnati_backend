@@ -544,6 +544,14 @@ const relationLanguageOverrides = {
   }
 };
 
+// Labels for relation types the overrides above do not cover. Without these the
+// seed stored the English label under hi/ta/kn/gu/te, so users who picked one of
+// those relation languages saw English. Shared with the backend boot backfill.
+const regionalRelationLabels = require('../src/constants/relationRegionalLabels.json');
+for (const [languageCode, labels] of Object.entries(regionalRelationLabels)) {
+  relationLanguageOverrides[languageCode] = { ...labels, ...(relationLanguageOverrides[languageCode] || {}) };
+}
+
 function getSeedLabel(entry, languageCode) {
   if (languageCode === 'mr') return entry.mr || entry.en || entry.code;
   if (languageCode === 'en') return entry.en || entry.mr || entry.code;

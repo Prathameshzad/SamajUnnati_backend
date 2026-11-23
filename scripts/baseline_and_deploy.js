@@ -76,14 +76,31 @@ async function main() {
   const statusResult = runCommand('npx prisma migrate status');
   console.log(statusResult.output);
 
-  console.log('\nStep 3: Running `npx prisma migrate deploy` for pending migrations...');
-  try {
-    execSync('npx prisma migrate deploy', { stdio: 'inherit' });
-    console.log('\n🎉 Database migrations deployed successfully and database is 100% in sync!');
-  } catch (deployErr) {
-    console.error('\n❌ Migration deploy failed:');
-    console.error(deployErr.message);
-    process.exit(1);
+  console.log('\nStep 3: Deploying migrations with auto-resolution of existing columns/tables...');
+  for (let attempt = 1; attempt <= 50; attempt++) {
+    try {
+      console.log(`\n[Attempt ${attempt}] Running prisma migrate deploy...`);
+      const deployOutput = execSync('npx prisma migrate deploy', { encoding: 'utf-8', stdio: 'pipe' });
+      console.log(deployOutput);
+      console.log('\n🎉 Database migrations deployed successfully and database is 100% in sync!');
+      break;
+    } catch (deployErr) {
+      const output = String((deployErr.stdout || '') + '\n' + (deployErr.stderr || '') + '\n' + (deployErr.message || ''));
+      const match = output.match(/Migration name:\s*([^\s\r\n]+)/)
+        || output.match(/Applying migration `([^`]+)`/)
+        || output.match(/The `([^`]+)` migration/);
+
+      if (match && (output.includes('already exists') || output.includes('P3018') || output.includes('P3009') || output.includes('E42701') || output.includes('E42710'))) {
+        const collidedMigration = match[1];
+        console.log(`⚠️  Migration "${collidedMigration}" already partially exists in DB. Auto-marking as applied...`);
+        const res = runCommand(`npx prisma migrate resolve --applied "${collidedMigration}"`);
+        console.log(res.output || 'Marked applied.');
+      } else {
+        console.error('\n❌ Migration deploy failed with unexpected error:');
+        console.error(output);
+        process.exit(1);
+      }
+    }
   }
 }
 

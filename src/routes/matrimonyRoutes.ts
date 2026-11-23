@@ -9,11 +9,27 @@ import {
   otpVerifyLimiter,
 } from '../middleware/rateLimit';
 import { MatrimonyController } from '../controllers/matrimonyController';
+import { validate } from '../middleware/validate';
+import { searchCities, getPlaceDetails } from '../controllers/placesController';
+import { matrimonyRegisterSchema } from '../schemas/matrimonySchemas';
 
 const router = Router();
 const controller = new MatrimonyController();
 
 router.use(authMiddleware);
+
+// Birth-place search (Google Places proxy)
+router.get('/places/cities', readLimiter, asyncHandler(searchCities));
+router.get('/places/:placeId', readLimiter, asyncHandler(getPlaceDetails));
+
+// Quick (Bumble-style) registration + waitlist
+router.get('/status', readLimiter, asyncHandler(controller.getStatus.bind(controller)));
+router.post(
+  '/register',
+  writeLimiter,
+  validate(matrimonyRegisterSchema),
+  asyncHandler(controller.register.bind(controller))
+);
 
 // Profile
 router.post('/profile', writeLimiter, asyncHandler(controller.upsertProfile.bind(controller)));
@@ -63,7 +79,7 @@ router.post(
 );
 router.post(
   '/profile/verify-otp-managed',
-  otpVerifyLimiter,
+  writeLimiter,
   asyncHandler(controller.verifyOtpAndCreateUser.bind(controller))
 );
 

@@ -7,8 +7,7 @@ import {
   boundedText,
   dateStringField,
   uuidString,
-  TEXT_LIMITS,
-} from './common';
+  TEXT_LIMITS, birthDayField, birthMonthField } from './common';
 
 /** RelationType.code is an uppercase snake-case identifier. */
 const relationTypeCode = z
@@ -97,12 +96,17 @@ export const createRelationSchema = {
       lastName: boundedText(TEXT_LIMITS.name),
       // Absent for deceased relatives, who have no phone.
       phone: phoneField.optional(),
+      // Up to two numbers for the same person; the request reaches them on whichever they register with.
+      phones: z.array(phoneField).max(2, 'at most 2 phone numbers').optional(),
       gender: z.enum(['MALE', 'FEMALE', 'male', 'female', 'OTHER']).optional(),
       sourceUserId: uuidString.optional(),
       customName: boundedText(TEXT_LIMITS.name),
       customPhotoUrl: photoUrlField,
       isAlive: isAliveField,
       dateOfBirth: dateStringField,
+      // Day and month for a birthday whose year isn't known (see utils/birthday).
+      birthDay: birthDayField,
+      birthMonth: birthMonthField,
       dateOfDeath: dateStringField,
       bloodGroup: boundedText(16),
       education: boundedText(TEXT_LIMITS.shortField),
@@ -131,10 +135,13 @@ export const updateRelationSchema = {
       targetUserId: uuidString.optional(),
       customName: boundedText(TEXT_LIMITS.name),
       customPhotoUrl: photoUrlField,
-      relationTypeCode: relationTypeCode.optional(),
+      relationTypeCode: relationTypeCode.optional(), firstName: boundedText(TEXT_LIMITS.name), lastName: boundedText(TEXT_LIMITS.name), gender: z.enum(['MALE', 'FEMALE', 'male', 'female', 'OTHER']).optional(), phones: z.array(phoneField).max(2).optional(),
       phone: phoneField.optional(),
       isAlive: isAliveField,
       dateOfBirth: dateStringField,
+      // Day and month for a birthday whose year isn't known (see utils/birthday).
+      birthDay: birthDayField,
+      birthMonth: birthMonthField,
       dateOfDeath: dateStringField,
       bloodGroup: boundedText(16),
       education: boundedText(TEXT_LIMITS.shortField),

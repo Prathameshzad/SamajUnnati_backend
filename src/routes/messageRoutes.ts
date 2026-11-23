@@ -31,6 +31,7 @@ import {
   resolveJoinRequest,
   reportMessage,
   reportUser,
+  getPresenceStatus,
 } from '../controllers/messageController';
 import {
   addGroupMemberSchema,
@@ -54,8 +55,9 @@ import {
 const router = Router();
 router.use(authMiddleware);
 
-// Contact discovery
+// Contact discovery & Presence
 router.get('/contacts', readLimiter, validate(contactsSchema), asyncHandler(getMessagableContacts));
+router.get('/presence', readLimiter, asyncHandler(getPresenceStatus));
 
 // Block management
 router.post('/block', writeLimiter, validate(blockUserSchema), asyncHandler(blockUser));

@@ -3,7 +3,7 @@ import { Response } from 'express';
 import crypto from 'crypto';
 import prisma from '../lib/prisma';
 import { AuthRequest } from '../middleware/authMiddleware';
-import { emitToUser, emitToRoom } from '../lib/socket';
+import { emitToUser, emitToRoom, isOnline } from '../lib/socket';
 import { PUSH_CHANNELS, sendToUsers } from '../services/pushService';
 import { uploadMedia } from '../lib/mediaUpload';
 import { badRequest, conflict, forbidden, notFound, unauthenticated } from '../lib/errors';
@@ -42,6 +42,16 @@ const MESSAGE_SENDER_SELECT = {
   lastName: true,
   photoUrl: true,
   gender: true,
+} as const;
+
+const MESSAGE_REPLY_TO_SELECT = {
+  id: true,
+  content: true,
+  mediaUrl: true,
+  mediaType: true,
+  type: true,
+  senderId: true,
+  sender: { select: MESSAGE_SENDER_SELECT },
 } as const;
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
@@ -448,6 +458,7 @@ export const getMessages = async (req: AuthRequest, res: Response) => {
     include: {
       sender: { select: MESSAGE_SENDER_SELECT },
       reads: { select: { userId: true, readAt: true } },
+      replyTo: { select: MESSAGE_REPLY_TO_SELECT },
     },
     orderBy: { createdAt: 'desc' },
     take: limit,
@@ -479,7 +490,7 @@ export const getMessages = async (req: AuthRequest, res: Response) => {
 export const sendMessage = async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;
   const { conversationId } = req.params;
-  const { content } = req.body;
+  const { content, replyToId } = req.body;
   if (!userId) throw unauthenticated();
 
   const membership = await prisma.conversationMember.findUnique({
@@ -534,6 +545,17 @@ export const sendMessage = async (req: AuthRequest, res: Response) => {
     throw badRequest('Content or media is required');
   }
 
+  let validReplyToId: string | null = null;
+  if (typeof replyToId === 'string' && replyToId.trim()) {
+    const replyTarget = await prisma.message.findFirst({
+      where: { id: replyToId.trim(), conversationId },
+      select: { id: true },
+    });
+    if (replyTarget) {
+      validReplyToId = replyTarget.id;
+    }
+  }
+
   const message = await prisma.message.create({
     data: {
       conversationId,
@@ -542,10 +564,12 @@ export const sendMessage = async (req: AuthRequest, res: Response) => {
       mediaUrl,
       mediaType,
       type: msgType,
+      replyToId: validReplyToId,
     },
     include: {
       sender: { select: MESSAGE_SENDER_SELECT },
       reads: { select: { userId: true, readAt: true } },
+      replyTo: { select: MESSAGE_REPLY_TO_SELECT },
     },
   });
 
@@ -1509,3 +1533,23 @@ export const reportUser = async (req: AuthRequest, res: Response): Promise<Respo
   log.info({ reportId: report.id, targetUserId, reporterId: userId, reason }, 'User reported');
   return res.json({ message: 'User report submitted successfully. Our safety team will review it.', reportId: report.id });
 };
+
+// GET /api/messages/presence?userIds=id1,id2,id3
+export const getPresenceStatus = async (req: AuthRequest, res: Response): Promise<Response> => {
+  const userId = req.user?.id;
+  if (!userId) throw unauthenticated();
+
+  const rawUserIds = req.query.userIds;
+  const userIds: string[] = typeof rawUserIds === 'string'
+    ? rawUserIds.split(',').map((id) => id.trim()).filter(Boolean)
+    : Array.isArray(rawUserIds)
+    ? (rawUserIds as string[]).map((id) => String(id).trim()).filter(Boolean)
+    : [];
+
+  const presence: Record<string, boolean> = {};
+  for (const id of userIds) {
+    presence[id] = isOnline(id);
+  }
+  return res.json({ presence });
+};
+

@@ -48,7 +48,7 @@ export const corsMiddleware: RequestHandler = cors({
   origin: originChecker(),
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-Id', 'Accept', 'Accept-Language'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-Id', 'Accept', 'Accept-Language', 'X-App-Language'],
   // Lets clients read the correlation ID and the server-side timing we emit.
   exposedHeaders: ['X-Request-Id', 'Server-Timing', 'RateLimit', 'RateLimit-Policy', 'Retry-After'],
   maxAge: 86_400,

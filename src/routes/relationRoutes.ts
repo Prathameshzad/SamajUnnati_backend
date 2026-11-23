@@ -16,6 +16,7 @@ import {
   deleteRelation,
   getFullTree,
   getRelationCounts,
+  getProfileConnections,
   getAcceptedRequests,
   checkAcceptedByPhone,
   getGraphChunk,
@@ -57,6 +58,7 @@ router.get(
 
 // Must stay ahead of any '/:id' patterns.
 router.get('/counts', readLimiter, asyncHandler(getRelationCounts));
+router.get('/profile-connections', readLimiter, asyncHandler(getProfileConnections));
 
 router.get('/', readLimiter, validate(listRelationsSchema), asyncHandler(listRelations));
 router.get('/tree', readLimiter, validate(getTreeSchema), asyncHandler(getTree));

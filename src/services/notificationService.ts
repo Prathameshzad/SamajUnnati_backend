@@ -29,6 +29,7 @@ import prisma from '../lib/prisma';
 import { emitToUser } from '../lib/socket';
 import { createLogger } from '../lib/logger';
 import { PUSH_CHANNELS, sendToUser, type PushChannel } from './pushService';
+import { getUserAppLanguage, localizeNotificationText } from './notificationI18n';
 
 const log = createLogger('notifications');
 
@@ -103,6 +104,8 @@ const POLICY: Record<
     channel: PUSH_CHANNELS.relations,
     route: '/notifications',
   },
+  BIRTHDAY_REMINDER: { push: true, channel: PUSH_CHANNELS.social, route: '/notifications' },
+  DEATH_ANNIVERSARY: { push: true, channel: PUSH_CHANNELS.social, route: '/notifications' },
   POST_LIKE: { push: false, channel: PUSH_CHANNELS.social, route: '/post-detail' },
   POST_COMMENT: { push: false, channel: PUSH_CHANNELS.social, route: '/post-detail' },
   POST_SHARE: { push: false, channel: PUSH_CHANNELS.social, route: '/post-detail' },
@@ -115,6 +118,8 @@ export interface CreateNotificationInput {
   message: string;
   relationId?: string | null;
   postId?: string | null;
+  /** Who the notification is about, for once-per-day dedupe of scheduled reminders. */
+  subjectUserId?: string | null;
   /** Avatar to show in the tray entry. */
   imageUrl?: string | null;
   /**
@@ -135,7 +140,7 @@ export interface CreateNotificationInput {
 export async function createNotification(
   input: CreateNotificationInput
 ): Promise<{ id: string } | null> {
-  const { userId, type, title, message, relationId, postId, imageUrl } = input;
+  const { userId, type, title, message, relationId, postId, subjectUserId, imageUrl } = input;
 
   try {
     const notification = await prisma.notification.create({
@@ -146,15 +151,20 @@ export async function createNotification(
         message,
         relationId: relationId ?? null,
         postId: postId ?? null,
+        subjectUserId: subjectUserId ?? null,
       },
       include: NOTIFICATION_RELATION_INCLUDE,
     });
 
+    // Stored in English; delivered in the recipient's app language.
+    const localized = localizeNotificationText(title, message, await getUserAppLanguage(userId));
+    const delivered = { ...notification, title: localized.title, message: localized.message };
+
     // `emitToUser` swallows its own errors, so no guard is needed. Both event
     // names are emitted because shipped app builds listen for one or the other;
     // the client deduplicates on `id`.
-    emitToUser(userId, 'notification', notification);
-    emitToUser(userId, 'notification:new', notification);
+    emitToUser(userId, 'notification', delivered);
+    emitToUser(userId, 'notification:new', delivered);
 
     const policy = POLICY[type];
     const shouldPush = input.push ?? policy.push;
@@ -164,8 +174,8 @@ export async function createNotification(
       // the socket emit has already happened. Push is the slowest leg and the
       // least critical, so it settles on its own.
       void sendToUser(userId, {
-        title,
-        body: message,
+        title: localized.title,
+        body: localized.message,
         channel: policy.channel,
         imageUrl: imageUrl ?? undefined,
         data: {
@@ -177,7 +187,8 @@ export async function createNotification(
         },
         // One pending entry per notification type, so ten relation requests
         // arriving overnight collapse into one tray row rather than ten.
-        collapseKey: `notif:${type}`,
+        // Per-subject for reminders, so two birthdays on one day both reach the tray.
+        collapseKey: subjectUserId ? `notif:${type}:${subjectUserId}` : `notif:${type}`,
       }).catch((err) => log.warn({ err, userId, type }, 'push dispatch failed'));
     }
 

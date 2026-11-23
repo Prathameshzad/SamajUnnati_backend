@@ -57,12 +57,17 @@ export class CacheService {
   }
 
   /**
-   * Current version for a scoped entity. Missing counters read as 1 rather than
+   * Current version for a scoped entity. Missing counters read as 0 rather than
    * being created, so a cold Redis does not need a write on every read.
+   *
+   * It must be 0, not 1: `INCR` on a missing key yields 1, so reading a missing
+   * counter as 1 made a user's first invalidation a no-op. Their cached payload
+   * stayed reachable, and the first relative they added stayed invisible until
+   * the TTL expired.
    */
   static async getVersion(scope: string, id: string): Promise<number> {
     const value = await RedisService.get<number>(versionKey(scope, id));
-    return typeof value === 'number' && value > 0 ? value : 1;
+    return typeof value === 'number' && value > 0 ? value : 0;
   }
 
   /** Batched version read so building one key set costs one round-trip. */
@@ -72,7 +77,7 @@ export class CacheService {
     const result = new Map<string, number>();
     unique.forEach((id, index) => {
       const value = values[index];
-      result.set(id, typeof value === 'number' && value > 0 ? value : 1);
+      result.set(id, typeof value === 'number' && value > 0 ? value : 0);
     });
     return result;
   }

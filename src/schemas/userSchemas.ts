@@ -1,6 +1,6 @@
 // src/schemas/userSchemas.ts
 import { z } from 'zod';
-import { boundedText, dateStringField, uuidString, TEXT_LIMITS } from './common';
+import { boundedText, dateStringField, uuidString, TEXT_LIMITS, birthDayField, birthMonthField } from './common';
 
 const photoUrlField = z
   .union([
@@ -45,7 +45,14 @@ export const updateMeSchema = {
         .regex(/^[0-9+\-()\s]*$/, 'whatsapp contains invalid characters')
         .transform((value) => (value.length === 0 ? undefined : value))
         .optional(),
-      email: z.string().trim().toLowerCase().email('must be a valid email').max(255).optional(),
+      email: z
+        .union([
+          z.string().trim().toLowerCase().email('must be a valid email').max(255),
+          z.literal(''),
+          z.null(),
+        ])
+        .transform((val) => (val && typeof val === 'string' && val.trim() ? val.trim() : null))
+        .optional(),
       secondaryPhone: z
         .string()
         .trim()
@@ -62,6 +69,9 @@ export const updateMeSchema = {
       caste: boundedText(TEXT_LIMITS.shortField),
       subcaste: boundedText(TEXT_LIMITS.shortField).nullable(),
       dateOfBirth: dateStringField,
+      // Day and month for a birthday whose year isn't known (see utils/birthday).
+      birthDay: birthDayField,
+      birthMonth: birthMonthField,
       bloodGroup: boundedText(16),
       gender: z.enum(['MALE', 'FEMALE', 'OTHER', 'male', 'female', 'other']).optional(),
 

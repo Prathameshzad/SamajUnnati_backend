@@ -1830,6 +1830,8 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
       bottom: [
         { label: "आजोबा", code: "AJOBA", direction: "DOWN" },
         { label: "आजी", code: "AAJI", direction: "DOWN" },
+        { label: "चुलत आजोबा", code: "CHULAT_AJOBA", direction: "DOWN" },
+        { label: "चुलत आजी", code: "CHULAT_AAJI", direction: "DOWN" },
       ],
     },
   },
@@ -1849,6 +1851,8 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
       bottom: [
         { label: "आजोबा", code: "AJOBA", direction: "DOWN" },
         { label: "आजी", code: "AAJI", direction: "DOWN" },
+        { label: "चुलत आजोबा", code: "CHULAT_AJOBA", direction: "DOWN" },
+        { label: "चुलत आजी", code: "CHULAT_AAJI", direction: "DOWN" },
       ],
     },
   },
@@ -2379,7 +2383,10 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
       }],
     },
     yAxis: {
-      top: [],
+      top: [
+        { label: "सासू", code: "SASU", direction: "UP" },
+        { label: "सासरा", code: "SASRA", direction: "UP" },
+      ],
       bottom: [
         { label: "भाचा", code: "BHACHA", direction: "DOWN" },
         { label: "भाची", code: "BHACHI", direction: "DOWN" },
@@ -2425,7 +2432,10 @@ export const RELATION_AXIS_CONFIG: Record<string, AxisConfig> = {
       ],
     },
     yAxis: {
-      top: [],
+      top: [
+        { label: "सासू", code: "SASU", direction: "UP" },
+        { label: "सासरा", code: "SASRA", direction: "UP" },
+      ],
       bottom: [
         { label: "भाचा", code: "BHACHA", direction: "DOWN" },
         { label: "भाची", code: "BHACHI", direction: "DOWN" },

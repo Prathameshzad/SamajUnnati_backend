@@ -34,6 +34,7 @@ import { RabbitMQService } from './services/rabbitmqService';
 import { RedisService } from './services/redisService';
 import { warmRelationTypeRegistry } from './services/relationTypeRegistry';
 import { closeRateLimitRedis } from './middleware/rateLimit';
+import { startReminderScheduler, stopReminderScheduler } from './services/reminderService';
 
 import authRoutes from './routes/authRoutes';
 import userRoutes from './routes/userRoutes';
@@ -51,6 +52,8 @@ import matrimonyRoutes from './routes/matrimonyRoutes';
 import scoreRoutes from './routes/scoreRoutes';
 import configRoutes from './routes/configRoutes';
 import musicRoutes from './routes/musicRoutes';
+import integrationRoutes from './routes/integrationRoutes';
+import { integrationCors } from './middleware/integrationAuth';
 
 const app: Application = express();
 
@@ -77,7 +80,10 @@ app.disable('x-powered-by');
 app.set('etag', 'weak');
 
 app.use(securityHeaders);
-app.use(corsMiddleware);
+// /api/integration has its own strict CORS allowlist; everything else uses the app policy.
+app.use((req, res, next) =>
+  req.path.startsWith('/api/integration') ? integrationCors(req, res, next) : corsMiddleware(req, res, next)
+);
 app.use(requestLogger);
 app.use(latencyTracker);
 
@@ -175,6 +181,8 @@ app.use('/api/follow', followRoutes);
 app.use('/api/matrimony', matrimonyRoutes);
 app.use('/api/scores', scoreRoutes);
 app.use('/api/music', musicRoutes);
+// Reporting API for the Ads Management panel: API-key auth (see middleware/integrationAuth.ts).
+app.use('/api/integration', integrationRoutes);
 
 /**
  * Locally-stored media, only reachable when the local-disk fallback is enabled
@@ -231,6 +239,9 @@ server.listen(config.port, () => {
   // Load reference data up front so the first tree request does not pay for it.
   void warmRelationTypeRegistry();
 
+  // Daily birthday / death-anniversary reminders.
+  startReminderScheduler();
+
   if (config.isDevelopment) {
     logger.info('rabbitmq OTP consumer disabled in development');
   } else {
@@ -242,6 +253,7 @@ server.listen(config.port, () => {
 
 registerShutdown(server, [
   { name: 'socket.io', close: () => closeSocket() },
+  { name: 'reminders', close: () => stopReminderScheduler() },
   { name: 'rabbitmq', close: () => RabbitMQService.close() },
   { name: 'redis', close: () => RedisService.quit() },
   { name: 'rate-limit-redis', close: () => closeRateLimitRedis() },

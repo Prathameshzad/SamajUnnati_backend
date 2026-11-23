@@ -1,6 +1,7 @@
 // src/services/relationReconnectService.ts
 import prisma from '../lib/prisma';
 import { createNotification } from './notificationService';
+import { pickTranslationLabel } from './relationTypeRegistry';
 import { TreeCacheService } from './treeCacheService';
 import { emitToUser } from '../lib/socket';
 import { createLogger } from '../lib/logger';
@@ -26,10 +27,7 @@ export function phoneLookupVariants(rawPhone?: string | null): string[] {
 
 function resolveLabel(relationType: any, lang: string = 'mr'): string {
   if (!relationType || !relationType.translations) return relationType?.code || 'Family Member';
-  const trans =
-    relationType.translations.find((t: any) => t.languageCode === lang) ||
-    relationType.translations[0];
-  return trans ? trans.label : relationType.code;
+  return pickTranslationLabel(relationType.translations, lang) ?? relationType.code;
 }
 
 /**

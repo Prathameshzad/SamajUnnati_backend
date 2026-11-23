@@ -1,6 +1,6 @@
 // src/schemas/authSchemas.ts
 import { z } from 'zod';
-import { phoneField, otpCodeField, requiredText, boundedText, dateStringField, TEXT_LIMITS } from './common';
+import { phoneField, otpCodeField, requiredText, boundedText, dateStringField, TEXT_LIMITS, birthDayField, birthMonthField } from './common';
 
 export const checkPhoneSchema = {
   body: z.object({ phone: phoneField }).strip(),
@@ -76,6 +76,9 @@ export const registerSchema = {
     .object({
       phone: phoneField,
       secondaryPhone: optionalSecondaryPhone,
+      // Issued by /auth/verify-otp. Required outside development (see registerUser).
+      phoneVerificationToken: z.string().trim().max(2000).optional(),
+      secondaryPhoneVerificationToken: z.string().trim().max(2000).optional(),
       acceptedTermsAndPrivacy: requiredLegalConsent,
       firstName: requiredText(TEXT_LIMITS.name),
       middleName: boundedText(TEXT_LIMITS.name),
@@ -87,6 +90,9 @@ export const registerSchema = {
       caste: boundedText(TEXT_LIMITS.shortField),
       subcaste: boundedText(TEXT_LIMITS.shortField),
       dateOfBirth: dateStringField,
+      // Day and month for a birthday whose year isn't known (see utils/birthday).
+      birthDay: birthDayField,
+      birthMonth: birthMonthField,
       gender: optionalGender,
       bloodGroup: boundedText(TEXT_LIMITS.shortField),
       occupation: boundedText(TEXT_LIMITS.shortField),

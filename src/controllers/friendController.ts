@@ -11,10 +11,17 @@ import {
   type ScoreReason,
   type ScoreAwardResult,
 } from '../services/scoreService';
-import { getRelationTypeRegistry, type RelationTypeRegistry } from '../services/relationTypeRegistry';
+import { getRelationTypeRegistry, pickTranslationLabel, type RelationTypeRegistry } from '../services/relationTypeRegistry';
 import { badRequest, forbidden, notFound, unauthenticated } from '../lib/errors';
 import { createLogger } from '../lib/logger';
+import { resolveBirthday } from '../utils/birthday';
 import { RELATION_USER_SELECT, assertSourceNodeOwned } from './relationController';
+import {
+  findUserByAnyPhone,
+  normalizeRelativePhones,
+  placeholderPhoneFields,
+  placeholderPhoneUpdates,
+} from '../services/relativePhoneService';
 
 const log = createLogger('friends');
 
@@ -25,8 +32,7 @@ const log = createLogger('friends');
  */
 function resolveLabel(relationType: any, lang: string = 'mr') {
   if (!relationType || !relationType.translations) return relationType?.code || 'UNKNOWN';
-  const trans = relationType.translations.find((t: any) => t.languageCode === lang) || relationType.translations[0];
-  return trans ? trans.label : relationType.code;
+  return pickTranslationLabel(relationType.translations, lang) ?? relationType.code;
 }
 
 /**
@@ -81,6 +87,7 @@ export const getFriendTree = async (req: AuthRequest, res: Response) => {
       gender: true,
       isAlive: true,
       phone: true,
+      secondaryPhone: true,
       profileCompleted: true,
       isRegistered: true,
     }
@@ -120,32 +127,8 @@ export const getFriendTree = async (req: AuthRequest, res: Response) => {
       createdById: true,
       createdAt: true,
       updatedAt: true,
-      fromUser: {
-        select: {
-          id: true,
-          phone: true,
-          firstName: true,
-          lastName: true,
-          photoUrl: true,
-          gender: true,
-          isAlive: true,
-          profileCompleted: true,
-          isRegistered: true,
-        }
-      },
-      toUser: {
-        select: {
-          id: true,
-          phone: true,
-          firstName: true,
-          lastName: true,
-          photoUrl: true,
-          gender: true,
-          isAlive: true,
-          profileCompleted: true,
-          isRegistered: true,
-        }
-      },
+      fromUser: { select: RELATION_USER_SELECT },
+      toUser: { select: RELATION_USER_SELECT },
     }
   });
 
@@ -556,7 +539,10 @@ export const approveFriend = async (req: AuthRequest, res: Response) => {
     userId
   );
   emitScoreUpdate(outcome.scoreUpdate);
-  return res.json(outcome.relation);
+  return res.json({
+    ...outcome.relation,
+    score: outcome.scoreUpdate,
+  });
 };
 
 /**
@@ -720,7 +706,10 @@ export const deleteFriend = async (req: AuthRequest, res: Response) => {
     }
   }
 
-  return res.json({ message: 'Friend removed' });
+  return res.json({
+    message: 'Friend removed',
+    score: outcome.scoreUpdate,
+  });
 };
 
 export const createFriend = async (req: AuthRequest, res: Response) => {
@@ -729,7 +718,7 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
   if (!userId) throw unauthenticated();
 
   const {
-    phone, firstName, lastName, gender, relationTypeCode, sourceUserId, customName, customPhotoUrl, isAlive, visualSide, dateOfBirth, dateOfDeath, bloodGroup,
+    phone, phones, firstName, lastName, gender, relationTypeCode, sourceUserId, customName, customPhotoUrl, isAlive, visualSide, dateOfBirth, dateOfDeath, bloodGroup,
     education, occupation, maritalStatus, pincode, address, area
   } = req.body;
 
@@ -741,11 +730,9 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
 
   const isPersonAlive = isAlive !== undefined ? (String(isAlive) === 'true') : true;
 
-  let parsedDob: Date | null = null;
-  if (dateOfBirth) {
-    const d = new Date(dateOfBirth);
-    if (!isNaN(d.getTime())) parsedDob = d;
-  }
+  // Day + month without a year is common; see utils/birthday.
+  const birthday = resolveBirthday(req.body);
+  const parsedDob: Date | null = birthday?.dateOfBirth ?? null;
 
   let parsedDateOfDeath: Date | null = null;
   if (!isPersonAlive && dateOfDeath) {
@@ -755,13 +742,7 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
 
   const cleanBloodGroup = (isPersonAlive && bloodGroup) ? String(bloodGroup).trim() : null;
 
-  let cleanPhone = null;
-  if (isPersonAlive && phone && String(phone).trim()) {
-    cleanPhone = normalizePhone(phone);
-    if (!cleanPhone || cleanPhone.length < 10) {
-      throw badRequest('Invalid phone number');
-    }
-  }
+  const cleanPhones = isPersonAlive ? normalizeRelativePhones({ phone, phones }) : [];
 
   const relType = await prisma.relationType.findUnique({
     where: { code: relationTypeCode },
@@ -772,32 +753,25 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
     throw badRequest('Invalid friend relation type');
   }
 
-  let relatedUser = null;
-  if (cleanPhone) {
-    relatedUser = await prisma.user.findFirst({
-      where: {
-        OR: [
-          { phone: { in: phoneLookupVariants(cleanPhone) } },
-          { secondaryPhone: { in: phoneLookupVariants(cleanPhone) } },
-        ],
-      },
-      // Prefer the real account if legacy 10/12-digit duplicates exist.
-      orderBy: [
-        { profileCompleted: 'desc' },
-        { isRegistered: 'desc' },
-      ],
-    });
+  let relatedUser = await findUserByAnyPhone(cleanPhones);
+
+  if (relatedUser) {
+    const phoneUpdates = await placeholderPhoneUpdates(relatedUser, cleanPhones);
+    if (Object.keys(phoneUpdates).length > 0) {
+      relatedUser = await prisma.user.update({ where: { id: relatedUser.id }, data: phoneUpdates });
+    }
   }
 
   if (!relatedUser) {
     relatedUser = await prisma.user.create({
       data: {
-        phone: cleanPhone,
-        whatsapp: cleanPhone,
+        ...placeholderPhoneFields(cleanPhones),
         firstName,
         lastName: lastName || null,
         gender: normalizeGender(gender),
         dateOfBirth: parsedDob,
+        birthDay: birthday?.birthDay ?? null,
+        birthMonth: birthday?.birthMonth ?? null,
         dateOfDeath: !isPersonAlive ? parsedDateOfDeath : null,
         bloodGroup: isPersonAlive ? cleanBloodGroup : null,
         education: education ? String(education).trim() : null,
@@ -965,6 +939,7 @@ export const createFriend = async (req: AuthRequest, res: Response) => {
 
   return res.status(201).json({
     ...relation,
-    relationType: { code: relationTypeCode, label: displayLabel }
+    relationType: { code: relationTypeCode, label: displayLabel },
+    score: scoreUpdate,
   });
 };

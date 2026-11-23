@@ -136,6 +136,9 @@ export const RELIGION_TAXONOMY: Record<string, ReligionEntry> = {
       "Brahmin - Shri Mali",
       "Brahmin - Shrimali",
       "Brahmin - Shukla Yajurvedi",
+      "Brahmin - Yajurvedi",
+      "Brahmin - Yejurvedi",
+      "Brahman - Yejurvedi",
       "Brahmin - Sikhwal",
       "Brahmin - Smartha",
       "Brahmin - Sri Vaishnava",
@@ -149,6 +152,7 @@ export const RELIGION_TAXONOMY: Record<string, ReligionEntry> = {
       "Brahmin - Vyas",
       "Brahmin - Zalora",
       "Bunt (Shetty)",
+      "Telgu Mannerwarlu Gyatganga Samaj",
       "CKP",
       "Caste no bar",
       "Chambhar",
@@ -1038,6 +1042,10 @@ export const RELIGION_TAXONOMY: Record<string, ReligionEntry> = {
       "Brahmin - Saryuparin",
       "Brahmin - Shivhalli",
       "Brahmin - Shrimali",
+      "Brahmin - Shukla Yajurvedi",
+      "Brahmin - Yajurvedi",
+      "Brahmin - Yejurvedi",
+      "Brahman - Yejurvedi",
       "Brahmin - Sikhwal",
       "Brahmin - Smartha",
       "Brahmin - Sri Vaishnava",
@@ -1513,6 +1521,12 @@ export function getCastesForReligion(religion: string | undefined | null): Array
     label: caste,
     value: caste,
   }));
+
+  // For Hindu, the community's own caste (SSK) is pinned to the very top of the list.
+  if (key === 'Hindu') {
+    const isSsk = (c: { value: string }) => c.value.trim().toUpperCase().startsWith('SSK');
+    list.splice(0, list.length, ...list.filter(isSsk), ...list.filter((c) => !isSsk(c)));
+  }
 
   list.push({ label: 'Other', value: 'Other' });
   return list;

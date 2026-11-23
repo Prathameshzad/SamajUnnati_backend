@@ -20,12 +20,20 @@ import {
 import { getUserBadgeData } from '../services/badgeService';
 import {
   getRelationTypeRegistry,
+  pickTranslationLabel,
   type RelationTypeRegistry,
 } from '../services/relationTypeRegistry';
 import { syncPendingRelationsForUser } from '../services/relationReconnectService';
+import {
+  findUserByAnyPhone,
+  normalizeRelativePhones,
+  placeholderPhoneFields,
+  placeholderPhoneUpdates,
+} from '../services/relativePhoneService';
 import { badRequest, forbidden, notFound, unauthenticated } from '../lib/errors';
 import { createLogger } from '../lib/logger';
 import { composeRelations } from '../utils/relationComposition';
+import { resolveBirthday } from '../utils/birthday';
 
 const log = createLogger('relations');
 
@@ -45,12 +53,15 @@ export const RELATION_USER_SELECT = {
   photoUrl: true,
   gender: true,
   phone: true,
+        secondaryPhone: true,
   area: true,
   isAlive: true,
   dateOfBirth: true,
+  birthDay: true,
+  birthMonth: true,
   dateOfDeath: true,
   bloodGroup: true,
-  profileCompleted: true,
+  profileCompleted: true, education: true, occupation: true, maritalStatus: true, pincode: true, address: true,
   isRegistered: true,
 } as const;
 
@@ -75,8 +86,7 @@ function normalizeVisualSide(side?: string | null): 'top' | 'bottom' | 'left' | 
  */
 function resolveLabel(relationType: any, lang: string = 'mr') {
   if (!relationType || !relationType.translations) return relationType?.code || 'UNKNOWN';
-  const trans = relationType.translations.find((t: any) => t.languageCode === lang) || relationType.translations[0];
-  return trans ? trans.label : relationType.code;
+  return pickTranslationLabel(relationType.translations, lang) ?? relationType.code;
 }
 
 /**
@@ -138,6 +148,79 @@ function resolveNodeForViewer(nodeUser: any, relation: any, viewerUserId: string
   return nodeUser;
 }
 
+/**
+ * Shapes one relation row for list screens (relations list, profile network and
+ * approved lists). Shared so every list renders the same fields and labels.
+ */
+function serializeListRelation(registry: RelationTypeRegistry, rel: any, userId: string, lang: string) {
+  const view = resolveRelationForViewer(registry, rel, userId, lang);
+  const isMyRelation = rel.createdById === userId;
+
+  // Use createdById as the primary 'from' identifier for the relations list.
+  // This ensures that if Root added KAKA from VADIL's node, both Root and KAKA see Root as the logical sender.
+  const logicalFromUser = (rel as any).User_Relation_createdByIdToUser || rel.fromUser;
+  const logicalFromUserId = rel.createdById || rel.fromUserId;
+
+  let finalToUser = rel.toUser;
+  if (logicalFromUserId === userId) {
+    finalToUser = resolveNodeForViewer(rel.toUser, rel, userId);
+  }
+
+  return {
+    id: rel.id,
+    fromUserId: logicalFromUserId,
+    toUserId: rel.toUserId,
+    status: rel.status,
+    relationTypeCode: rel.relationTypeCode,
+    category: rel.category,
+    customName: isMyRelation ? rel.customName : null,
+    customPhotoUrl: isMyRelation ? rel.customPhotoUrl : null,
+    createdById: rel.createdById,
+    createdAt: rel.createdAt,
+    fromUser: logicalFromUser ? {
+      id: logicalFromUser.id,
+      firstName: logicalFromUser.firstName,
+      lastName: logicalFromUser.lastName,
+      photoUrl: logicalFromUser.photoUrl,
+      gender: logicalFromUser.gender,
+      phone: logicalFromUser.phone,
+      area: logicalFromUser.area,
+      isAlive: logicalFromUser.isAlive,
+      dateOfBirth: logicalFromUser.dateOfBirth,
+      birthDay: logicalFromUser.birthDay,
+      birthMonth: logicalFromUser.birthMonth,
+      dateOfDeath: logicalFromUser.dateOfDeath,
+      bloodGroup: logicalFromUser.bloodGroup,
+      profileCompleted: logicalFromUser.profileCompleted,
+      isRegistered: logicalFromUser.isRegistered,
+      secondaryPhone: logicalFromUser.secondaryPhone,
+      education: logicalFromUser.education,
+      occupation: logicalFromUser.occupation,
+    } : null,
+    toUser: finalToUser ? {
+      id: finalToUser.id,
+      firstName: finalToUser.firstName,
+      lastName: finalToUser.lastName,
+      photoUrl: finalToUser.photoUrl,
+      gender: finalToUser.gender,
+      phone: finalToUser.phone,
+      area: finalToUser.area,
+      isAlive: finalToUser.isAlive,
+      dateOfBirth: finalToUser.dateOfBirth,
+      birthDay: finalToUser.birthDay,
+      birthMonth: finalToUser.birthMonth,
+      dateOfDeath: finalToUser.dateOfDeath,
+      bloodGroup: finalToUser.bloodGroup,
+      profileCompleted: finalToUser.profileCompleted,
+      isRegistered: finalToUser.isRegistered,
+      secondaryPhone: finalToUser.secondaryPhone,
+      education: finalToUser.education,
+      occupation: finalToUser.occupation,
+    } : null,
+    relationType: { label: view.label, code: view.code }
+  };
+}
+
 export const listRelations = async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;
   const lang = (req.query.lang as string) || 'mr';
@@ -190,64 +273,7 @@ export const listRelations = async (req: AuthRequest, res: Response) => {
 
   // No longer `Promise.all(async ...)`: label resolution is synchronous now,
   // so this is a plain map with zero database access.
-  const relations = Array.from(deduped.values()).map(rel => {
-    const view = resolveRelationForViewer(registry, rel, userId, lang);
-    const isMyRelation = rel.createdById === userId;
-
-    // Use createdById as the primary 'from' identifier for the relations list.
-    // This ensures that if Root added KAKA from VADIL's node, both Root and KAKA see Root as the logical sender.
-    const logicalFromUser = (rel as any).User_Relation_createdByIdToUser || rel.fromUser;
-    const logicalFromUserId = rel.createdById || rel.fromUserId;
-
-    let finalToUser = rel.toUser;
-    if (logicalFromUserId === userId) {
-      finalToUser = resolveNodeForViewer(rel.toUser, rel, userId);
-    }
-
-    return {
-      id: rel.id,
-      fromUserId: logicalFromUserId,
-      toUserId: rel.toUserId,
-      status: rel.status,
-      relationTypeCode: rel.relationTypeCode,
-      category: rel.category,
-      customName: isMyRelation ? rel.customName : null,
-      customPhotoUrl: isMyRelation ? rel.customPhotoUrl : null,
-      createdById: rel.createdById,
-      createdAt: rel.createdAt,
-      fromUser: logicalFromUser ? {
-        id: logicalFromUser.id,
-        firstName: logicalFromUser.firstName,
-        lastName: logicalFromUser.lastName,
-        photoUrl: logicalFromUser.photoUrl,
-        gender: logicalFromUser.gender,
-        phone: logicalFromUser.phone,
-        area: logicalFromUser.area,
-        isAlive: logicalFromUser.isAlive,
-        dateOfBirth: logicalFromUser.dateOfBirth,
-        dateOfDeath: logicalFromUser.dateOfDeath,
-        bloodGroup: logicalFromUser.bloodGroup,
-        profileCompleted: logicalFromUser.profileCompleted,
-        isRegistered: logicalFromUser.isRegistered,
-      } : null,
-      toUser: finalToUser ? {
-        id: finalToUser.id,
-        firstName: finalToUser.firstName,
-        lastName: finalToUser.lastName,
-        photoUrl: finalToUser.photoUrl,
-        gender: finalToUser.gender,
-        phone: finalToUser.phone,
-        area: finalToUser.area,
-        isAlive: finalToUser.isAlive,
-        dateOfBirth: finalToUser.dateOfBirth,
-        dateOfDeath: finalToUser.dateOfDeath,
-        bloodGroup: finalToUser.bloodGroup,
-        profileCompleted: finalToUser.profileCompleted,
-        isRegistered: finalToUser.isRegistered,
-      } : null,
-      relationType: { label: view.label, code: view.code }
-    };
-  });
+  const relations = Array.from(deduped.values()).map(rel => serializeListRelation(registry, rel, userId, lang));
 
   const filteredRelations = relations.filter(rel => {
     if (rel.status === 'PENDING') {
@@ -286,6 +312,8 @@ export const getTree = async (req: AuthRequest, res: Response) => {
         area: true,
         isAlive: true,
         dateOfBirth: true,
+        birthDay: true,
+        birthMonth: true,
         dateOfDeath: true,
         bloodGroup: true,
         education: true,
@@ -349,7 +377,7 @@ export const getTree = async (req: AuthRequest, res: Response) => {
         const view = resolveRelationForViewer(registry, rel, userId, lang);
         const isMyRelation = rel.createdById === userId;
         let finalToUser = rel.toUser;
-        if (rel.fromUserId === userId) {
+        if (rel.fromUserId === userId || isMyRelation) {
           finalToUser = resolveNodeForViewer(rel.toUser, rel, userId);
         }
         return {
@@ -499,7 +527,7 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
   if (!userId) throw unauthenticated();
 
   const {
-    phone, firstName, lastName, gender, relationTypeCode, sourceUserId, customName, customPhotoUrl, isAlive, dateOfBirth, dateOfDeath, bloodGroup,
+    phone, phones, firstName, lastName, gender, relationTypeCode, sourceUserId, customName, customPhotoUrl, isAlive, dateOfBirth, dateOfDeath, bloodGroup,
     education, occupation, maritalStatus, pincode, address, area, visualSide
   } = req.body;
   const fromUserId = sourceUserId || userId;
@@ -510,11 +538,9 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
 
   const isPersonAlive = isAlive !== undefined ? (String(isAlive) === 'true') : true;
 
-  let parsedDob: Date | null = null;
-  if (dateOfBirth) {
-    const d = new Date(dateOfBirth);
-    if (!isNaN(d.getTime())) parsedDob = d;
-  }
+  // Day + month without a year is common for relatives; see utils/birthday.
+  const birthday = resolveBirthday(req.body);
+  const parsedDob: Date | null = birthday?.dateOfBirth ?? null;
 
   let parsedDateOfDeath: Date | null = null;
   if (!isPersonAlive && dateOfDeath) {
@@ -524,30 +550,12 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
 
   const cleanBloodGroup = (isPersonAlive && bloodGroup) ? String(bloodGroup).trim() : null;
 
-  let cleanPhone = null;
-  if (isPersonAlive && phone && String(phone).trim()) {
-    cleanPhone = normalizePhone(phone);
-    if (!cleanPhone || cleanPhone.length < 10) {
-      throw badRequest('Invalid phone number');
-    }
-  }
+  // Up to three numbers (legacy single `phone` still works). A deceased relative has none.
+  const cleanPhones = isPersonAlive ? normalizeRelativePhones({ phone, phones }) : [];
 
-  const matchedExistingUser = cleanPhone
-    ? await prisma.user.findFirst({
-      where: {
-        OR: [
-          { phone: { in: phoneLookupVariants(cleanPhone) } },
-          { secondaryPhone: { in: phoneLookupVariants(cleanPhone) } },
-        ],
-      },
-      // Prefer the actual account when both a legacy-prefixed user and a
-      // placeholder exist for the same national number.
-      orderBy: [
-        { profileCompleted: 'desc' },
-        { isRegistered: 'desc' },
-      ],
-    })
-    : null;
+  // If the relative already has an account on ANY of the numbers, the request goes to
+  // that account. Real accounts are preferred over placeholders.
+  const matchedExistingUser = await findUserByAnyPhone(cleanPhones);
 
   {
     const relType = await prisma.relationType.findUnique({
@@ -571,12 +579,13 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
 
       relatedUser = await prisma.user.create({
         data: {
-          phone: cleanPhone,
-          whatsapp: cleanPhone,
+          ...placeholderPhoneFields(cleanPhones),
           firstName,
           lastName: lastName || null,
           gender: normalizeGender(gender || relType.targetGender),
           dateOfBirth: parsedDob,
+          birthDay: birthday?.birthDay ?? null,
+          birthMonth: birthday?.birthMonth ?? null,
           dateOfDeath: !isPersonAlive ? parsedDateOfDeath : null,
           bloodGroup: isPersonAlive ? cleanBloodGroup : null,
           education: education ? String(education).trim() : null,
@@ -594,7 +603,11 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
     } else {
       // Existing user found (e.g. by phone) -> update profile fields if provided
       const updateFields: any = {};
-      if (parsedDob) updateFields.dateOfBirth = parsedDob;
+      if (birthday && (birthday.dateOfBirth || birthday.birthDay)) {
+        updateFields.dateOfBirth = birthday.dateOfBirth;
+        updateFields.birthDay = birthday.birthDay;
+        updateFields.birthMonth = birthday.birthMonth;
+      }
       if (isAlive !== undefined) {
         updateFields.isAlive = isPersonAlive;
         if (!isPersonAlive) {
@@ -616,6 +629,8 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
       if (pincode) updateFields.pincode = String(pincode).trim();
       if (address) updateFields.address = String(address).trim();
       if (area) updateFields.area = String(area).trim();
+      // A placeholder learns any extra numbers; registered accounts keep their own.
+      Object.assign(updateFields, await placeholderPhoneUpdates(relatedUser, cleanPhones));
 
       if (Object.keys(updateFields).length > 0) {
         relatedUser = await prisma.user.update({
@@ -782,7 +797,8 @@ export const createRelation = async (req: AuthRequest, res: Response) => {
 
     return res.status(201).json({
       ...relation,
-      relationType: { code: relationTypeCode, label: displayLabel }
+      relationType: { code: relationTypeCode, label: displayLabel },
+      score: scoreUpdate,
     });
   }
 };
@@ -891,7 +907,10 @@ export const approveRelation = async (req: AuthRequest, res: Response) => {
     userId
   );
   emitScoreUpdate(outcome.scoreUpdate);
-  return res.json(outcome.relation);
+  return res.json({
+    ...outcome.relation,
+    score: outcome.scoreUpdate,
+  });
 };
 
 export const rejectRelation = async (req: AuthRequest, res: Response) => {
@@ -1020,7 +1039,11 @@ export const unfollowRelation = async (req: AuthRequest, res: Response) => {
   );
   emitScoreUpdate(outcome.scoreUpdate);
 
-  return res.json({ status: 'UNFOLLOWED', changed: outcome.changed });
+  return res.json({
+    status: 'UNFOLLOWED',
+    changed: outcome.changed,
+    score: outcome.scoreUpdate,
+  });
 };
 
 export const updateRelation = async (req: AuthRequest, res: Response) => {
@@ -1028,8 +1051,24 @@ export const updateRelation = async (req: AuthRequest, res: Response) => {
   const { id } = req.params;
   const {
     targetUserId: bodyTargetUserId,
-    customName, customPhotoUrl, relationTypeCode, phone, isAlive, dateOfBirth, dateOfDeath, bloodGroup,
-    education, occupation, maritalStatus, pincode, address, area
+    customName,
+    customPhotoUrl,
+    relationTypeCode,
+    firstName,
+    lastName,
+    gender,
+    phone,
+    phones,
+    isAlive,
+    dateOfBirth,
+    dateOfDeath,
+    bloodGroup,
+    education,
+    occupation,
+    maritalStatus,
+    pincode,
+    address,
+    area,
   } = req.body;
 
   if (!userId) throw unauthenticated();
@@ -1045,6 +1084,8 @@ export const updateRelation = async (req: AuthRequest, res: Response) => {
         customName: true,
         customPhotoUrl: true,
         relationTypeCode: true,
+        status: true,
+        category: true,
       },
     });
 
@@ -1059,19 +1100,105 @@ export const updateRelation = async (req: AuthRequest, res: Response) => {
       throw forbidden('Not authorized to edit this relation');
     }
 
-    const updateData: any = {
-      customName: customName !== undefined ? customName : relation.customName,
-      customPhotoUrl: customPhotoUrl !== undefined ? customPhotoUrl : relation.customPhotoUrl
-    };
+    // Resolve which user in the relation is the target being edited
+    let resolvedTargetUserId = bodyTargetUserId;
+    if (!resolvedTargetUserId) {
+      if (relation.fromUserId === userId) {
+        resolvedTargetUserId = relation.toUserId;
+      } else if (relation.toUserId === userId) {
+        resolvedTargetUserId = relation.fromUserId;
+      } else {
+        resolvedTargetUserId = relation.createdById === userId ? relation.toUserId : relation.fromUserId;
+      }
+    }
+
+    // Validate authorization: only write to a user who is actually a party of this relation
+    if (resolvedTargetUserId) {
+      const counterpartyIds = new Set(
+        [relation.fromUserId, relation.toUserId, relation.createdById].filter(
+          (value): value is string => typeof value === 'string'
+        )
+      );
+
+      if (!counterpartyIds.has(resolvedTargetUserId)) {
+        log.warn(
+          { userId, resolvedTargetUserId, relationId: id },
+          'rejected profile write to a user outside this relation'
+        );
+        throw forbidden('Cannot modify a user who is not part of this relation');
+      }
+    }
+
+    const targetUser = resolvedTargetUserId
+      ? await prisma.user.findUnique({
+          where: { id: resolvedTargetUserId },
+          select: { id: true, isRegistered: true, profileCompleted: true, phone: true, secondaryPhone: true },
+        })
+      : null;
+
+    // Build customName from firstName/lastName if customName not explicitly passed
+    let finalCustomName = customName;
+    if (finalCustomName === undefined && (firstName !== undefined || lastName !== undefined)) {
+      finalCustomName = `${firstName || ''} ${lastName || ''}`.trim() || undefined;
+    }
+
+    const updateData: any = {};
+    if (finalCustomName !== undefined) updateData.customName = finalCustomName;
+    if (customPhotoUrl !== undefined) updateData.customPhotoUrl = customPhotoUrl;
+    if (relationTypeCode !== undefined) updateData.relationTypeCode = relationTypeCode;
+
+    // Handle phone updates or reconnecting to a real user with this phone
+    if (phone !== undefined || phones !== undefined) {
+      const cleanPhones = normalizeRelativePhones({ phone, phones });
+      if (targetUser && !targetUser.isRegistered) {
+        if (cleanPhones.length > 0) {
+          const matchedUser = await findUserByAnyPhone(cleanPhones);
+          if (matchedUser && matchedUser.id !== targetUser.id) {
+            // Re-point the relation to the existing user matching this phone
+            if (relation.toUserId === targetUser.id) {
+              updateData.toUserId = matchedUser.id;
+              resolvedTargetUserId = matchedUser.id;
+            } else if (relation.fromUserId === targetUser.id) {
+              updateData.fromUserId = matchedUser.id;
+              resolvedTargetUserId = matchedUser.id;
+            }
+          }
+        }
+      }
+    }
 
     const updated = await prisma.relation.update({
       where: { id },
-      data: updateData
+      data: updateData,
     });
 
-    // Update target relative user's profile fields if specified
+    // Update target relative user's profile fields
     const targetUserData: any = {};
     if (customPhotoUrl !== undefined) targetUserData.photoUrl = customPhotoUrl ? String(customPhotoUrl).trim() : null;
+    if (firstName !== undefined) targetUserData.firstName = firstName ? String(firstName).trim() : null;
+    if (lastName !== undefined) targetUserData.lastName = lastName ? String(lastName).trim() : null;
+    if (gender !== undefined) targetUserData.gender = normalizeGender(gender);
+
+    // If firstName was not provided, but customName was, populate firstName and lastName on placeholder users
+    if (targetUserData.firstName === undefined && finalCustomName && targetUser && !targetUser.isRegistered) {
+      const parts = String(finalCustomName).trim().split(/\s+/);
+      if (parts.length > 0) {
+        targetUserData.firstName = parts[0];
+        targetUserData.lastName = parts.slice(1).join(' ') || null;
+      }
+    }
+
+    // Update phone fields on target placeholder user
+    if ((phone !== undefined || phones !== undefined) && targetUser && !targetUser.isRegistered) {
+      const cleanPhones = normalizeRelativePhones({ phone, phones });
+      if (cleanPhones.length > 0) {
+        Object.assign(targetUserData, placeholderPhoneFields(cleanPhones));
+      } else {
+        targetUserData.phone = null;
+        targetUserData.secondaryPhone = null;
+      }
+    }
+
     if (isAlive !== undefined) {
       const aliveBool = Boolean(isAlive);
       targetUserData.isAlive = aliveBool;
@@ -1094,14 +1221,14 @@ export const updateRelation = async (req: AuthRequest, res: Response) => {
         targetUserData.bloodGroup = bloodGroup ? String(bloodGroup).trim() : null;
       }
     }
-    if (dateOfBirth !== undefined) {
-      if (dateOfBirth) {
-        const d = new Date(dateOfBirth);
-        targetUserData.dateOfBirth = !isNaN(d.getTime()) ? d : null;
-      } else {
-        targetUserData.dateOfBirth = null;
-      }
+
+    const birthday = resolveBirthday(req.body);
+    if (birthday) {
+      targetUserData.dateOfBirth = birthday.dateOfBirth;
+      targetUserData.birthDay = birthday.birthDay;
+      targetUserData.birthMonth = birthday.birthMonth;
     }
+
     if (education !== undefined) targetUserData.education = education ? String(education).trim() : null;
     if (occupation !== undefined) targetUserData.occupation = occupation ? String(occupation).trim() : null;
     if (maritalStatus !== undefined) targetUserData.maritalStatus = maritalStatus ? String(maritalStatus).trim() : null;
@@ -1109,56 +1236,27 @@ export const updateRelation = async (req: AuthRequest, res: Response) => {
     if (address !== undefined) targetUserData.address = address ? String(address).trim() : null;
     if (area !== undefined) targetUserData.area = area ? String(area).trim() : null;
 
-    let resolvedTargetUserId = bodyTargetUserId;
-    if (!resolvedTargetUserId) {
-      if (relation.fromUserId === userId) {
-        resolvedTargetUserId = relation.toUserId;
-      } else if (relation.toUserId === userId) {
-        resolvedTargetUserId = relation.fromUserId;
-      } else {
-        resolvedTargetUserId = relation.createdById === userId ? relation.toUserId : relation.fromUserId;
-      }
-    }
-
-    if (Object.keys(targetUserData).length > 0) {
-      /**
-       * The four `console.log` calls that were here ran on every single call and
-       * serialised `targetUserData` — which contains address, pincode, date of
-       * birth and blood group — straight into stdout. That is PII in plaintext
-       * logs on a hot write path. Replaced with a debug-level record of the field
-       * *names* only, which is level-gated off in production.
-       */
-      log.debug(
-        { fields: Object.keys(targetUserData), relationId: id },
-        'updating related user profile'
-      );
-
-      if (resolvedTargetUserId) {
-        // AUTHORIZATION: only write to a user who is actually the counterparty of
-        // this relation. `targetUserId` arrives in the request body, and the
-        // original code passed it to `prisma.user.update` unchecked whenever it
-        // was present — so any participant of any relation could overwrite an
-        // arbitrary user's profile fields by supplying their ID.
-        const counterpartyIds = new Set(
-          [relation.fromUserId, relation.toUserId, relation.createdById].filter(
-            (value): value is string => typeof value === 'string'
-          )
-        );
-
-        if (!counterpartyIds.has(resolvedTargetUserId)) {
-          log.warn(
-            { userId, resolvedTargetUserId, relationId: id },
-            'rejected profile write to a user outside this relation'
-          );
-          throw forbidden('Cannot modify a user who is not part of this relation');
+    if (Object.keys(targetUserData).length > 0 && resolvedTargetUserId) {
+      // If target user is a registered member and the relation is confirmed, don't overwrite their private personal info
+      if (targetUser && targetUser.isRegistered && relation.status === 'CONFIRMED') {
+        const restrictedData: any = {};
+        if (targetUserData.photoUrl !== undefined) restrictedData.photoUrl = targetUserData.photoUrl;
+        if (Object.keys(restrictedData).length > 0) {
+          await prisma.user.update({
+            where: { id: resolvedTargetUserId },
+            data: restrictedData,
+          });
         }
+      } else {
+        log.debug(
+          { fields: Object.keys(targetUserData), relationId: id, targetUserId: resolvedTargetUserId },
+          'updating related user profile'
+        );
 
         await prisma.user.update({
           where: { id: resolvedTargetUserId },
-          data: targetUserData
+          data: targetUserData,
         });
-      } else {
-        log.warn({ relationId: id }, 'no target user resolved; profile not updated');
       }
     }
 
@@ -1184,6 +1282,23 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
   const maxDepth = Number(req.query.depth) || 10;
   const category = req.query.category as string;
 
+  const { value: responseData, hit } = await loadFullTree(userId, lang, maxDepth, category);
+
+  // Lets clients and dashboards see cache effectiveness without extra tooling.
+  res.setHeader('X-Cache', hit ? 'HIT' : 'MISS');
+  return res.json(responseData);
+};
+
+/**
+ * The tree exactly as `userId` sees it. Shared by `getFullTree` (the user's own
+ * request) and the admin API (viewing a user's tree), so both always agree.
+ */
+export const loadFullTree = async (
+  userId: string,
+  lang: string,
+  maxDepth: number,
+  category?: string
+) => {
   /**
    * Read-through cache with single-flight.
    *
@@ -1194,7 +1309,7 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
    * outage starts. `readThroughFullTree` lets one request rebuild while the others
    * wait briefly for the result.
    */
-  const { value: responseData, hit } = await TreeCacheService.readThroughFullTree(
+  return TreeCacheService.readThroughFullTree(
     userId,
     maxDepth,
     lang,
@@ -1210,7 +1325,7 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
           gender: true,
           isAlive: true,
           phone: true,
-          profileCompleted: true,
+          profileCompleted: true, education: true, occupation: true, maritalStatus: true, pincode: true, address: true,
           isRegistered: true,
         }
       });
@@ -1547,10 +1662,6 @@ export const getFullTree = async (req: AuthRequest, res: Response) => {
       return { rootUser, levels, allRelations };
     }
   );
-
-  // Lets clients and dashboards see cache effectiveness without extra tooling.
-  res.setHeader('X-Cache', hit ? 'HIT' : 'MISS');
-  return res.json(responseData);
 };
 
 /**
@@ -1641,11 +1752,108 @@ export const initWorldCoords = async (_req: AuthRequest, res: Response) => {
   return res.json({ message: `Initialized coordinates for ${result} users.` });
 };
 
+/**
+ * Single source of truth for the profile's NETWORK and APPROVED numbers and the
+ * lists those buttons open, so a count can never disagree with its list.
+ *
+ * NETWORK  — distinct people the user added to their family/friend tree
+ *            (created by them, PENDING or CONFIRMED, not removed/hidden/blocked).
+ * APPROVED — distinct registered people who explicitly approved a connection
+ *            with the user, in either direction (CONFIRMED with `approvedAt`).
+ *            Deceased relatives are auto-CONFIRMED without approval, so they
+ *            count toward NETWORK but not APPROVED.
+ *
+ * Each list holds one row per person (the most recent relation with them).
+ */
+export async function collectProfileConnections(userId: string) {
+  const [userBlocks, rows] = await Promise.all([
+    prisma.userBlock.findMany({
+      where: { OR: [{ blockerId: userId }, { blockedId: userId }] },
+      select: { blockerId: true, blockedId: true },
+    }),
+    prisma.relation.findMany({
+      where: {
+        deletedAt: null,
+        category: { in: ['FAMILY', 'FRIEND'] },
+        NOT: { hiddenByUserIds: { has: userId } },
+        OR: [
+          { createdById: userId },
+          { createdById: null, fromUserId: userId },
+          { fromUserId: userId, status: 'CONFIRMED', approvedAt: { not: null } },
+          { toUserId: userId, status: 'CONFIRMED', approvedAt: { not: null } },
+        ],
+      },
+      select: {
+        id: true,
+        fromUserId: true,
+        toUserId: true,
+        status: true,
+        approvedAt: true,
+        relationTypeCode: true,
+        category: true,
+        customName: true,
+        customPhotoUrl: true,
+        createdById: true,
+        createdAt: true,
+        fromUser: { select: RELATION_USER_SELECT },
+        toUser: { select: RELATION_USER_SELECT },
+        User_Relation_createdByIdToUser: { select: RELATION_USER_SELECT },
+      },
+      orderBy: { createdAt: 'desc' },
+    }),
+  ]);
+
+  const blockedUserIds = new Set(
+    userBlocks.map((b) => (b.blockerId === userId ? b.blockedId : b.blockerId))
+  );
+
+  const network = new Map<string, (typeof rows)[number]>();
+  const approved = new Map<string, (typeof rows)[number]>();
+
+  for (const rel of rows) {
+    const createdByMe = rel.createdById === userId || (!rel.createdById && rel.fromUserId === userId);
+
+    if (createdByMe && (rel.status === 'PENDING' || rel.status === 'CONFIRMED')) {
+      // The person added is the target; the source is just the node it was added from.
+      const personId = rel.toUserId !== userId ? rel.toUserId : rel.fromUserId;
+      if (personId !== userId && !blockedUserIds.has(personId) && !network.has(personId)) {
+        network.set(personId, rel);
+      }
+    }
+
+    if (rel.status === 'CONFIRMED' && rel.approvedAt) {
+      const partnerId = rel.toUserId === userId
+        ? (rel.createdById || rel.fromUserId)
+        : rel.toUserId;
+      if (partnerId !== userId && !blockedUserIds.has(partnerId) && !approved.has(partnerId)) {
+        approved.set(partnerId, rel);
+      }
+    }
+  }
+
+  return { network: Array.from(network.values()), approved: Array.from(approved.values()) };
+}
+
+/** GET /relations/profile-connections?type=network|approved — the lists behind the profile counts. */
+export const getProfileConnections = async (req: AuthRequest, res: Response) => {
+  const userId = req.user?.id;
+  if (!userId) throw unauthenticated();
+  const type = req.query.type === 'approved' ? 'approved' : 'network';
+  const lang = (req.query.lang as string) || 'mr';
+
+  const [registry, connections] = await Promise.all([
+    getRelationTypeRegistry(),
+    collectProfileConnections(userId),
+  ]);
+
+  return res.json(connections[type].map((rel) => serializeListRelation(registry, rel, userId, lang)));
+};
+
 export const getRelationCounts = async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;
   if (!userId) throw unauthenticated();
 
-  const [pending, confirmed, rejected, accepted, userCreatedRelations, confirmedRelations, badge] = await Promise.all([
+  const [pending, confirmed, rejected, accepted, connections, badge] = await Promise.all([
     prisma.relation.count({
       where: {
         OR: [{ createdById: userId }, { fromUserId: userId }],
@@ -1668,42 +1876,14 @@ export const getRelationCounts = async (req: AuthRequest, res: Response) => {
     prisma.relation.count({
       where: { toUserId: userId, status: 'CONFIRMED', hiddenByUserIds: { isEmpty: true } },
     }),
-    prisma.relation.findMany({
-      where: {
-        OR: [
-          { createdById: userId },
-          { fromUserId: userId },
-        ],
-      },
-      select: { fromUserId: true, toUserId: true },
-    }),
-    prisma.relation.findMany({
-      where: {
-        hiddenByUserIds: { isEmpty: true },
-        OR: [
-          { fromUserId: userId, status: 'CONFIRMED' },
-          { toUserId: userId, status: 'CONFIRMED' },
-        ],
-      },
-      select: { fromUserId: true, toUserId: true },
-    }),
+    // Same helper as the lists, so the numbers always equal the list lengths.
+    collectProfileConnections(userId),
     // Cached and versioned — see badgeService.getUserBadgeData.
     getUserBadgeData(userId),
   ]);
 
-  const nodeSet = new Set<string>();
-  for (const r of userCreatedRelations) {
-    if (r.fromUserId && r.fromUserId !== userId) nodeSet.add(r.fromUserId);
-    if (r.toUserId && r.toUserId !== userId) nodeSet.add(r.toUserId);
-  }
-  const network = nodeSet.size;
-
-  const approvedSet = new Set<string>();
-  for (const r of confirmedRelations) {
-    const partnerId = r.fromUserId === userId ? r.toUserId : r.fromUserId;
-    if (partnerId) approvedSet.add(partnerId);
-  }
-  const approved = approvedSet.size;
+  const network = connections.network.length;
+  const approved = connections.approved.length;
 
   return res.json({ pending, confirmed, rejected, accepted, network, approved, badge });
 };
@@ -1806,7 +1986,10 @@ export const deleteRelation = async (req: AuthRequest, res: Response) => {
     }
   }
 
-  return res.json({ message: 'Relation deleted' });
+  return res.json({
+    message: 'Relation deleted',
+    score: outcome.scoreUpdate,
+  });
 };
 
 export const getAcceptedRequests = async (req: AuthRequest, res: Response) => {
